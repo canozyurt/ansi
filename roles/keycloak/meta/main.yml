@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: keycloak
+  author: compliant-infra-ansible contributors
+  description: Highly available Keycloak identity provider with MFA, audit events and the default role model
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: rbac_model

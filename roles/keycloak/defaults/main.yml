@@ -1,0 +1,68 @@
+---
+keycloak_image: docker.io/keycloak/keycloak:26.8.0
+keycloak_container_name: keycloak
+
+# Public URL users and services reach (through the edge proxy or directly).
+keycloak_hostname: "https://sso.example.internal"
+
+# High availability (HA-01): at least 3 nodes share the database and discover each other through it
+# (JDBC_PING). A single node is allowed only for labs and tests.
+keycloak_min_nodes: 3
+keycloak_allow_single_node: false
+keycloak_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+# PostgreSQL backend (provided by the data layer). Password must come from the secrets manager or Ansible Vault.
+keycloak_db_host: ""
+keycloak_db_port: 5432
+keycloak_db_name: keycloak
+keycloak_db_user: keycloak
+keycloak_db_password: ""
+keycloak_db_sslmode: require
+
+# Bootstrap/break-glass admin in the master realm (IAM-01). Store the password sealed; its use is alerted on.
+keycloak_admin_user: break-glass-admin
+keycloak_admin_password: ""
+
+# TLS (SEC-03). Paths on the host; when empty a self-signed certificate is generated until the PKI role issues one.
+keycloak_tls_cert_file: ""
+keycloak_tls_key_file: ""
+# The upstream image runs as uid 1000 / gid 0; TLS material is owned by that uid.
+keycloak_container_uid: 1000
+keycloak_validate_certs: "{{ keycloak_tls_cert_file | length > 0 }}"
+
+keycloak_https_port: 8443
+keycloak_management_port: 9000
+keycloak_jgroups_ports: [7800, 57800]
+# Networks that may reach the HTTPS port: the edge proxy and internal clients.
+keycloak_allowed_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+
+keycloak_data_dir: /opt/keycloak
+keycloak_memory_limit: 2g
+keycloak_java_opts_append: ""
+
+# ---------------------------------------------------------------- realm
+keycloak_realm: org
+keycloak_realm_display_name: Organization
+
+# Sessions (IAM-01) and brute force protection
+keycloak_sso_session_idle_timeout: 1800      # 30 minutes
+keycloak_sso_session_max_lifespan: 36000     # 10 hours
+keycloak_access_token_lifespan: 300          # 5 minutes
+keycloak_brute_force_failure_factor: 5
+keycloak_brute_force_max_wait_seconds: 900
+
+# Applies to local Keycloak passwords only (federated users follow their directory's policy).
+keycloak_password_policy: >-
+  length(14) and notUsername and notEmail and passwordHistory(5) and maxLength(128)
+
+# MFA (IAM-02): everyone uses a second factor; privileged roles must use WebAuthn (phishing-resistant).
+keycloak_privileged_marker_role: privileged-access
+keycloak_mfa_flow_alias: browser-mfa
+
+# Audit events (LOG-01): user and admin events, shipped through the container log to central logging.
+keycloak_events_expiration: 7776000          # 90 days in the database; the SIEM keeps 12 months
+
+# Forwarded headers from the edge proxy; set "" when clients connect to Keycloak directly.
+keycloak_proxy_headers: xforwarded
+# Log user/admin events at info so they reach central logging (they default to debug).
+keycloak_log_level: info

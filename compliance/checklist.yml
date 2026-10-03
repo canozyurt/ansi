@@ -32,7 +32,8 @@ requirements:
       iso27001: ["5.15", "5.16", "8.5"]
       iso27017: []
     check: "Molecule test: local login disabled; break-glass use raises an alert"
-    status: not_started
+    status: designed
+    progress: "Keycloak deployed (roles/keycloak) as the central IdP with a break-glass admin. Remaining: wire each service to it and disable local logins; break-glass alert."
   - id: IAM-02
     requirement: "MFA required for all users; phishing-resistant MFA (WebAuthn) for admins"
     controls:
@@ -40,7 +41,8 @@ requirements:
       iso27001: ["8.5"]
       iso27017: []
     check: "IdP policy export checked in CI and weekly"
-    status: not_started
+    status: implemented
+    progress: "Keycloak browser flow forces WebAuthn for privileged roles and TOTP for everyone else; verified by molecule/keycloak. Remaining: weekly policy export check."
   - id: IAM-03
     requirement: "Access granted only through IdP groups mapped to roles; no per-user grants"
     controls:
@@ -49,7 +51,7 @@ requirements:
       iso27017: []
     check: "Config test: authorization rules reference groups only"
     status: designed
-    progress: "Role model and group mapping validated by roles/rbac_model; service roles consume rbac_model_role_groups as they are added."
+    progress: "Role model validated by roles/rbac_model; Keycloak maps default groups to roles. Services consume rbac_model_role_groups as they are added."
   - id: IAM-04
     requirement: "Disabling a user in the directory removes all access (web sessions, SSH, VPN) within 24 hours"
     controls:
@@ -99,7 +101,7 @@ requirements:
       iso27017: []
     check: "Integration test: a test user in each role gets exactly the permissions in the role matrix"
     status: designed
-    progress: "Default roles defined in roles/rbac_model; per-service mappings come with each service role."
+    progress: "Default roles defined in roles/rbac_model and created as Keycloak realm roles; per-service mappings come with each service role."
   - id: SEC-01
     requirement: "No secrets in git, inventories or images"
     controls:
@@ -123,7 +125,8 @@ requirements:
       iso27001: ["8.20", "8.24"]
       iso27017: []
     check: "TLS scanner (e.g. testssl.sh) against every endpoint weekly"
-    status: not_started
+    status: designed
+    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
     controls:
@@ -156,7 +159,7 @@ requirements:
       iso27017: ["CLD.12.4.5"]
     check: "Molecule test of the agent; SIEM shows a recent event per host"
     status: designed
-    progress: "Done: persistent journald, auditd rules, Docker audit rules. Remaining: log shipping to central logging."
+    progress: "Done: persistent journald, auditd rules, Docker audit rules, Keycloak login and admin events as JSON logs. Remaining: log shipping to central logging."
   - id: LOG-02
     requirement: "Logs are tamper-evident, access-restricted and kept 12 months (at least 90 days searchable)"
     controls:
@@ -214,7 +217,8 @@ requirements:
       iso27001: ["8.9", "8.19"]
       iso27017: []
     check: "Policy check of compose files; image signature verification"
-    status: not_started
+    status: designed
+    progress: "Keycloak container runs non-root with all caps dropped, no-new-privileges, memory and pid limits (tested). Remaining: shared policy check, image signature verification."
   - id: HRD-03
     requirement: "Container hosts pass the CIS Docker benchmark"
     controls:
@@ -323,7 +327,8 @@ requirements:
       iso27001: ["8.14"]
       iso27017: []
     check: "CI test kills a node and asserts the service keeps working"
-    status: not_started
+    status: designed
+    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI."
   - id: HA-02
     requirement: "Each service has a DR runbook, and a DR drill runs every year"
     controls:

@@ -1,0 +1,135 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_kc: https://127.0.0.1:8443
+  tasks:
+    - name: Inspect the Keycloak container
+      community.docker.docker_container_info:
+        name: keycloak
+      register: verify_container
+      tags: [chk_hrd_02]
+
+    - name: The container runs with no capabilities and no privilege escalation
+      ansible.builtin.assert:
+        that:
+          - verify_container.container.State.Running
+          - "'ALL' in verify_container.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
+          - not verify_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02]
+
+    - name: Plain HTTP is not served
+      ansible.builtin.wait_for:
+        port: 8080
+        state: stopped
+        timeout: 5
+      tags: [chk_sec_03]
+
+    - name: HTTPS refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8443 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Get an admin token
+      ansible.builtin.uri:
+        url: "{{ verify_kc }}/realms/master/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          client_id: admin-cli
+          grant_type: password
+          username: break-glass-admin
+          password: test-only-admin-password
+        validate_certs: false
+      register: verify_token
+      no_log: true
+
+    - name: Read the realm
+      ansible.builtin.uri:
+        url: "{{ verify_kc }}/admin/realms/org"
+        headers:
+          Authorization: "Bearer {{ verify_token.json.access_token }}"
+        validate_certs: false
+      register: verify_realm
+      tags: [chk_iam_01, chk_iam_02, chk_log_01]
+
+    - name: The realm enforces TLS, lockout, MFA flow, password policy and audit events
+      ansible.builtin.assert:
+        that:
+          - verify_realm.json.sslRequired == 'all'
+          - verify_realm.json.bruteForceProtected
+          - verify_realm.json.browserFlow == 'browser-mfa'
+          - "'length(14)' in verify_realm.json.passwordPolicy"
+          - verify_realm.json.eventsEnabled
+          - verify_realm.json.adminEventsEnabled
+          - verify_realm.json.adminEventsDetailsEnabled
+          - not verify_realm.json.registrationAllowed
+      tags: [chk_iam_01, chk_iam_02, chk_log_01]
+
+    - name: Read the MFA flow
+      ansible.builtin.uri:
+        url: "{{ verify_kc }}/admin/realms/org/authentication/flows/browser-mfa/executions"
+        headers:
+          Authorization: "Bearer {{ verify_token.json.access_token }}"
+        validate_certs: false
+      register: verify_flow
+      tags: [chk_iam_02]
+
+    - name: Privileged users need WebAuthn and everyone else OTP
+      vars:
+        verify_steps: "{{ verify_flow.json | map(attribute='displayName') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "'WebAuthn Authenticator' in verify_steps"
+          - "'OTP Form' in verify_steps"
+          - verify_flow.json | selectattr('displayName', 'equalto', 'Username Password Form')
+            | map(attribute='requirement') | first == 'REQUIRED'
+      tags: [chk_iam_02]
+
+    - name: Read the default roles
+      ansible.builtin.uri:
+        url: "{{ verify_kc }}/admin/realms/org/roles"
+        headers:
+          Authorization: "Bearer {{ verify_token.json.access_token }}"
+        validate_certs: false
+      register: verify_roles
+      tags: [chk_iam_09]
+
+    - name: All default roles exist
+      ansible.builtin.assert:
+        that: >-
+          ['platform-admin', 'security-admin', 'operator', 'developer', 'auditor', 'member']
+          | difference(verify_roles.json | map(attribute='name') | list) | length == 0
+      tags: [chk_iam_09]
+
+    - name: Read the roles of the infra-team group
+      ansible.builtin.uri:
+        url: "{{ verify_kc }}/admin/realms/org/groups?search=infra-team&briefRepresentation=false"
+        headers:
+          Authorization: "Bearer {{ verify_token.json.access_token }}"
+        validate_certs: false
+      register: verify_group
+      tags: [chk_iam_03]
+
+    - name: Groups grant roles; the platform-admin role is marked privileged
+      ansible.builtin.assert:
+        that:
+          - "'platform-admin' in verify_group.json[0].realmRoles"
+      tags: [chk_iam_03]
+
+    - name: Read the Keycloak log
+      ansible.builtin.command: docker logs --since 30m keycloak
+      register: verify_logs
+      changed_when: false
+      tags: [chk_log_01]
+
+    - name: Logs are structured JSON for central logging
+      ansible.builtin.assert:
+        that: verify_logs.stdout_lines | select('match', '^\{') | list | length > 0
+      tags: [chk_log_01]

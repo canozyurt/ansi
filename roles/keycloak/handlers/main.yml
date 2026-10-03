@@ -1,0 +1,21 @@
+---
+- name: Restart keycloak
+  community.docker.docker_container:
+    name: "{{ keycloak_container_name }}"
+    image: "{{ keycloak_image }}"
+    command: [start]
+    network_mode: host
+    env_file: "{{ keycloak_data_dir }}/keycloak.env"
+    volumes:
+      - "{{ keycloak_data_dir }}/tls:/opt/keycloak/conf/tls:ro"
+    restart_policy: unless-stopped
+    memory: "{{ keycloak_memory_limit }}"
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: keycloak
+    state: started
+    restart: true
+  throttle: 1  # rolling restart keeps the cluster available
+  when: not (keycloak_container.changed | default(false))

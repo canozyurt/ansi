@@ -9,8 +9,8 @@ Every role ships hardened defaults and the evidence an auditor asks for, so comp
 of deploying instead of a separate project.
 
 > Status: early development. The host baseline (OS hardening, SSH, firewall, time sync, audit logging,
-> automatic updates) and the container runtime are in place. Service roles (IdP, secrets manager,
-> logging, monitoring, backup, ...) come next. See [the checklist](compliance/checklist.yml) for what is
+> automatic updates), the container runtime and the Keycloak identity provider are in place. The secrets
+> manager and PKI (OpenBao), logging, monitoring and backup come next. See [the checklist](compliance/checklist.yml) for what is
 > done.
 
 ## Supported platforms
@@ -52,16 +52,18 @@ In production, run playbooks only from CI (checklist item CHG-02) and schedule a
 
 | Path | Purpose |
 | --- | --- |
-| `playbooks/site.yml` | Full deployment: role model validation, host baseline, container hosts |
+| `playbooks/site.yml` | Full deployment: role model validation, host baseline, container hosts, identity provider |
 | `roles/common` | Packages, time sync (chrony), persistent journald, auditd rules, automatic security updates, login banner |
 | `roles/os_hardening` | CIS Level 1 derived kernel, module, core dump, account, cron, sudo and service hardening |
 | `roles/ssh_hardening` | Key or certificate only SSH, no root, modern crypto, verbose logging, SSH CA support |
 | `roles/firewall` | Default-deny nftables, SSH only from management networks, declared ports, control of published container ports |
 | `roles/container_runtime` | Docker Engine from the official repository with CIS Docker Benchmark daemon settings |
+| `roles/keycloak` | Keycloak cluster (3+ nodes, JDBC_PING) with TLS, MFA (WebAuthn for privileged roles, OTP for others), lockout, password policy, audit events and the default roles |
 | `roles/rbac_model` | Default organization roles and the group-to-role map every service role uses |
 | `compliance/checklist.yml` | Machine-readable compliance checklist mapped to SOC 2, ISO 27001 and ISO 27017 |
 | `tools/checklist.py` | Validates the checklist against the code; prints coverage and control matrices |
-| `molecule/default` | Tests every role on every supported OS: converge, idempotence, verify |
+| `molecule/default` | Tests the baseline roles on every supported OS: converge, idempotence, verify |
+| `molecule/keycloak` | Deploys Keycloak with PostgreSQL inside a test host and checks realm security settings |
 
 ## Compliance checklist
 

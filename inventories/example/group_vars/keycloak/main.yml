@@ -1,0 +1,13 @@
+---
+keycloak_hostname: https://sso.example.internal
+keycloak_db_host: postgres.data.example.internal
+# Keep secrets out of plain text: ansible-vault encrypt_string, or look them up from the secrets manager.
+keycloak_db_password: "{{ vault_keycloak_db_password }}"
+keycloak_admin_password: "{{ vault_keycloak_admin_password }}"
+
+# HTTPS from the edge proxy and internal networks; cluster traffic only between Keycloak nodes (NET-01, NET-03).
+firewall_rules_keycloak:
+  - { name: keycloak-https, port: 8443, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }
+  - { name: keycloak-management, port: 9000, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: keycloak-cluster, port: 7800, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: keycloak-cluster-fd, port: 57800, sources: ["{{ network_zones.mgmt }}"] }

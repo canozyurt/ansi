@@ -1,0 +1,166 @@
+---
+# Realm configuration through the admin API, run once against the first node.
+- name: Configure the organization realm
+  run_once: true
+  module_defaults:
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ keycloak_admin_url }}"
+      auth_realm: master
+      auth_username: "{{ keycloak_admin_user }}"
+      auth_password: "{{ keycloak_admin_password }}"
+      validate_certs: "{{ keycloak_validate_certs }}"
+  block:
+    - name: Create the realm with session, lockout, password and event policies
+      community.general.keycloak_realm:
+        realm: "{{ keycloak_realm }}"
+        id: "{{ keycloak_realm }}"
+        display_name: "{{ keycloak_realm_display_name }}"
+        enabled: true
+        ssl_required: all
+        registration_allowed: false
+        login_with_email_allowed: true
+        duplicate_emails_allowed: false
+        reset_password_allowed: true
+        remember_me: false
+        brute_force_protected: true
+        failure_factor: "{{ keycloak_brute_force_failure_factor }}"
+        max_failure_wait_seconds: "{{ keycloak_brute_force_max_wait_seconds }}"
+        permanent_lockout: false
+        password_policy: "{{ keycloak_password_policy }}"
+        sso_session_idle_timeout: "{{ keycloak_sso_session_idle_timeout }}"
+        sso_session_max_lifespan: "{{ keycloak_sso_session_max_lifespan }}"
+        access_token_lifespan: "{{ keycloak_access_token_lifespan }}"
+        revoke_refresh_token: true
+        refresh_token_max_reuse: 0
+        events_enabled: true
+        events_expiration: "{{ keycloak_events_expiration }}"
+        events_listeners: [jboss-logging]
+        admin_events_enabled: true
+        admin_events_details_enabled: true
+        otp_policy_type: totp
+        otp_policy_algorithm: HmacSHA256
+        otp_policy_digits: 6
+        otp_policy_period: 30
+        web_authn_policy_rp_entity_name: "{{ keycloak_realm_display_name }}"
+        web_authn_policy_user_verification_requirement: required
+        browser_security_headers:
+          contentSecurityPolicy: "frame-src 'self'; frame-ancestors 'self'; object-src 'none';"
+          xContentTypeOptions: nosniff
+          xFrameOptions: SAMEORIGIN
+          strictTransportSecurity: max-age=31536000; includeSubDomains
+          referrerPolicy: no-referrer
+        state: present
+      tags: [chk_iam_01, chk_iam_02, chk_log_01]
+
+    - name: Create the privileged marker role used by the MFA flow
+      community.general.keycloak_role:
+        realm: "{{ keycloak_realm }}"
+        name: "{{ keycloak_privileged_marker_role }}"
+        description: Marks roles that must use phishing-resistant MFA (WebAuthn)
+        state: present
+      tags: [chk_iam_02]
+
+    - name: Create the default organization roles
+      community.general.keycloak_role:
+        realm: "{{ keycloak_realm }}"
+        name: "{{ item.key }}"
+        description: "{{ item.value.description }}"
+        attributes:
+          capabilities: ["{{ item.value.capabilities | to_json }}"]
+        composite: "{{ item.value.privileged | default(false) | bool }}"
+        composites: >-
+          {{ [{'name': keycloak_privileged_marker_role}] if item.value.privileged | default(false) | bool else [] }}
+        state: present
+      loop: "{{ rbac_model_all_roles | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      tags: [chk_iam_09]
+
+    - name: Create the IdP groups
+      community.general.keycloak_group:
+        realm: "{{ keycloak_realm }}"
+        name: "{{ item }}"
+        state: present
+      loop: "{{ rbac_model_group_assignments.keys() | list }}"
+      tags: [chk_iam_03]
+
+    - name: Map groups to their roles
+      community.general.keycloak_realm_rolemapping:
+        realm: "{{ keycloak_realm }}"
+        group_name: "{{ item.key }}"
+        roles: "{{ item.value | map('community.general.dict_kv', 'name') | list }}"
+        state: present
+      loop: "{{ rbac_model_group_assignments | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      tags: [chk_iam_03, chk_iam_09]
+
+    - name: Create the MFA browser flow (WebAuthn for privileged roles, OTP for everyone else)
+      community.general.keycloak_authentication:
+        realm: "{{ keycloak_realm }}"
+        alias: "{{ keycloak_mfa_flow_alias }}"
+        description: Password plus second factor; WebAuthn required for privileged roles
+        providerId: basic-flow
+        authenticationExecutions:
+          - providerId: auth-cookie
+            requirement: ALTERNATIVE
+          - displayName: "{{ keycloak_mfa_flow_alias }} forms"
+            requirement: ALTERNATIVE
+          - providerId: auth-username-password-form
+            requirement: REQUIRED
+            flowAlias: "{{ keycloak_mfa_flow_alias }} forms"
+          - displayName: "{{ keycloak_mfa_flow_alias }} privileged"
+            requirement: CONDITIONAL
+            flowAlias: "{{ keycloak_mfa_flow_alias }} forms"
+          - providerId: conditional-user-role
+            requirement: REQUIRED
+            flowAlias: "{{ keycloak_mfa_flow_alias }} privileged"
+            authenticationConfig:
+              alias: "{{ keycloak_mfa_flow_alias }}-is-privileged"
+              config:
+                condUserRole: "{{ keycloak_privileged_marker_role }}"
+                negate: "false"
+          - providerId: webauthn-authenticator
+            requirement: REQUIRED
+            flowAlias: "{{ keycloak_mfa_flow_alias }} privileged"
+          - displayName: "{{ keycloak_mfa_flow_alias }} standard"
+            requirement: CONDITIONAL
+            flowAlias: "{{ keycloak_mfa_flow_alias }} forms"
+          - providerId: conditional-user-role
+            requirement: REQUIRED
+            flowAlias: "{{ keycloak_mfa_flow_alias }} standard"
+            authenticationConfig:
+              alias: "{{ keycloak_mfa_flow_alias }}-is-standard"
+              config:
+                condUserRole: "{{ keycloak_privileged_marker_role }}"
+                negate: "true"
+          - providerId: auth-otp-form
+            requirement: REQUIRED
+            flowAlias: "{{ keycloak_mfa_flow_alias }} standard"
+        state: present
+      tags: [chk_iam_02]
+
+    - name: Use the MFA flow for browser logins
+      community.general.keycloak_realm:
+        realm: "{{ keycloak_realm }}"
+        id: "{{ keycloak_realm }}"
+        browser_flow: "{{ keycloak_mfa_flow_alias }}"
+        state: present
+      tags: [chk_iam_02]
+
+    - name: Enable the OTP and WebAuthn registration actions
+      community.general.keycloak_authentication_required_actions:
+        realm: "{{ keycloak_realm }}"
+        required_actions:
+          - alias: CONFIGURE_TOTP
+            name: Configure OTP
+            providerId: CONFIGURE_TOTP
+            enabled: true
+            defaultAction: false
+          - alias: webauthn-register
+            name: Webauthn Register
+            providerId: webauthn-register
+            enabled: true
+            defaultAction: false
+        state: present
+      tags: [chk_iam_02]

@@ -1,0 +1,29 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - keycloak_admin_password | length >= 16
+      - keycloak_db_password | length > 0
+      - keycloak_db_host | length > 0
+      - keycloak_hostname is match('^https://')
+    fail_msg: >-
+      Set keycloak_admin_password (16+ characters), keycloak_db_host, keycloak_db_password and an https
+      keycloak_hostname. Keep passwords in Ansible Vault or the secrets manager.
+    quiet: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: keycloak_cluster_hosts | length >= keycloak_min_nodes or keycloak_allow_single_node | bool
+    fail_msg: >-
+      Keycloak needs at least {{ keycloak_min_nodes }} nodes (found {{ keycloak_cluster_hosts | length }}).
+      Set keycloak_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy Keycloak
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Configure the realm
+  ansible.builtin.import_tasks: realm.yml
+  vars:
+    keycloak_admin_url: "https://127.0.0.1:{{ keycloak_https_port }}"

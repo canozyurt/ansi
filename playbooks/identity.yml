@@ -1,0 +1,6 @@
+---
+- name: Deploy the identity provider
+  hosts: keycloak
+  become: true
+  roles:
+    - role: keycloak

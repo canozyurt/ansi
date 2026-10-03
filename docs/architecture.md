@@ -5,7 +5,8 @@
 ```
  product playbooks   databases, object storage, queues; many independent instances per product
         |
- service roles       IdP/SSO, secrets + PKI, logging/SIEM, monitoring, backup, VPN, bastion, edge proxy, ...
+ service roles       Keycloak (IdP/SSO)  <- implemented
+                     secrets + PKI, logging/SIEM, monitoring, backup, VPN, bastion, edge proxy, ...
         |
  container runtime   Docker Engine with CIS Docker Benchmark settings (services run as containers)
         |
@@ -51,6 +52,19 @@ Organizations set `rbac_model_group_assignments` (IdP group to roles) and may ad
 `rbac_model_extra_roles`. The role publishes `rbac_model_role_groups` (role to IdP groups), which service
 roles translate into their own permission system. Rules no configuration can override: no deleting logs
 or backups inside their retention period, and no approving one's own change.
+
+## Identity provider (Keycloak)
+
+- Runs as a container with host networking on the `keycloak` group, 3 nodes minimum; nodes discover each
+  other through the shared PostgreSQL database (JDBC_PING), so no multicast is needed.
+- HTTPS only (TLS 1.2+); until the PKI role exists, each node gets a self-signed certificate.
+- Realm `org`: TLS required for every client, brute force lockout, 14-character password policy, 30-minute
+  idle and 10-hour maximum sessions, user and admin events with details, logs in JSON to journald.
+- Browser logins use the `browser-mfa` flow: password, then WebAuthn for anyone holding a role that
+  includes `privileged-access` (platform-admin, security-admin), OTP for everyone else.
+- Realm roles mirror `rbac_model`; IdP groups from `rbac_model_group_assignments` are created and mapped.
+- The master realm keeps one break-glass admin (`keycloak_admin_user`); Keycloak flags it as a temporary
+  bootstrap admin until a permanent admin flow is added.
 
 ## Compliance as code
 

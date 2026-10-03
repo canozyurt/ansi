@@ -36,6 +36,11 @@
     state: present
     update_cache: true
 
+- name: Install the Python library the community.docker modules need
+  ansible.builtin.apt:
+    name: python3-requests
+    state: present
+
 - name: Create the Docker configuration directory
   ansible.builtin.file:
     path: /etc/docker
@@ -54,6 +59,14 @@
     validate: dockerd --validate --config-file %s
   notify: Restart docker
   tags: [chk_hrd_03]
+
+- name: Create the audit rules directory (auditd itself is installed by the common role)
+  ansible.builtin.file:
+    path: /etc/audit/rules.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
 
 - name: Audit Docker files and binaries
   ansible.builtin.copy:
