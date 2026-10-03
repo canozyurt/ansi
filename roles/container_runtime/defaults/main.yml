@@ -1,0 +1,24 @@
+---
+container_runtime_repo_url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+container_runtime_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - docker-buildx-plugin
+
+# Start the daemon. Tests set false (no Docker-in-Docker).
+container_runtime_manage_service: true
+
+# Members may run containers. Docker group membership is root-equivalent: keep it to automation accounts.
+container_runtime_users: []
+
+# daemon.json (CIS Docker Benchmark section 2). Container logs go to journald, which the logging role ships (LOG-01).
+container_runtime_log_driver: journald
+container_runtime_userns_remap: false
+container_runtime_insecure_registries: []
+container_runtime_registry_mirrors: []
+container_runtime_default_address_pools:
+  - base: 172.30.0.0/16
+    size: 24
+container_runtime_daemon_extra: {}

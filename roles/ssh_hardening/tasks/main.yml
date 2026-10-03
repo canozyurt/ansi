@@ -1,0 +1,83 @@
+---
+- name: Install OpenSSH server
+  ansible.builtin.apt:
+    name: openssh-server
+    state: present
+
+- name: Check the connecting account keeps a way in
+  when:
+    - ssh_hardening_lockout_check | bool
+    - ansible_connection | default('ssh') in ['ssh', 'paramiko', 'ansible.builtin.ssh']
+    - ssh_hardening_trusted_user_ca_keys | length == 0
+  block:
+    - name: Read the remote user's authorized_keys
+      ansible.builtin.slurp:
+        src: "{{ (ansible_facts['user_dir'] | default('/root')) }}/.ssh/authorized_keys"
+      register: ssh_hardening_authorized_keys
+      failed_when: false
+
+    - name: Fail if password login would be the only way in
+      ansible.builtin.assert:
+        that:
+          - ssh_hardening_allow_authorized_keys | bool
+          - ssh_hardening_authorized_keys.content is defined
+          - (ssh_hardening_authorized_keys.content | b64decode | trim) | length > 0
+        fail_msg: >-
+          Disabling password authentication would lock out {{ ansible_user_id | default('the remote user') }}:
+          add an authorized key or configure ssh_hardening_trusted_user_ca_keys first.
+
+- name: Install the trusted user CA keys
+  ansible.builtin.copy:
+    content: "{{ ssh_hardening_trusted_user_ca_keys | join('\n') }}\n"
+    dest: /etc/ssh/trusted_user_ca_keys.pub
+    owner: root
+    group: root
+    mode: "0644"
+  when: ssh_hardening_trusted_user_ca_keys | length > 0
+  notify: Reload sshd
+  tags: [chk_iam_06]
+
+- name: Create the authorized principals directory
+  ansible.builtin.file:
+    path: "{{ ssh_hardening_authorized_principals_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: ssh_hardening_trusted_user_ca_keys | length > 0
+
+- name: Ensure the privilege separation directory exists
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure sshd hardening
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-compliance.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload sshd
+  tags: [chk_iam_06]
+
+- name: Remove small Diffie-Hellman moduli
+  ansible.builtin.shell: |
+    set -o pipefail
+    awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.safe
+    if ! cmp -s /etc/ssh/moduli /etc/ssh/moduli.safe; then mv /etc/ssh/moduli.safe /etc/ssh/moduli; echo changed; else rm /etc/ssh/moduli.safe; fi
+  args:
+    executable: /bin/bash
+  register: ssh_hardening_moduli
+  changed_when: "'changed' in ssh_hardening_moduli.stdout"
+  notify: Reload sshd
+  tags: [chk_iam_06]
+
+- name: Enable sshd
+  ansible.builtin.service:
+    name: ssh
+    enabled: true

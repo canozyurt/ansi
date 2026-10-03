@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+# Loaded before distribution defaults: the first value set for a keyword wins.
+Port {{ ssh_hardening_port }}
+LogLevel VERBOSE
+SyslogFacility AUTH
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+HostbasedAuthentication no
+IgnoreRhosts yes
+UsePAM yes
+{% if ssh_hardening_trusted_user_ca_keys | length > 0 %}
+TrustedUserCAKeys /etc/ssh/trusted_user_ca_keys.pub
+AuthorizedPrincipalsFile {{ ssh_hardening_authorized_principals_dir }}/%u
+{% endif %}
+{% if not ssh_hardening_allow_authorized_keys %}
+AuthorizedKeysFile none
+{% endif %}
+{% if ssh_hardening_allow_groups | length > 0 %}
+AllowGroups {{ ssh_hardening_allow_groups | join(' ') }}
+{% endif %}
+
+MaxAuthTries {{ ssh_hardening_max_auth_tries }}
+MaxSessions {{ ssh_hardening_max_sessions }}
+MaxStartups 10:30:60
+LoginGraceTime {{ ssh_hardening_login_grace_time }}
+ClientAliveInterval {{ ssh_hardening_client_alive_interval }}
+ClientAliveCountMax {{ ssh_hardening_client_alive_count_max }}
+
+AllowTcpForwarding {{ 'yes' if ssh_hardening_allow_tcp_forwarding else 'no' }}
+AllowAgentForwarding {{ 'yes' if ssh_hardening_allow_agent_forwarding else 'no' }}
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+GatewayPorts no
+Banner /etc/issue.net
+
+KexAlgorithms {{ ssh_hardening_kex_algorithms | join(',') }}
+Ciphers {{ ssh_hardening_ciphers | join(',') }}
+MACs {{ ssh_hardening_macs | join(',') }}
+HostKeyAlgorithms {{ ssh_hardening_host_key_algorithms | join(',') }}
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key

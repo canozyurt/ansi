@@ -1,0 +1,95 @@
+---
+# Default roles shipped with every service (IAM-09). Service roles translate the permission level of each
+# capability into their native permissions (for example Grafana Admin/Editor/Viewer, OpenBao policies).
+#
+# Permission levels, lowest to highest: none, self, read, operate, write, admin.
+# Organizations normally change only rbac_model_group_assignments (in their inventory), not this file.
+rbac_model_roles:
+  platform-admin:
+    description: Small infrastructure team; elevation is time-limited where the tooling allows
+    privileged: true
+    capabilities:
+      identity: admin
+      secrets: admin
+      logs: admin
+      monitoring: admin
+      hosts: admin
+      delivery: admin
+      backups: admin
+      evidence: read
+  security-admin:
+    description: Security team
+    privileged: true
+    capabilities:
+      identity: operate   # security policies, lock users
+      secrets: read       # audit log only, never secret values
+      logs: admin
+      monitoring: read
+      hosts: read
+      delivery: read
+      backups: read
+      evidence: admin
+  operator:
+    description: On-call and SRE
+    privileged: false
+    capabilities:
+      identity: read
+      secrets: operate    # scoped to the services they run
+      logs: read
+      monitoring: write
+      hosts: operate      # limited sudo through the bastion, recorded
+      delivery: operate   # run approved pipelines
+      backups: operate    # restore, never delete
+      evidence: read
+  developer:
+    description: Product engineers
+    privileged: false
+    capabilities:
+      identity: none
+      secrets: operate    # own application secrets in non-production
+      logs: read          # application logs only
+      monitoring: read
+      hosts: none         # non-production only, granted per environment
+      delivery: write     # cannot approve their own changes
+      backups: none
+      evidence: none
+  auditor:
+    description: Internal or external auditors, time-boxed
+    privileged: false
+    capabilities:
+      identity: read
+      secrets: none
+      logs: read
+      monitoring: read
+      hosts: none
+      delivery: read
+      backups: read
+      evidence: read
+  member:
+    description: Every employee
+    privileged: false
+    capabilities:
+      identity: self
+      secrets: none
+      logs: none
+      monitoring: none
+      hosts: none
+      delivery: none
+      backups: none
+      evidence: none
+
+# Rules no role may break, whatever an organization configures.
+rbac_model_forbidden:
+  - Deleting logs inside their retention period
+  - Deleting backups inside their retention period
+  - Approving one's own change
+
+# Map IdP groups to roles. Example:
+#   rbac_model_group_assignments:
+#     infra-team: [platform-admin]
+#     sre: [operator]
+#     payments-devs: [developer]
+rbac_model_group_assignments: {}
+
+# Extra organization-specific roles, same shape as rbac_model_roles.
+rbac_model_extra_roles: {}

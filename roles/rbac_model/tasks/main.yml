@@ -1,0 +1,43 @@
+---
+- name: Merge default and organization roles
+  ansible.builtin.set_fact:
+    rbac_model_all_roles: "{{ rbac_model_roles | combine(rbac_model_extra_roles) }}"
+  tags: [chk_iam_03, chk_iam_09]
+
+- name: Check every role uses known capabilities and permission levels
+  ansible.builtin.assert:
+    that:
+      - item.value.capabilities.keys() | difference(rbac_model_capabilities) | length == 0
+      - item.value.capabilities.values() | difference(rbac_model_levels) | length == 0
+    fail_msg: "Role {{ item.key }} uses an unknown capability or level"
+    quiet: true
+  loop: "{{ rbac_model_all_roles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    rbac_model_capabilities: [identity, secrets, logs, monitoring, hosts, delivery, backups, evidence]
+    rbac_model_levels: [none, self, read, operate, write, admin]
+
+- name: Check group assignments only use defined roles
+  ansible.builtin.assert:
+    that:
+      - item.value | difference(rbac_model_all_roles.keys() | list) | length == 0
+    fail_msg: >-
+      Group {{ item.key }} is assigned unknown role(s)
+      {{ item.value | difference(rbac_model_all_roles.keys() | list) }}
+    quiet: true
+  loop: "{{ rbac_model_group_assignments | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [chk_iam_03]
+
+- name: Build the role to group map that service roles consume
+  ansible.builtin.set_fact:
+    rbac_model_role_groups: >-
+      {%- set out = {} -%}
+      {%- for role in rbac_model_all_roles -%}
+      {%-   set _ = out.update({role: rbac_model_group_assignments | dict2items
+              | selectattr('value', 'contains', role) | map(attribute='key') | list}) -%}
+      {%- endfor -%}
+      {{ out }}
+  tags: [chk_iam_03, chk_iam_09]

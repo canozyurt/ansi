@@ -1,0 +1,7 @@
+---
+- name: Validate the organization role model
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: rbac_model

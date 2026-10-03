@@ -1,0 +1,6 @@
+---
+- name: Install the container runtime
+  hosts: container_hosts
+  become: true
+  roles:
+    - role: container_runtime

@@ -1,0 +1,17 @@
+---
+common_os_packages:
+  - apt-transport-https
+  - apt-listchanges
+  - audispd-plugins
+  - auditd
+  - ca-certificates
+  - chrony
+  - curl
+  - gnupg
+  - needrestart
+  - sudo
+  - unattended-upgrades
+common_unattended_upgrades_origins:
+  - "origin=Debian,codename=${distro_codename},label=Debian"
+  - "origin=Debian,codename=${distro_codename}-security,label=Debian-Security"
+  - "origin=Debian,codename=${distro_codename},label=Debian-Security"

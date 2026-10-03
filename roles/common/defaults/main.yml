@@ -1,0 +1,36 @@
+---
+# Supported platforms. Add an entry (and a vars/<distribution>.yml) to extend.
+common_supported_platforms:
+  Debian: ["12"]
+  Ubuntu: ["22.04", "24.04"]
+
+common_timezone: Etc/UTC
+common_extra_packages: []
+
+# Time sync (LOG-03). Use the same sources on every host; prefer internal NTP servers.
+common_ntp_servers:
+  - time.cloudflare.com
+  - pool.ntp.org
+# Debian/Ubuntu default; tests override with "-x" so containers don't touch the host clock.
+common_chrony_daemon_opts: "-F 1"
+common_chrony_max_offset_alert_seconds: 0.5
+
+# Persistent, size-bounded local journal; central shipping is done by the logging role (LOG-01).
+common_journald_system_max_use: 1G
+common_journald_max_retention: 1month
+
+# auditd (LOG-01, IAM-07). Set false only where the kernel audit subsystem is unavailable (e.g. containers).
+common_auditd_manage_service: true
+common_auditd_max_log_file_mb: 64
+common_auditd_num_logs: 10
+
+# Automatic security updates (HRD-04).
+common_unattended_upgrades_origins_extra: []
+common_unattended_upgrades_auto_reboot: false
+common_unattended_upgrades_reboot_time: "03:30"
+common_unattended_upgrades_mail: ""
+
+# Legal banner shown before login.
+common_login_banner: |
+  Authorized use only. All activity is logged and monitored.
+  Disconnect now if you are not an authorized user.

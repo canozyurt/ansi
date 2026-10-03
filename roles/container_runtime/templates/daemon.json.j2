@@ -1,0 +1,17 @@
+{% set daemon = {
+  'icc': false,
+  'live-restore': true,
+  'userland-proxy': false,
+  'no-new-privileges': true,
+  'log-driver': container_runtime_log_driver,
+  'log-level': 'info',
+  'default-ulimits': {'nofile': {'Name': 'nofile', 'Hard': 65536, 'Soft': 65536}},
+  'default-address-pools': container_runtime_default_address_pools,
+  'insecure-registries': container_runtime_insecure_registries,
+  'registry-mirrors': container_runtime_registry_mirrors,
+  'experimental': false
+} %}
+{% if container_runtime_userns_remap %}
+{%   set daemon = daemon | combine({'userns-remap': 'default'}) %}
+{% endif %}
+{{ daemon | combine(container_runtime_daemon_extra) | to_nice_json(indent=2) }}

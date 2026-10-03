@@ -1,0 +1,21 @@
+---
+# Networks that may reach management ports (SSH, admin UIs): the VPN and bastion ranges (NET-02). Required.
+firewall_mgmt_cidrs: []
+firewall_ssh_port: 22
+
+# Declared inbound ports (NET-01). Each rule:
+#   name:    free text, shown in the generated config
+#   port:    number or "start-end"
+#   proto:   tcp | udp (default tcp)
+#   sources: list of CIDRs, or ["any"] for public services
+# Roles add their own rules through variables named firewall_rules_<role> (collected automatically).
+firewall_rules: []
+
+# Container ports published through Docker bypass the input chain; only these may be reached via DNAT.
+firewall_published_container_ports: []
+
+firewall_log_dropped: true
+firewall_log_rate: 10/minute
+
+# Write the config but do not load it (for dry runs in new environments).
+firewall_apply: true

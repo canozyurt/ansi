@@ -1,0 +1,12 @@
+*.retry
+ansible.log
+__pycache__/
+.cache/
+.venv/
+collections/ansible_collections/
+.ansible/
+# Never commit real inventories or secrets
+inventories/*/
+!inventories/example/
+*.vault.yml
+.env

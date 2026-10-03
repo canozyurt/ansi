@@ -1,0 +1,19 @@
+---
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-s]
+  - repo: local
+    hooks:
+      - id: checklist
+        name: compliance checklist
+        entry: python3 tools/checklist.py check
+        language: system
+        pass_filenames: false
+        files: ^(compliance/|roles/|playbooks/|molecule/)

@@ -1,0 +1,97 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Only this table is managed; tables created by Docker or other tools are left alone.
+{% set v4 = firewall_mgmt_cidrs | select('search', '^[0-9.]+(/[0-9]+)?$') | list %}
+{% set v6 = firewall_mgmt_cidrs | select('search', ':') | list %}
+
+table inet compliance
+delete table inet compliance
+
+table inet compliance {
+	set mgmt_v4 {
+		type ipv4_addr
+		flags interval
+{% if v4 %}
+		elements = { {{ v4 | join(', ') }} }
+{% endif %}
+	}
+
+	set mgmt_v6 {
+		type ipv6_addr
+		flags interval
+{% if v6 %}
+		elements = { {{ v6 | join(', ') }} }
+{% endif %}
+	}
+
+	set published_tcp {
+		type inet_service
+		flags interval
+{% set pub_tcp = firewall_published_container_ports | selectattr('proto', 'undefined') | map(attribute='port') | list
+   + firewall_published_container_ports | selectattr('proto', 'defined') | selectattr('proto', 'equalto', 'tcp') | map(attribute='port') | list %}
+{% if pub_tcp %}
+		elements = { {{ pub_tcp | join(', ') }} }
+{% endif %}
+	}
+
+	set published_udp {
+		type inet_service
+		flags interval
+{% set pub_udp = firewall_published_container_ports | selectattr('proto', 'defined') | selectattr('proto', 'equalto', 'udp') | map(attribute='port') | list %}
+{% if pub_udp %}
+		elements = { {{ pub_udp | join(', ') }} }
+{% endif %}
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		ct state established,related accept
+		ct state invalid drop
+		iif "lo" accept
+
+		# ICMP needed for path MTU discovery and diagnostics, rate limited
+		meta l4proto icmp icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } limit rate 20/second accept
+		meta l4proto ipv6-icmp icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+
+		# Management access only from VPN/bastion networks (NET-02)
+		ip saddr @mgmt_v4 tcp dport {{ firewall_ssh_port }} accept comment "ssh from management"
+		ip6 saddr @mgmt_v6 tcp dport {{ firewall_ssh_port }} accept comment "ssh from management"
+
+		# Declared service ports (NET-01)
+{% for rule in firewall_all_rules %}
+{%   set proto = rule.proto | default('tcp') %}
+{%   if 'any' in rule.sources %}
+		{{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+{%   else %}
+{%     set r4 = rule.sources | select('search', '^[0-9.]+(/[0-9]+)?$') | list %}
+{%     set r6 = rule.sources | select('search', ':') | list %}
+{%     if r4 %}
+		ip saddr { {{ r4 | join(', ') }} } {{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+{%     endif %}
+{%     if r6 %}
+		ip6 saddr { {{ r6 | join(', ') }} } {{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+{%     endif %}
+{%   endif %}
+{% endfor %}
+
+{% if firewall_log_dropped %}
+		limit rate {{ firewall_log_rate }} log prefix "nft-input-drop: " level info
+{% endif %}
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 1; policy accept;
+
+		# Published container ports skip the input chain; allow only declared ones (NET-01)
+		ct state new ct status dnat meta l4proto tcp ct original proto-dst != @published_tcp jump forward_drop
+		ct state new ct status dnat meta l4proto udp ct original proto-dst != @published_udp jump forward_drop
+	}
+
+	chain forward_drop {
+{% if firewall_log_dropped %}
+		limit rate {{ firewall_log_rate }} log prefix "nft-forward-drop: " level info
+{% endif %}
+		drop
+	}
+}

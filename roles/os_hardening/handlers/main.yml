@@ -1,0 +1,5 @@
+---
+- name: Apply sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+  when: os_hardening_sysctl_apply | bool

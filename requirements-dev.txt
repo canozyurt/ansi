@@ -1,0 +1,8 @@
+# Pinned tool versions for CI and local development (CHG-05).
+ansible-core==2.19.13
+ansible-lint==26.9.0
+molecule==26.9.0
+molecule-plugins[docker]==26.9.28
+docker==7.2.0
+yamllint==1.38.0
+PyYAML>=6.0

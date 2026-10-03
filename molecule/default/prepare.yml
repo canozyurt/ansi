@@ -1,0 +1,29 @@
+---
+# Optional: route package downloads through a proxy when testing behind one
+# (MOLECULE_HTTPS_PROXY, MOLECULE_PROXY_CA). CI on GitHub needs neither.
+- name: Prepare
+  hosts: all
+  gather_facts: false
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    molecule_proxy_ca: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROXY_CA') }}"
+  tasks:
+    - name: Trust the proxy CA
+      when: molecule_proxy_ca | length > 0
+      block:
+        - name: Copy the proxy CA
+          ansible.builtin.copy:
+            src: "{{ molecule_proxy_ca }}"
+            dest: /usr/local/share/ca-certificates/molecule-proxy.crt
+            mode: "0644"
+
+        - name: Update the CA store
+          ansible.builtin.command: update-ca-certificates
+          changed_when: true
+
+    - name: Send apt HTTPS traffic through the proxy
+      ansible.builtin.copy:
+        content: 'Acquire::https::Proxy "{{ molecule_https_proxy }}";'
+        dest: /etc/apt/apt.conf.d/90molecule-proxy
+        mode: "0644"
+      when: molecule_https_proxy | length > 0

@@ -1,0 +1,30 @@
+---
+ansible_user: deploy
+
+# Networks allowed to reach management ports: VPN and bastion ranges (NET-02).
+firewall_mgmt_cidrs:
+  - 10.10.0.0/24
+
+# Zone networks (NET-03); service roles use these to restrict east-west traffic.
+network_zones:
+  mgmt: 10.10.0.0/24
+  app: 10.20.0.0/24
+  data: 10.30.0.0/24
+
+# Internal time sources (LOG-03).
+common_ntp_servers:
+  - time.cloudflare.com
+  - pool.ntp.org
+
+# SSH user CA public key from step-ca / OpenBao (IAM-06). Leave empty until the CA is deployed.
+ssh_hardening_trusted_user_ca_keys: []
+ssh_hardening_allow_groups: [ssh-users, deploy]
+
+# IdP groups -> default roles (IAM-09). See roles/rbac_model/defaults/main.yml.
+rbac_model_group_assignments:
+  infra-team: [platform-admin]
+  security: [security-admin]
+  sre: [operator]
+  engineering: [developer]
+  auditors: [auditor]
+  everyone: [member]

@@ -1,0 +1,10 @@
+---
+# Full deployment. Run from CI only (CHG-02); use --check --diff for the weekly audit run (CHG-03).
+- name: Validate the organization role model
+  ansible.builtin.import_playbook: rbac.yml
+
+- name: Apply the host baseline
+  ansible.builtin.import_playbook: baseline.yml
+
+- name: Prepare container hosts
+  ansible.builtin.import_playbook: container_hosts.yml

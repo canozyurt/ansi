@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+Defaults use_pty
+Defaults logfile="/var/log/sudo.log"
+Defaults log_input, log_output
+Defaults iolog_dir="/var/log/sudo-io/%{user}"
+Defaults timestamp_timeout={{ os_hardening_sudo_timeout_minutes }}
+Defaults !visiblepw
+Defaults env_reset

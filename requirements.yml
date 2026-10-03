@@ -1,0 +1,9 @@
+---
+# Pinned upstream collections (CHG-05). Bump through a reviewed pull request.
+collections:
+  - name: ansible.posix
+    version: "2.1.0"
+  - name: community.general
+    version: "11.4.2"
+  - name: community.docker
+    version: "4.8.5"

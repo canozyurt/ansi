@@ -1,0 +1,25 @@
+---
+- name: Restart chrony
+  ansible.builtin.service:
+    name: chrony
+    state: restarted
+
+- name: Restart journald
+  ansible.builtin.service:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart auditd
+  ansible.builtin.command: service auditd restart  # noqa: command-instead-of-module auditd refuses systemctl restart
+  changed_when: true
+  when: common_auditd_manage_service | bool
+
+- name: Load audit rules
+  ansible.builtin.command: augenrules --load
+  register: common_augenrules
+  changed_when: true
+  # With "-e 2" the loaded rules are immutable until reboot; new rules then apply at the next boot.
+  failed_when:
+    - common_augenrules.rc != 0
+    - "'immutable' not in (common_augenrules.stdout + common_augenrules.stderr)"
+  when: common_auditd_manage_service | bool

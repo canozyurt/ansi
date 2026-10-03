@@ -1,0 +1,19 @@
+// {{ ansible_managed }}
+Unattended-Upgrade::Origins-Pattern {
+{% for origin in common_unattended_upgrades_origins + common_unattended_upgrades_origins_extra %}
+        "{{ origin }}";
+{% endfor %}
+};
+Unattended-Upgrade::Package-Blacklist {
+};
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "{{ common_unattended_upgrades_auto_reboot | bool | lower }}";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ common_unattended_upgrades_reboot_time }}";
+Unattended-Upgrade::SyslogEnable "true";
+{% if common_unattended_upgrades_mail %}
+Unattended-Upgrade::Mail "{{ common_unattended_upgrades_mail }}";
+Unattended-Upgrade::MailReport "on-change";
+{% endif %}

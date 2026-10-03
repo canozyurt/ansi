@@ -1,0 +1,34 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  vars:
+    # Containers share the host kernel: write these settings but do not apply them.
+    common_chrony_daemon_opts: "-x"
+    common_auditd_manage_service: false
+    os_hardening_sysctl_apply: false
+    container_runtime_manage_service: false
+  roles:
+    - role: common
+    - role: os_hardening
+    - role: ssh_hardening
+    - role: firewall
+
+- name: Converge container hosts
+  hosts: container_hosts
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  vars:
+    container_runtime_manage_service: false
+  roles:
+    - role: container_runtime
+
+- name: Converge the role model
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: rbac_model

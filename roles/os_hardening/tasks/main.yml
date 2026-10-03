@@ -1,0 +1,160 @@
+---
+- name: Install hardening packages
+  ansible.builtin.apt:
+    name: [apparmor, apparmor-utils, libpam-pwquality]
+    state: present
+  tags: [chk_hrd_01]
+
+- name: Write kernel hardening parameters
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/90-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply sysctl
+  tags: [chk_hrd_01]
+
+- name: Create the modprobe configuration directory
+  ansible.builtin.file:
+    path: /etc/modprobe.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable unused filesystems and protocols
+  ansible.builtin.template:
+    src: modprobe.conf.j2
+    dest: /etc/modprobe.d/90-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_hrd_01]
+
+- name: Disable core dumps for all users
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      * hard core 0
+    dest: /etc/security/limits.d/90-no-core.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_hrd_01]
+
+- name: Create systemd-coredump drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable systemd core dump storage
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    dest: /etc/systemd/coredump.conf.d/90-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_hrd_01]
+
+- name: Set login.defs password aging and umask
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^\\s*{{ item.key }}\\s"
+    line: "{{ item.key }}\t{{ item.value }}"
+  loop: "{{ os_hardening_login_defs | dict2items }}"
+  vars:
+    os_hardening_login_defs:
+      UMASK: "{{ os_hardening_umask }}"
+      PASS_MAX_DAYS: "{{ os_hardening_pass_max_days }}"
+      PASS_MIN_DAYS: "{{ os_hardening_pass_min_days }}"
+      PASS_WARN_AGE: "{{ os_hardening_pass_warn_age }}"
+      ENCRYPT_METHOD: YESCRYPT
+  tags: [chk_hrd_01]
+
+- name: Create pwquality drop-in directory
+  ansible.builtin.file:
+    path: /etc/security/pwquality.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Enforce password quality for local accounts
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible. Human users authenticate through the IdP; this covers local break-glass accounts.
+      minlen = 14
+      minclass = 4
+      maxrepeat = 3
+      dictcheck = 1
+      enforce_for_root
+    dest: /etc/security/pwquality.conf.d/90-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_hrd_01, chk_iam_01]
+
+- name: Restrict permissions on account files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/passwd, group: root, mode: "0644" }
+    - { path: /etc/group, group: root, mode: "0644" }
+    - { path: /etc/shadow, group: shadow, mode: "0640" }
+    - { path: /etc/gshadow, group: shadow, mode: "0640" }
+  tags: [chk_hrd_01]
+
+- name: Restrict cron to root
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: "{{ item.state | default('directory') }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/cron.d, mode: "0700" }
+    - { path: /etc/cron.daily, mode: "0700" }
+    - { path: /etc/cron.hourly, mode: "0700" }
+    - { path: /etc/cron.weekly, mode: "0700" }
+    - { path: /etc/cron.monthly, mode: "0700" }
+  tags: [chk_hrd_01]
+
+- name: Harden sudo (pty, logging, timeout)
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/00-compliance
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+  tags: [chk_hrd_01, chk_iam_07]
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Stop and disable services that servers do not need
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop: "{{ os_hardening_disabled_services }}"
+  when: (item if '.' in item else item ~ '.service') in ansible_facts.services
+  tags: [chk_hrd_01]
+
+- name: Enable AppArmor
+  ansible.builtin.service:
+    name: apparmor
+    enabled: true
+  tags: [chk_hrd_01]

@@ -1,0 +1,18 @@
+---
+common_os_packages:
+  - apt-transport-https
+  - apt-listchanges
+  - audispd-plugins
+  - auditd
+  - ca-certificates
+  - chrony
+  - curl
+  - gnupg
+  - needrestart
+  - sudo
+  - unattended-upgrades
+common_unattended_upgrades_origins:
+  - "${distro_id}:${distro_codename}"
+  - "${distro_id}:${distro_codename}-security"
+  - "${distro_id}ESMApps:${distro_codename}-apps-security"
+  - "${distro_id}ESM:${distro_codename}-infra-security"

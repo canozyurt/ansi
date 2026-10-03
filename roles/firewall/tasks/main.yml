@@ -1,0 +1,53 @@
+---
+- name: Require management networks so SSH is never open to everyone
+  ansible.builtin.assert:
+    that:
+      - firewall_mgmt_cidrs | length > 0
+      - "'0.0.0.0/0' not in firewall_mgmt_cidrs"
+      - "'::/0' not in firewall_mgmt_cidrs"
+    fail_msg: Set firewall_mgmt_cidrs to the VPN/bastion networks allowed to reach management ports.
+    quiet: true
+  tags: [chk_net_02]
+
+- name: Collect declared rules from all roles
+  ansible.builtin.set_fact:
+    firewall_all_rules: >-
+      {{ firewall_rules + (query('ansible.builtin.varnames', '^firewall_rules_.+')
+         | map('extract', vars) | flatten) }}
+
+- name: Validate declared rules
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.port is defined
+      - item.sources is defined and item.sources | length > 0
+      - item.proto | default('tcp') in ['tcp', 'udp']
+    fail_msg: "Invalid firewall rule: {{ item }}"
+    quiet: true
+  loop: "{{ firewall_all_rules }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+
+- name: Write the firewall ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: nft -c -f %s
+  notify: Reload firewall
+  tags: [chk_net_01, chk_net_02, chk_net_03]
+
+- name: Enable nftables at boot
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+    state: started
+  when: firewall_apply | bool
+  tags: [chk_net_01]

@@ -1,0 +1,103 @@
+---
+- name: Remove distribution container packages that conflict with Docker Engine
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose, docker-doc, podman-docker, containerd, runc]
+    state: absent
+
+- name: Create the keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the Docker repository signing key
+  ansible.builtin.get_url:
+    url: "{{ container_runtime_repo_url }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_chg_05]
+
+- name: Add the Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      {{ container_runtime_repo_url }} {{ ansible_facts['distribution_release'] }} stable
+    filename: docker
+    state: present
+
+- name: Install Docker Engine
+  ansible.builtin.apt:
+    name: "{{ container_runtime_packages }}"
+    state: present
+    update_cache: true
+
+- name: Create the Docker configuration directory
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the Docker daemon
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    validate: dockerd --validate --config-file %s
+  notify: Restart docker
+  tags: [chk_hrd_03]
+
+- name: Audit Docker files and binaries
+  ansible.builtin.copy:
+    src: docker.rules
+    dest: /etc/audit/rules.d/60-docker.rules
+    owner: root
+    group: root
+    mode: "0640"
+  tags: [chk_hrd_03, chk_log_01]
+
+- name: Restrict the Docker socket to root and the docker group
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.socket.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Set Docker socket ownership and mode
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      [Socket]
+      SocketMode=0660
+      SocketUser=root
+      SocketGroup=docker
+    dest: /etc/systemd/system/docker.socket.d/50-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+  tags: [chk_hrd_03]
+
+- name: Add automation users to the docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ container_runtime_users }}"
+
+- name: Enable and start Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: container_runtime_manage_service | bool

@@ -1,0 +1,4 @@
+---
+# Docker routes container traffic, so these hosts must forward packets.
+os_hardening_ip_forward: true
+container_runtime_users: [deploy]

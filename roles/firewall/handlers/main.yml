@@ -1,0 +1,5 @@
+---
+- name: Reload firewall
+  ansible.builtin.command: nft -f /etc/nftables.conf
+  changed_when: true
+  when: firewall_apply | bool

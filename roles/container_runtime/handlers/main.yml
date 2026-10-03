@@ -1,0 +1,7 @@
+---
+- name: Restart docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted
+    daemon_reload: true
+  when: container_runtime_manage_service | bool

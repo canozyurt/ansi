@@ -1,0 +1,38 @@
+---
+# Apply sysctl values to the running kernel. Tests set false: kernel.* keys are not namespaced in containers.
+os_hardening_sysctl_apply: true
+# Container hosts and routers need forwarding; everything else should not forward.
+os_hardening_ip_forward: false
+os_hardening_ipv6_enabled: true
+os_hardening_sysctl_extra: {}
+
+# Kernel modules that are never loaded (CIS 1.1.1.x, 3.2.x).
+os_hardening_disabled_modules:
+  - cramfs
+  - freevxfs
+  - hfs
+  - hfsplus
+  - jffs2
+  - udf
+  - dccp
+  - sctp
+  - rds
+  - tipc
+os_hardening_disable_usb_storage: true
+
+os_hardening_umask: "027"
+os_hardening_pass_max_days: 365
+os_hardening_pass_min_days: 1
+os_hardening_pass_warn_age: 14
+
+# Services that should not run on servers; stopped and disabled if installed.
+os_hardening_disabled_services:
+  - avahi-daemon
+  - cups
+  - rpcbind
+  - nfs-server
+  - rsync
+  - snmpd
+  - telnet.socket
+
+os_hardening_sudo_timeout_minutes: 15

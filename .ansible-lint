@@ -1,0 +1,9 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .github/
+  - collections/
+  - .ansible/
+skip_list:
+  - galaxy[no-changelog]

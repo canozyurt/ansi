@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: rbac_model
+  author: compliant-infra-ansible contributors
+  description: Default organization roles and the group-to-role assignments every service role consumes
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies: []

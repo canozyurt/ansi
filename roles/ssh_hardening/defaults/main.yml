@@ -1,0 +1,44 @@
+---
+ssh_hardening_port: 22
+# Only members of these groups may log in. Empty = no group restriction (not recommended in production).
+ssh_hardening_allow_groups: []
+# Public key(s) of the SSH user CA (step-ca / OpenBao SSH CA). When set, short-lived certificates are trusted (IAM-06).
+ssh_hardening_trusted_user_ca_keys: []
+# With a CA: principals file per user (%u) maps certificate principals to local accounts.
+ssh_hardening_authorized_principals_dir: /etc/ssh/auth_principals
+# Keep authorized_keys for the break-glass account only; set false once the CA is in place.
+ssh_hardening_allow_authorized_keys: true
+
+ssh_hardening_allow_tcp_forwarding: false
+ssh_hardening_allow_agent_forwarding: false
+ssh_hardening_max_auth_tries: 3
+ssh_hardening_max_sessions: 4
+ssh_hardening_login_grace_time: 30
+ssh_hardening_client_alive_interval: 300
+ssh_hardening_client_alive_count_max: 2
+
+# Refuse to disable password logins unless the connecting account can still log in with a key or certificate.
+ssh_hardening_lockout_check: true
+
+ssh_hardening_kex_algorithms:
+  - sntrup761x25519-sha512@openssh.com
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - diffie-hellman-group18-sha512
+  - diffie-hellman-group16-sha512
+ssh_hardening_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+  - aes128-ctr
+ssh_hardening_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+  - umac-128-etm@openssh.com
+ssh_hardening_host_key_algorithms:
+  - ssh-ed25519-cert-v01@openssh.com
+  - ssh-ed25519
+  - rsa-sha2-512-cert-v01@openssh.com
+  - rsa-sha2-512
+  - rsa-sha2-256

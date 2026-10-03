@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+{% for server in common_ntp_servers %}
+{{ 'pool' if 'pool' in server else 'server' }} {{ server }} iburst
+{% endfor %}
+
+driftfile /var/lib/chrony/chrony.drift
+ntsdumpdir /var/lib/chrony
+logdir /var/log/chrony
+log tracking measurements statistics
+# Step the clock only at boot; slew afterwards so logs stay ordered.
+makestep 1.0 3
+rtcsync
+maxupdateskew 100.0
+leapsectz right/UTC
+# Log any clock change larger than this (LOG-03).
+logchange {{ common_chrony_max_offset_alert_seconds }}
+# Serve time to nobody; this is a client.
+port 0
+cmdport 0

@@ -1,0 +1,11 @@
+## Managed by Ansible. CIS Docker Benchmark 1.1.x audit rules.
+-w /usr/bin/dockerd -p rwxa -k docker
+-w /usr/bin/containerd -p rwxa -k docker
+-w /usr/bin/runc -p rwxa -k docker
+-w /var/lib/docker -p rwxa -k docker
+-w /etc/docker -p rwxa -k docker
+-w /etc/default/docker -p rwxa -k docker
+-w /etc/containerd/config.toml -p rwxa -k docker
+-w /usr/lib/systemd/system/docker.service -p rwxa -k docker
+-w /usr/lib/systemd/system/docker.socket -p rwxa -k docker
+-w /run/containerd -p rwxa -k docker

@@ -1,0 +1,29 @@
+---
+- name: Configure chrony sources
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+  tags: [chk_log_03]
+
+- name: Set chrony daemon options
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      DAEMON_OPTS="{{ common_chrony_daemon_opts }}"
+    dest: /etc/default/chrony
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+  tags: [chk_log_03]
+
+- name: Enable and start chrony
+  ansible.builtin.service:
+    name: chrony
+    enabled: true
+    state: started
+  tags: [chk_log_03]

@@ -1,0 +1,56 @@
+---
+- name: Check the platform is supported
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] in common_supported_platforms
+      - ansible_facts['distribution_version'] in common_supported_platforms[ansible_facts['distribution']]
+    fail_msg: >-
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} is not supported.
+      Supported: {{ common_supported_platforms }}
+    quiet: true
+
+- name: Load platform variables
+  ansible.builtin.include_vars: "{{ lookup('ansible.builtin.first_found', common_vars_files) }}"
+  vars:
+    common_vars_files:
+      files:
+        - "{{ ansible_facts['distribution'] }}-{{ ansible_facts['distribution_major_version'] }}.yml"
+        - "{{ ansible_facts['distribution'] }}.yml"
+        - "{{ ansible_facts['os_family'] }}.yml"
+      paths:
+        - "{{ role_path }}/vars"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_os_packages + common_extra_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Set the timezone
+  community.general.timezone:
+    name: "{{ common_timezone }}"
+  tags: [chk_log_03]
+
+- name: Import time sync tasks
+  ansible.builtin.import_tasks: chrony.yml
+
+- name: Import journald tasks
+  ansible.builtin.import_tasks: journald.yml
+
+- name: Import auditd tasks
+  ansible.builtin.import_tasks: auditd.yml
+
+- name: Import automatic update tasks
+  ansible.builtin.import_tasks: unattended_upgrades.yml
+
+- name: Install login banners
+  ansible.builtin.copy:
+    content: "{{ common_login_banner }}"
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
