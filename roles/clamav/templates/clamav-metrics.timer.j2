@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Refresh ClamAV metrics for node_exporter (HRD-07)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ clamav_metrics_interval }}
+RandomizedDelaySec=1min
+
+[Install]
+WantedBy=timers.target

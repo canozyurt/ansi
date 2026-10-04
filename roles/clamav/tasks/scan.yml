@@ -1,0 +1,43 @@
+---
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ clamav_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the scan and metrics scripts
+  ansible.builtin.template:
+    src: "{{ item }}.sh.j2"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [clamav-scan, clamav-metrics]
+  notify: Collect ClamAV metrics
+  tags: [chk_hrd_07, chk_log_05]
+
+- name: Install the scan and metrics units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - clamav-scan.service
+    - clamav-scan.timer
+    - clamav-metrics.service
+    - clamav-metrics.timer
+  notify: Collect ClamAV metrics
+  tags: [chk_hrd_07, chk_log_05]
+
+- name: Enable the scan and metrics timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [clamav-scan.timer, clamav-metrics.timer]
+  tags: [chk_hrd_07, chk_log_05]

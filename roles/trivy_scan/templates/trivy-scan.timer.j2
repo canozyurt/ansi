@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly Trivy vulnerability scan (HRD-05)
+
+[Timer]
+OnCalendar={{ trivy_scan_schedule }}
+RandomizedDelaySec={{ trivy_scan_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

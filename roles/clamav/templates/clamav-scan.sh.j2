@@ -1,0 +1,77 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Scheduled malware scan (HRD-07). clamdscan passes file descriptors to clamd (--fdpass), so clamd
+# stays unprivileged while this root service opens the files. Every finding is one
+# "<path>: <signature> FOUND" line on stdout (journald, identifier clamav-scan), followed by a
+# summary line; the result is written for the node_exporter textfile collector.
+set -uo pipefail
+umask 022
+
+out_dir={{ clamav_textfile_dir | quote }}
+paths=({% for path in clamav_scan_paths %}{{ path | quote }} {% endfor %})
+
+# Raw shell from here on: bash array lengths would otherwise open a Jinja comment.
+{% raw %}
+existing=()
+for path in "${paths[@]}"; do
+  if [ -e "$path" ]; then
+    existing+=("$path")
+  fi
+done
+
+start=$(date +%s)
+infected=0
+errors=0
+rc=0
+summary=0
+if [ "${#existing[@]}" -gt 0 ]; then
+  result=$(mktemp -p "${RUNTIME_DIRECTORY:-/run}")
+  # --infected: list only infected files and errors, never every clean file.
+  clamdscan --fdpass --multiscan --infected --stdout "${existing[@]}" > "$result" 2>&1
+  rc=$?
+  grep -v -e '^-* SCAN SUMMARY -*$' -e '^Infected files:' -e '^Total errors:' -e '^Time:' \
+    -e '^Start Date:' -e '^End Date:' -e '^$' "$result" || true
+  infected=$(awk -F': ' '/^Infected files:/ { print $2; exit }' "$result")
+  errors=$(awk -F': ' '/^Total errors:/ { print $2; exit }' "$result")
+  if grep -q '^Infected files:' "$result"; then
+    summary=1
+  fi
+  rm -f "$result"
+fi
+end=$(date +%s)
+infected=${infected:-0}
+errors=${errors:-0}
+
+# clamdscan exits 0 (clean), 1 (infected files found) or 2 (errors: unreadable files, files in /tmp
+# that vanished during the scan, or clamd unreachable). The scan ran when it printed a summary.
+if [ "${#existing[@]}" -eq 0 ] || [ "$summary" -eq 1 ]; then
+  success=1
+else
+  success=0
+fi
+
+echo "scan finished: paths=${existing[*]:-none} infected=${infected} errors=${errors} duration=$((end - start))s clamdscan_rc=${rc}"
+
+tmp=$(mktemp "${out_dir}/clamav_scan.prom.XXXXXX")
+cat > "$tmp" <<METRICS
+# HELP clamav_scan_last_run_timestamp_seconds End of the last scheduled ClamAV scan.
+# TYPE clamav_scan_last_run_timestamp_seconds gauge
+clamav_scan_last_run_timestamp_seconds ${end}
+# HELP clamav_scan_duration_seconds Duration of the last scheduled ClamAV scan.
+# TYPE clamav_scan_duration_seconds gauge
+clamav_scan_duration_seconds $((end - start))
+# HELP clamav_scan_infected_files Infected files found by the last scheduled ClamAV scan.
+# TYPE clamav_scan_infected_files gauge
+clamav_scan_infected_files ${infected}
+# HELP clamav_scan_errors Files the last scheduled ClamAV scan could not scan.
+# TYPE clamav_scan_errors gauge
+clamav_scan_errors ${errors}
+# HELP clamav_scan_success 1 when the last scheduled ClamAV scan completed.
+# TYPE clamav_scan_success gauge
+clamav_scan_success ${success}
+METRICS
+chmod 0644 "$tmp"
+mv "$tmp" "${out_dir}/clamav_scan.prom"
+
+[ "$success" -eq 1 ]
+{% endraw %}

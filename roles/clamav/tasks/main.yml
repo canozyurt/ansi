@@ -1,0 +1,32 @@
+---
+# ClamAV is a per-host agent: every host in clamav_hosts runs its own clamd and freshclam, so the
+# HA node-count assert of service roles does not apply (losing one host loses only its own scanner).
+- name: Check the ClamAV settings
+  ansible.builtin.assert:
+    that:
+      - clamav_scan_paths | length > 0
+      - clamav_scan_paths | select('match', '^/') | list | length == clamav_scan_paths | length
+      - clamav_on_access_paths | select('match', '^/') | list | length == clamav_on_access_paths | length
+      - not (clamav_on_access_enabled | bool) or clamav_on_access_paths | length > 0
+      - clamav_https_proxy | length == 0 or clamav_https_proxy is match('^https?://[^@/]+$|^https?://[^@/]+/$')
+      - clamav_private_mirror | length == 0 or clamav_private_mirror is match('^https?://')
+    fail_msg: >-
+      clamav_scan_paths and clamav_on_access_paths must be absolute paths (on-access needs at least one);
+      clamav_https_proxy is "http(s)://host:port" without credentials; clamav_private_mirror is an http(s) URL.
+    quiet: true
+  tags: [chk_hrd_07]
+
+- name: Install ClamAV
+  ansible.builtin.import_tasks: install.yml
+
+- name: Configure clamd and freshclam
+  ansible.builtin.import_tasks: config.yml
+
+- name: Install the scheduled scan and metrics
+  ansible.builtin.import_tasks: scan.yml
+
+- name: Flush handlers before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for clamd
+  ansible.builtin.import_tasks: health.yml

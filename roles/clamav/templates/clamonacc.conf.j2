@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Log detections to journald (LOG-01) and keep files in place; the packaged unit writes to a log
+# file and moves files into /root/quarantine.
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/clamonacc --foreground --fdpass --config-file=/etc/clamav/clamd.conf
+Restart=on-failure
+RestartSec=30

@@ -1,0 +1,77 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# ClamAV health for the node_exporter textfile collector (HRD-07): signature age, whether clamd
+# answers on its socket, and whether the official databases are present.
+set -euo pipefail
+umask 022
+
+out_dir={{ clamav_textfile_dir | quote }}
+db_dir={{ clamav_database_dir | quote }}
+now=$(date +%s)
+
+# The daily database carries its build time (seconds since the epoch) in the 9th field of its
+# 512-byte header: "ClamAV-VDB:<date>:<version>:<sigs>:<flevel>:<md5>:<dsig>:<builder>:<stime>".
+build=0
+version=0
+official=0
+for f in "$db_dir/daily.cld" "$db_dir/daily.cvd"; do
+  if [ -f "$f" ]; then
+    header=$(head -c 512 "$f" | tr -d '\0')
+    stime=$(printf '%s' "$header" | cut -d: -f9 | tr -dc '0-9')
+    ver=$(printf '%s' "$header" | cut -d: -f3 | tr -dc '0-9')
+    if [ -n "$stime" ] && [ "$stime" -gt "$build" ]; then
+      build=$stime
+      version=${ver:-0}
+      official=1
+    fi
+  fi
+done
+
+# Without the official daily database, use the newest signature file (local or third-party).
+present=0
+newest=$(find "$db_dir" -maxdepth 1 -type f \( {% for p in clamav_signature_patterns %}-name {{ p | quote }}{{ ' -o ' if not loop.last else '' }}{% endfor %} \) \
+  -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1)
+if [ -n "$newest" ]; then
+  present=1
+  if [ "$build" -eq 0 ]; then
+    build=$newest
+  fi
+fi
+if [ "$build" -gt 0 ]; then
+  age_hours=$(awk -v n="$now" -v b="$build" 'BEGIN { printf "%.2f", (n - b) / 3600 }')
+else
+  age_hours=-1
+fi
+
+if clamdscan --ping 1 > /dev/null 2>&1; then
+  up=1
+else
+  up=0
+fi
+
+tmp=$(mktemp "${out_dir}/clamav.prom.XXXXXX")
+cat > "$tmp" <<METRICS
+# HELP clamav_signatures_present 1 when at least one signature database exists.
+# TYPE clamav_signatures_present gauge
+clamav_signatures_present ${present}
+# HELP clamav_signatures_official 1 when the official daily database is present.
+# TYPE clamav_signatures_official gauge
+clamav_signatures_official ${official}
+# HELP clamav_signatures_build_timestamp_seconds Build time of the daily database (else mtime of the newest database).
+# TYPE clamav_signatures_build_timestamp_seconds gauge
+clamav_signatures_build_timestamp_seconds ${build}
+# HELP clamav_signatures_age_hours Hours since the signatures were built (-1 when there are none).
+# TYPE clamav_signatures_age_hours gauge
+clamav_signatures_age_hours ${age_hours}
+# HELP clamav_signatures_daily_version Version of the official daily database (0 when absent).
+# TYPE clamav_signatures_daily_version gauge
+clamav_signatures_daily_version ${version}
+# HELP clamav_clamd_up 1 when clamd answers PING on its socket.
+# TYPE clamav_clamd_up gauge
+clamav_clamd_up ${up}
+# HELP clamav_metrics_last_run_timestamp_seconds Last run of the ClamAV metrics collector.
+# TYPE clamav_metrics_last_run_timestamp_seconds gauge
+clamav_metrics_last_run_timestamp_seconds ${now}
+METRICS
+chmod 0644 "$tmp"
+mv "$tmp" "${out_dir}/clamav.prom"

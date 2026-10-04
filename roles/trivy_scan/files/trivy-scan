@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Weekly vulnerability scan (HRD-05), installed by roles/trivy_scan.
+
+Scans the image of every running container (and extra images) plus the host root filesystem with
+Trivy, keeps the JSON reports under the reports directory as evidence, prints one summary line per
+image (journald, identifier trivy-scan) and writes metrics for the node_exporter textfile collector:
+findings per severity per image, the age of the oldest open CRITICAL finding (first-seen dates are
+kept in a state file, so the age survives image updates that do not fix the finding), success per
+image and the time of the run. Settings come from /etc/trivy-scan/config.json; the proxy and
+database mirror settings from the 0600 environment file /etc/trivy-scan/env.
+"""
+
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG = "/etc/trivy-scan/config.json"
+ENV_FILE = "/etc/trivy-scan/env"
+CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def docker(*args):
+    return subprocess.run(["docker", *args], capture_output=True, text=True, check=True).stdout
+
+
+def running_images():
+    """(name, image id) of every running container, one entry per image id."""
+    containers = docker("ps", "--quiet").split()
+    if not containers:
+        return []
+    images = {}
+    for line in docker("inspect", "--format", "{{.Config.Image}}\t{{.Image}}", *containers).splitlines():
+        name, image_id = line.split("\t")
+        images.setdefault(image_id, name)
+    return [(name, image_id) for image_id, name in sorted(images.items(), key=lambda i: i[1])]
+
+
+def image_id(ref):
+    try:
+        return docker("image", "inspect", "--format", "{{.Id}}", ref).strip()
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def repository(ref):
+    """Image reference without tag or digest: findings keep their first-seen date across updates."""
+    ref = ref.split("@", 1)[0]
+    slash = ref.rfind("/")
+    colon = ref.rfind(":")
+    return ref[:colon] if colon > slash else ref
+
+
+def safe_name(ref):
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in ref)[:200]
+
+
+def label(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+class Scanner:
+    def __init__(self, cfg, run_dir):
+        self.cfg = cfg
+        self.run_dir = run_dir
+        cache = cfg["cache_dir"]
+        os.makedirs(os.path.join(cache, "tmp"), mode=0o700, exist_ok=True)
+        self.base = [
+            "docker", "run", "--rm", "--network=host", "--user=0:0",
+            "--cap-drop=ALL", "--security-opt=no-new-privileges:true", "--read-only",
+            f"--memory={cfg['memory_limit']}", f"--pids-limit={cfg['pids_limit']}",
+            "--log-driver=none", f"--env-file={ENV_FILE}",
+            "--env=TRIVY_CACHE_DIR=/cache", "--env=TMPDIR=/cache/tmp",
+            f"--volume={cache}:/cache",
+            f"--volume={run_dir}:/reports",
+        ]
+        if os.path.exists(CA_BUNDLE):
+            # Host trust store: the internal CA (mirror registry) and any TLS-inspecting proxy.
+            self.base.append(f"--volume={CA_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro")
+        self.common = [
+            "--scanners", "vuln",
+            "--severity", ",".join(cfg["severities"]),
+            "--timeout", cfg["timeout"],
+            "--quiet", "--skip-db-update",
+        ]
+        if cfg["skip_db_update"]:
+            self.common.append("--skip-java-db-update")
+        if cfg["ignore_unfixed"]:
+            self.common.append("--ignore-unfixed")
+
+    def run(self, docker_args, trivy_args):
+        cmd = self.base + docker_args + [self.cfg["image"]] + trivy_args
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    def update_db(self):
+        if self.cfg["skip_db_update"]:
+            return True
+        result = self.run([], ["image", "--download-db-only", "--quiet"])
+        if result.returncode != 0:
+            log(f"vulnerability database update failed: {result.stderr.strip()[-500:]}")
+        return result.returncode == 0
+
+    def scan_image(self, ref, output):
+        return self.run(
+            ["--volume=/var/run/docker.sock:/var/run/docker.sock"],
+            ["image", "--image-src", "docker", "--format", "json", "--output", f"/reports/{output}"]
+            + self.common + [ref])
+
+    def scan_rootfs(self, output):
+        skip = ",".join("/host" + d.rstrip("/") for d in self.cfg["rootfs_skip_dirs"])
+        # Root without capabilities cannot read files only their owner may read; DAC_READ_SEARCH
+        # gives read access (not write) to the read-only host root.
+        return self.run(
+            ["--cap-add=DAC_READ_SEARCH", "--volume=/:/host:ro"],
+            ["rootfs", "--format", "json", "--output", f"/reports/{output}", "--skip-dirs", skip]
+            + self.common + ["/host"])
+
+
+def summarize(report, severities):
+    counts = {s: 0 for s in severities}
+    critical = set()
+    seen = set()
+    for result in report.get("Results") or []:
+        for vuln in result.get("Vulnerabilities") or []:
+            key = (vuln.get("VulnerabilityID"), vuln.get("PkgName"), vuln.get("InstalledVersion"),
+                   vuln.get("PkgPath", result.get("Target")))
+            if key in seen:
+                continue
+            seen.add(key)
+            severity = vuln.get("Severity", "UNKNOWN")
+            if severity in counts:
+                counts[severity] += 1
+            if severity == "CRITICAL":
+                critical.add(f"{vuln.get('VulnerabilityID')}|{vuln.get('PkgName')}")
+    return counts, critical
+
+
+def db_updated(cache_dir):
+    """Build time of the cached database (Go RFC 3339 with nanoseconds, e.g. 2026-10-04T00:12:01.123456789Z)."""
+    try:
+        with open(os.path.join(cache_dir, "db", "metadata.json"), encoding="utf-8") as fh:
+            value = json.load(fh)["UpdatedAt"]
+        match = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)$", value)
+        if not match:
+            return 0
+        tz = "+00:00" if match.group(2) == "Z" else match.group(2)
+        return int(datetime.datetime.fromisoformat(match.group(1) + tz).timestamp())
+    except (OSError, KeyError, ValueError):
+        return 0
+
+
+def prune_reports(reports_dir, retention_days):
+    cutoff = time.time() - retention_days * 86400
+    for entry in os.scandir(reports_dir):
+        if entry.is_dir(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+            shutil.rmtree(entry.path)
+            log(f"removed reports older than {retention_days} days: {entry.name}")
+
+
+def main():
+    with open(CONFIG, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    start = time.time()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    run_dir = os.path.join(cfg["reports_dir"], stamp)
+    os.makedirs(run_dir, mode=0o750, exist_ok=True)
+    scanner = Scanner(cfg, run_dir)
+
+    try:
+        with open(cfg["state_file"], encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = {}
+
+    targets = []  # (label, type, subject, scan reference)
+    if cfg["running_images"]:
+        for name, iid in running_images():
+            targets.append((name, "image", repository(name), name if image_id(name) == iid else iid))
+    for name in cfg["extra_images"]:
+        if not any(t[0] == name for t in targets):
+            targets.append((name, "image", repository(name), name))
+    if cfg["rootfs"]:
+        targets.append(("rootfs", "rootfs", "rootfs", None))
+
+    db_ok = scanner.update_db()
+    results = []
+    failures = 0
+    for name, kind, subject, ref in targets:
+        output = "rootfs.json" if kind == "rootfs" else f"image-{safe_name(name)}.json"
+        if db_ok:
+            proc = scanner.scan_rootfs(output) if kind == "rootfs" else scanner.scan_image(ref, output)
+            ok = proc.returncode == 0
+        else:
+            proc, ok = None, False
+        counts, critical = {}, set()
+        if ok:
+            try:
+                with open(os.path.join(run_dir, output), encoding="utf-8") as fh:
+                    counts, critical = summarize(json.load(fh), cfg["severities"])
+            except (OSError, ValueError) as exc:
+                ok, proc = False, None
+                log(f"image={name} type={kind} report unreadable: {exc}")
+        now = int(time.time())
+        if ok:
+            previous = state.get(subject, {})
+            state[subject] = {key: previous.get(key, now) for key in sorted(critical)}
+        oldest = min(state.get(subject, {}).values(), default=now)
+        age_days = (now - oldest) / 86400
+        if ok:
+            summary = " ".join(f"{s.lower()}={counts.get(s, 0)}" for s in cfg["severities"])
+            log(f"image={name} type={kind} {summary} oldest_critical_days={age_days:.1f} "
+                f"report={os.path.join(run_dir, output)}")
+        else:
+            failures += 1
+            reason = proc.stderr.strip()[-500:] if proc is not None else "database unavailable"
+            log(f"image={name} type={kind} scan failed: {reason}")
+        results.append((name, kind, ok, counts, age_days))
+
+    # Findings of images that no longer run are closed; keep failed scans' history.
+    scanned = {t[2] for t in targets}
+    state = {subject: findings for subject, findings in state.items() if subject in scanned}
+    os.makedirs(os.path.dirname(cfg["state_file"]), mode=0o750, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=os.path.dirname(cfg["state_file"]), delete=False) as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+    os.replace(fh.name, cfg["state_file"])
+
+    prune_reports(cfg["reports_dir"], cfg["retention_days"])
+    shutil.rmtree(os.path.join(cfg["cache_dir"], "tmp"), ignore_errors=True)
+
+    end = time.time()
+    lines = [
+        "# HELP trivy_scan_vulnerabilities Vulnerabilities found by the last Trivy scan, by image and severity.",
+        "# TYPE trivy_scan_vulnerabilities gauge",
+    ]
+    for name, kind, ok, counts, _ in results:
+        if ok:
+            for severity in cfg["severities"]:
+                lines.append(f'trivy_scan_vulnerabilities{{image="{label(name)}",type="{kind}",'
+                             f'severity="{severity}"}} {counts.get(severity, 0)}')
+    lines += [
+        "# HELP trivy_scan_critical_oldest_age_days Days since the oldest open CRITICAL finding was first seen (0 when none).",
+        "# TYPE trivy_scan_critical_oldest_age_days gauge",
+    ]
+    for name, kind, _, _, age in results:
+        lines.append(f'trivy_scan_critical_oldest_age_days{{image="{label(name)}",type="{kind}"}} {age:.2f}')
+    lines += [
+        "# HELP trivy_scan_success 1 when the last scan of the image succeeded.",
+        "# TYPE trivy_scan_success gauge",
+    ]
+    for name, kind, ok, _, _ in results:
+        lines.append(f'trivy_scan_success{{image="{label(name)}",type="{kind}"}} {int(ok)}')
+    lines += [
+        "# HELP trivy_scan_targets Images and filesystems the last Trivy run scanned.",
+        "# TYPE trivy_scan_targets gauge",
+        f"trivy_scan_targets {len(results)}",
+        "# HELP trivy_scan_failures Targets the last Trivy run could not scan.",
+        "# TYPE trivy_scan_failures gauge",
+        f"trivy_scan_failures {failures}",
+        "# HELP trivy_scan_last_run_timestamp_seconds End of the last Trivy run.",
+        "# TYPE trivy_scan_last_run_timestamp_seconds gauge",
+        f"trivy_scan_last_run_timestamp_seconds {int(end)}",
+        "# HELP trivy_scan_duration_seconds Duration of the last Trivy run.",
+        "# TYPE trivy_scan_duration_seconds gauge",
+        f"trivy_scan_duration_seconds {int(end - start)}",
+        "# HELP trivy_db_updated_timestamp_seconds When the vulnerability database in the cache was built.",
+        "# TYPE trivy_db_updated_timestamp_seconds gauge",
+        f"trivy_db_updated_timestamp_seconds {db_updated(cfg['cache_dir'])}",
+    ]
+    out_dir = cfg["textfile_dir"]
+    with tempfile.NamedTemporaryFile("w", dir=out_dir, prefix="trivy.prom.", delete=False) as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(fh.name, 0o644)
+    os.replace(fh.name, os.path.join(out_dir, "trivy.prom"))
+
+    log(f"scan finished: targets={len(results)} failures={failures} duration={int(end - start)}s reports={run_dir}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

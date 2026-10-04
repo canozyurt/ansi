@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: trivy_scan
+  author: compliant-infra-ansible contributors
+  description: Weekly Trivy scans of running container images and the host root filesystem, with evidence and metrics
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

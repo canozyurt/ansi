@@ -1,0 +1,56 @@
+---
+# Malware scanning (ClamAV) and vulnerability scanning (Trivy) on one Ubuntu 24.04 host, with
+# Docker running inside the test container and a small pinned workload (alpine) for Trivy to scan.
+#
+# ClamAV signatures: the official mirror (database.clamav.net) is often unreachable from test
+# networks, so converge seeds a one-signature test database for the EICAR test file
+# (/var/lib/clamav/molecule-eicar.hsb) and freshclam keeps trying in the background. Set
+# MOLECULE_CLAMAV_OFFICIAL=true where the mirror is reachable to skip the seed and require the
+# official databases.
+driver:
+  name: docker
+platforms:
+  - name: security-scanning-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [clamav_hosts, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        # A product role's upload directory (scanned weekly, see roles/clamav).
+        clamav_upload_paths_molecule: [/srv/uploads]
+        clamav_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+        trivy_scan_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+        trivy_scan_no_proxy: 127.0.0.1,localhost
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves gigabytes over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

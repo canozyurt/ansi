@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Only root and members of {{ clamav_group }} may use clamd (the package default is 0666).
+[Unit]
+ConditionPathExistsGlob=
+ConditionDirectoryNotEmpty={{ clamav_database_dir }}
+
+[Socket]
+ListenStream=
+ListenStream={{ clamav_socket }}
+SocketUser={{ clamav_user }}
+SocketGroup={{ clamav_group }}
+SocketMode=0660

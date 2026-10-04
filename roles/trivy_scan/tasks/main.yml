@@ -1,0 +1,30 @@
+---
+# Trivy runs on each container host for that host only (a one-shot job, not a clustered service),
+# so the HA node-count assert of service roles does not apply.
+- name: Check the Trivy settings
+  ansible.builtin.assert:
+    that:
+      - trivy_scan_image is search('@sha256:[0-9a-f]{64}$') or trivy_scan_image is search(':[0-9][^:/]*$')
+      - trivy_scan_severities | difference(['UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']) | length == 0
+      - "'CRITICAL' in trivy_scan_severities"
+      - trivy_scan_retention_days | int >= 90
+      - trivy_scan_rootfs_skip_dirs | select('match', '^/') | list | length == trivy_scan_rootfs_skip_dirs | length
+    fail_msg: >-
+      trivy_scan_image must be pinned (exact tag and/or digest); severities must include CRITICAL;
+      reports are evidence and are kept at least 90 days; skip dirs are absolute paths.
+    quiet: true
+  tags: [chk_hrd_05, chk_chg_05]
+
+- name: Deploy the scanner
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Register the reports with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: trivy-reports
+    backup_register_paths: ["{{ trivy_scan_reports_dir }}", "{{ trivy_scan_state_file | dirname }}"]
+    backup_register_rpo_hours: "{{ trivy_scan_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ trivy_scan_backup_rto_hours }}"
+  when: trivy_scan_backup | bool
+  tags: [chk_hrd_05]

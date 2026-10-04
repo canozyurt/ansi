@@ -1,0 +1,121 @@
+---
+- name: Write clamd.conf
+  ansible.builtin.template:
+    src: clamd.conf.j2
+    dest: /etc/clamav/clamd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart clamd
+  tags: [chk_hrd_07, chk_log_01]
+
+- name: Write freshclam.conf
+  ansible.builtin.template:
+    src: freshclam.conf.j2
+    dest: /etc/clamav/freshclam.conf
+    owner: "{{ clamav_user }}"
+    group: adm
+    mode: "0444"
+  notify: Restart freshclam
+  tags: [chk_hrd_07, chk_log_01]
+
+- name: Create the systemd drop-in directories
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ item }}.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - clamav-daemon.socket
+    - clamav-daemon.service
+    - clamav-clamonacc.service
+
+# The packaged socket is world-writable (mode 0666) and both units silently skip starting when the
+# official main/daily databases are missing. Restrict the socket and start whenever any signature
+# database exists; the signature alerts report a host without current signatures.
+- name: Restrict the clamd socket and relax the start conditions
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: /etc/systemd/system/{{ item.unit }}.d/compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: clamd-socket.conf.j2, unit: clamav-daemon.socket }
+    - { src: clamd-service.conf.j2, unit: clamav-daemon.service }
+    - { src: clamonacc.conf.j2, unit: clamav-clamonacc.service }
+  loop_control:
+    label: "{{ item.unit }}"
+  notify: Restart clamd
+  tags: [chk_hrd_07, chk_log_01]
+
+- name: Find the signature databases
+  ansible.builtin.find:
+    paths: "{{ clamav_database_dir }}"
+    patterns: "{{ clamav_signature_patterns }}"
+  register: clamav_databases
+
+# On a new host, download once in the foreground so clamd can start in this play. The packaged
+# freshclam daemon (started by the package install) is stopped first; two instances refuse to
+# share the database directory.
+- name: Download the signatures on a new host
+  when:
+    - clamav_initial_download | bool
+    - clamav_databases.files | length == 0
+  tags: [chk_hrd_07]
+  block:
+    - name: Stop the freshclam daemon for the first download
+      ansible.builtin.systemd_service:
+        name: clamav-freshclam.service
+        state: stopped
+
+    - name: Run freshclam once
+      ansible.builtin.command:
+        cmd: freshclam --foreground --stdout
+      register: clamav_initial_freshclam
+      changed_when: clamav_initial_freshclam.rc == 0
+      failed_when: false
+
+    - name: Find the downloaded signature databases
+      ansible.builtin.find:
+        paths: "{{ clamav_database_dir }}"
+        patterns: "{{ clamav_signature_patterns }}"
+      register: clamav_databases_downloaded
+
+- name: Check that signatures are present
+  ansible.builtin.assert:
+    that: (clamav_databases_downloaded.files | default([]) + clamav_databases.files) | length > 0
+    fail_msg: >-
+      No ClamAV signature database in {{ clamav_database_dir }} and freshclam could not download one
+      ({{ (clamav_initial_freshclam.stdout_lines | default([]))[-3:] | join(' / ') }}).
+      Set clamav_https_proxy, or clamav_private_mirror on air-gapped sites, and run the play again.
+    quiet: true
+  tags: [chk_hrd_07]
+
+- name: Start freshclam
+  ansible.builtin.systemd_service:
+    name: clamav-freshclam.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_hrd_07]
+
+- name: Enable and start clamd
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - clamav-daemon.socket
+    - clamav-daemon.service
+  tags: [chk_hrd_07]
+
+- name: Enable on-access scanning
+  ansible.builtin.systemd_service:
+    name: clamav-clamonacc.service
+    enabled: "{{ clamav_on_access_enabled | bool }}"
+    state: "{{ 'started' if clamav_on_access_enabled | bool else 'stopped' }}"
+    daemon_reload: true
+  tags: [chk_hrd_07]

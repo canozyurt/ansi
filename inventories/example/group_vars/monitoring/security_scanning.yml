@@ -1,0 +1,104 @@
+---
+# Alert rules for malware scanning (roles/clamav, HRD-07) and vulnerability scanning
+# (roles/trivy_scan, HRD-05). The prometheus role collects every prometheus_rules_<service>
+# variable. Annotations use Prometheus templates ({{ $labels.x }}), wrapped in raw blocks so Ansible
+# leaves them alone.
+prometheus_rules_clamav:
+  - name: malware-scanning  # HRD-07
+    rules:
+      - alert: ClamAVSignaturesOutdated
+        expr: clamav_signatures_age_hours > 48 or clamav_signatures_present == 0
+        for: 1h
+        labels:
+          severity: warning
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}ClamAV signatures on {{ $labels.instance }} are {{ $value | printf \"%.0f\" }} hours old{% endraw %}"
+          description: freshclam has not updated the signatures for more than 48 hours (check its journal, the proxy or the private mirror).
+
+      - alert: ClamAVInfectedFiles
+        expr: clamav_scan_infected_files > 0
+        labels:
+          severity: critical
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}The last malware scan on {{ $labels.instance }} found {{ $value }} infected file(s){% endraw %}"
+          description: >-
+            The paths are in the journal (SYSLOG_IDENTIFIER=clamav-scan, "FOUND"). Follow the incident process;
+            after cleaning, run "systemctl start clamav-scan" to clear the alert.
+
+      - alert: ClamAVScanNotRun
+        expr: (time() - clamav_scan_last_run_timestamp_seconds) > 8 * 86400 or clamav_scan_success == 0
+        labels:
+          severity: warning
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}No successful scheduled malware scan on {{ $labels.instance }} for more than 8 days{% endraw %}"
+
+      - alert: ClamAVScanNeverRun
+        expr: clamav_metrics_last_run_timestamp_seconds unless on(instance) clamav_scan_last_run_timestamp_seconds
+        for: 8d
+        labels:
+          severity: warning
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}ClamAV has been installed on {{ $labels.instance }} for 8 days without a scheduled scan{% endraw %}"
+
+      - alert: ClamdDown
+        expr: clamav_clamd_up == 0
+        for: 30m
+        labels:
+          severity: warning
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}clamd on {{ $labels.instance }} does not answer on its socket; uploads cannot be scanned{% endraw %}"
+
+      - alert: ClamAVMetricsStale
+        expr: (time() - clamav_metrics_last_run_timestamp_seconds) > 3 * 3600
+        labels:
+          severity: warning
+          checklist: HRD-07
+        annotations:
+          summary: "{% raw %}ClamAV metrics on {{ $labels.instance }} have not been refreshed for 3 hours{% endraw %}"
+
+prometheus_rules_trivy:
+  - name: vulnerability-scanning  # HRD-05
+    rules:
+      - alert: CriticalVulnerabilityOverdue
+        expr: trivy_scan_critical_oldest_age_days > 14
+        labels:
+          severity: critical
+          checklist: HRD-05
+        annotations:
+          summary: >-
+            {% raw %}{{ $labels.image }} on {{ $labels.instance }} has had a CRITICAL vulnerability open
+            for {{ $value | printf "%.0f" }} days{% endraw %}
+          description: >-
+            The patch SLA for critical findings is 14 days (HRD-04, HRD-05). The report is under /var/lib/trivy-reports;
+            update the image or package, or record a risk acceptance.
+
+      - alert: TrivyScanNotRun
+        expr: (time() - trivy_scan_last_run_timestamp_seconds) > 8 * 86400
+        labels:
+          severity: warning
+          checklist: HRD-05
+        annotations:
+          summary: "{% raw %}No vulnerability scan has run on {{ $labels.instance }} for more than 8 days{% endraw %}"
+
+      - alert: TrivyScanFailed
+        expr: trivy_scan_success == 0
+        labels:
+          severity: warning
+          checklist: HRD-05
+        annotations:
+          summary: "{% raw %}The last vulnerability scan of {{ $labels.image }} on {{ $labels.instance }} failed{% endraw %}"
+          description: The reason is in the journal (SYSLOG_IDENTIFIER=trivy-scan).
+
+      - alert: TrivyDatabaseOutdated
+        expr: trivy_db_updated_timestamp_seconds > 0 and (time() - trivy_db_updated_timestamp_seconds) > 8 * 86400
+        labels:
+          severity: warning
+          checklist: HRD-05
+        annotations:
+          summary: "{% raw %}The vulnerability database used on {{ $labels.instance }} is more than 8 days old{% endraw %}"
+          description: On air-gapped sites, refresh the mirror behind trivy_scan_db_repository.

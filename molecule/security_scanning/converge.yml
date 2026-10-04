@@ -1,0 +1,75 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost"
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    converge_official_signatures: "{{ lookup('ansible.builtin.env', 'MOLECULE_CLAMAV_OFFICIAL') | default('false', true) | bool }}"
+    # Small, old, pinned image with known HIGH/CRITICAL findings for Trivy.
+    converge_workload_image: docker.io/library/alpine:3.19.1
+  pre_tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+              Environment="NO_PROXY=127.0.0.1,localhost"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+    - name: Run a small workload container for Trivy to scan
+      community.docker.docker_container:
+        name: molecule-workload
+        image: "{{ converge_workload_image }}"
+        command: [sleep, infinity]
+        network_mode: none
+        user: "65534:65534"
+        read_only: true
+        cap_drop: [ALL]
+        security_opts: [no-new-privileges:true]
+        memory: 32m
+        restart_policy: unless-stopped
+        state: started
+
+    - name: Seed a test signature database (SHA-256 of the EICAR test file)
+      when: not converge_official_signatures
+      block:
+        - name: Create the signature directory
+          ansible.builtin.file:
+            path: /var/lib/clamav
+            state: directory
+            mode: "0755"
+
+        - name: Write the test signature
+          ansible.builtin.copy:
+            content: "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f:68:Molecule.Test.EICAR\n"
+            dest: /var/lib/clamav/molecule-eicar.hsb
+            mode: "0644"
+
+  roles:
+    - role: clamav
+    - role: trivy_scan

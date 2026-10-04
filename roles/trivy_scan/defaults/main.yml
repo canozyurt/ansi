@@ -1,0 +1,67 @@
+---
+# Weekly vulnerability scanning (HRD-05) with Trivy (Apache-2.0) on every container host: the
+# image of every running container and the host root filesystem (OS packages and language
+# dependencies) are scanned for HIGH and CRITICAL vulnerabilities. JSON reports are kept as
+# evidence, a summary line per image goes to journald (identifier trivy-scan, shipped by the SIEM
+# agent), and findings per severity plus the age of the oldest open CRITICAL finding go to the
+# node_exporter textfile collector for the alerts in group_vars/monitoring/security_scanning.yml.
+#
+# Trivy runs as a one-shot container from a systemd timer, not as a long-running service.
+trivy_scan_image: "{{ versions_images.trivy }}"
+
+trivy_scan_reports_dir: /var/lib/trivy-reports
+# Reports older than this are deleted at the end of each run (evidence retention).
+trivy_scan_retention_days: 90
+trivy_scan_cache_dir: /var/cache/trivy
+# First-seen dates of open CRITICAL findings (what the 14-day alert measures).
+trivy_scan_state_file: /var/lib/trivy-scan/critical-first-seen.json
+
+trivy_scan_severities: [HIGH, CRITICAL]
+# Leave out findings without a fixed version (they cannot be patched yet). Off: they are still
+# risks to track and accept.
+trivy_scan_ignore_unfixed: false
+
+# What to scan: images of running containers, the host root filesystem, and extra images by name
+# (for example images that only run as one-shot jobs).
+trivy_scan_running_images: true
+trivy_scan_rootfs: true
+trivy_scan_extra_images: []
+# Paths the rootfs scan skips (container storage is covered by the image scans).
+trivy_scan_rootfs_skip_dirs:
+  - /proc
+  - /sys
+  - /dev
+  - /run
+  - /var/lib/docker
+  - /var/lib/containerd
+  - "{{ trivy_scan_cache_dir }}"
+  - "{{ trivy_scan_reports_dir }}"
+
+trivy_scan_schedule: Mon *-*-* 03:00:00
+trivy_scan_randomized_delay: 3h
+trivy_scan_timeout: 30m          # per scan
+trivy_scan_memory_limit: 2g
+trivy_scan_pids_limit: 512
+trivy_scan_nice: 10
+
+# ---------------------------------------------------------------- vulnerability database
+# Online sites download the database from Trivy's default OCI repositories (mirror.gcr.io,
+# ghcr.io). Air-gapped sites mirror them into an internal registry (e.g. with oras or skopeo:
+# mirror.gcr.io/aquasec/trivy-db:2 and trivy-java-db:1) and set these, e.g.
+# "registry.example.internal/aquasec/trivy-db:2". Images in that registry must be trusted by the
+# host trust store (internal CA), which is mounted into the scanner.
+trivy_scan_db_repository: ""
+trivy_scan_java_db_repository: ""
+# Never download: use the database already in trivy_scan_cache_dir (copied in by other means).
+trivy_scan_skip_db_update: false
+# Outbound proxy, "http://proxy.example.internal:3128". It is written to a 0600 environment file,
+# so a proxy URL with credentials (from Vault/OpenBao) stays off command lines.
+trivy_scan_https_proxy: ""
+trivy_scan_no_proxy: ""
+
+trivy_scan_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+
+# Weekly reports are evidence for HRD-05: register them with the backup role.
+trivy_scan_backup: true
+trivy_scan_backup_rpo_hours: 168
+trivy_scan_backup_rto_hours: 24

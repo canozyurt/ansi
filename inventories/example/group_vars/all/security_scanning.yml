@@ -1,0 +1,16 @@
+---
+# Malware and vulnerability scanning (playbooks/security_scanning.yml).
+#
+# clamav_hosts (inventories/example/hosts.yml) lists the hosts that accept files from users;
+# hosts that declare upload directories (clamav_upload_paths_<role>) join it automatically.
+# Product roles declare their upload directories like this (group_vars of their group):
+#   clamav_upload_paths_myapp: [/srv/myapp/uploads]
+
+# Outbound proxy for signature and vulnerability database downloads, if hosts have no direct access.
+# clamav_https_proxy: http://proxy.example.internal:3128
+# trivy_scan_https_proxy: http://proxy.example.internal:3128
+
+# Air-gapped sites: internal mirrors instead of the public sources.
+# clamav_private_mirror: https://clamav-mirror.example.internal
+# trivy_scan_db_repository: registry.example.internal/aquasec/trivy-db:2
+# trivy_scan_java_db_repository: registry.example.internal/aquasec/trivy-java-db:1

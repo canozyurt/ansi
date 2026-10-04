@@ -1,0 +1,25 @@
+---
+# Malware scanning (roles/clamav, HRD-07) and vulnerability scanning (roles/trivy_scan, HRD-05).
+# Alert rules: inventories/example/group_vars/monitoring/security_scanning.yml (deployed by
+# playbooks/monitoring.yml).
+- name: Add hosts that accept uploads to clamav_hosts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Group the hosts that declare upload directories
+      ansible.builtin.group_by:
+        key: clamav_hosts
+      changed_when: false
+      when: query('ansible.builtin.varnames', '^clamav_upload_paths_.+') | map('extract', vars) | flatten | length > 0
+
+- name: Deploy malware scanning
+  hosts: clamav_hosts
+  become: true
+  roles:
+    - role: clamav
+
+- name: Deploy vulnerability scanning
+  hosts: container_hosts
+  become: true
+  roles:
+    - role: trivy_scan

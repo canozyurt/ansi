@@ -1,0 +1,70 @@
+# {{ ansible_managed }}
+# clamd (HRD-07). Local socket only; findings go to syslog, which journald collects and the SIEM
+# agent ships (LOG-01). See roles/clamav/defaults/main.yml.
+LocalSocket {{ clamav_socket }}
+LocalSocketGroup {{ clamav_group }}
+LocalSocketMode 660
+FixStaleSocket true
+User {{ clamav_user }}
+DatabaseDirectory {{ clamav_database_dir }}
+
+LogSyslog true
+LogFacility LOG_LOCAL6
+LogTime false
+LogClean false
+LogVerbose false
+ExtendedDetectionInfo true
+
+MaxThreads {{ clamav_max_threads }}
+MaxConnectionQueueLength 30
+SelfCheck 3600
+ReadTimeout 180
+CommandReadTimeout 30
+IdleTimeout 30
+# Disabled clamd commands: shutdown and reload come from systemd, not from socket clients.
+EnableShutdownCommand false
+EnableReloadCommand false
+EnableStatsCommand false
+
+FollowDirectorySymlinks false
+FollowFileSymlinks false
+CrossFilesystems true
+MaxDirectoryRecursion {{ clamav_max_directory_recursion }}
+{% for path in clamav_exclude_paths %}
+ExcludePath {{ path }}
+{% endfor %}
+
+ScanPE true
+ScanELF true
+ScanOLE2 true
+ScanPDF true
+ScanHTML true
+ScanMail true
+ScanArchive true
+Bytecode true
+BytecodeSecurity TrustSigned
+PhishingSignatures true
+DetectPUA {{ 'true' if clamav_detect_pua | bool else 'false' }}
+HeuristicAlerts true
+# Encrypted archives and documents cannot be scanned. Not reported by default: password-protected
+# uploads are common and legitimate; set both to true where policy forbids unscannable files.
+AlertEncryptedArchive false
+AlertEncryptedDoc false
+
+MaxFileSize {{ clamav_max_file_size }}
+MaxScanSize {{ clamav_max_scan_size }}
+StreamMaxLength {{ clamav_max_file_size }}
+MaxRecursion 16
+MaxFiles 10000
+{% if clamav_on_access_enabled | bool %}
+
+# On-access scanning through clamonacc (fanotify).
+{%   for path in clamav_on_access_paths %}
+OnAccessIncludePath {{ path }}
+{%   endfor %}
+OnAccessExcludeUname {{ clamav_user }}
+OnAccessExcludeRootUID false
+OnAccessPrevention {{ 'true' if clamav_on_access_prevention | bool else 'false' }}
+OnAccessExtraScanning true
+OnAccessMaxFileSize {{ clamav_on_access_max_file_size }}
+{% endif %}

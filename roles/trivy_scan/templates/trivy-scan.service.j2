@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly Trivy vulnerability scan of running images and the host (HRD-05)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/trivy-scan
+SyslogIdentifier=trivy-scan
+Nice={{ trivy_scan_nice }}
+IOSchedulingClass=idle
+TimeoutStartSec=6h
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true

@@ -26,3 +26,6 @@
 
 - name: Deploy backups
   ansible.builtin.import_playbook: backup.yml
+
+- name: Deploy malware and vulnerability scanning
+  ansible.builtin.import_playbook: security_scanning.yml

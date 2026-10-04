@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Start whenever a signature database exists (not only the official main/daily files) and come
+# back after a crash; the metrics report a missing clamd and outdated signatures.
+[Unit]
+ConditionPathExistsGlob=
+ConditionDirectoryNotEmpty={{ clamav_database_dir }}
+
+[Service]
+Restart=on-failure
+RestartSec=30

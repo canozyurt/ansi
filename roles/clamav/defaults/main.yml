@@ -1,0 +1,99 @@
+---
+# Malware scanning (HRD-07) with ClamAV (GPL-2.0) on the hosts of the clamav_hosts group:
+# freshclam keeps the signatures current, clamd serves a local socket that applications use to
+# scan uploads, a weekly systemd timer scans the upload directories, /home and /tmp, and an
+# optional on-access scanner (clamonacc) blocks or reports files as they are opened.
+#
+# Installed from the distribution packages, not a container: scanning host paths and on-access
+# scanning (fanotify) need the host's filesystem view and CAP_SYS_ADMIN, which a container would
+# only get by being privileged; clamdscan passes open file descriptors to clamd over the local
+# socket, so clamd itself stays unprivileged (user clamav) and never needs read access to the
+# scanned files. Debian and Ubuntu ship ClamAV engine updates through their -updates/-security
+# suites, so unattended-upgrades keeps the engine patched (HRD-04); the version follows the OS
+# release instead of roles/versions (a documented CHG-05 exception, like keepalived). On Debian,
+# keep the "<release>-updates" suite enabled: new ClamAV releases arrive there.
+clamav_packages:
+  - clamav-daemon
+  - clamav-freshclam
+  - clamdscan
+  - clamav-base
+
+clamav_database_dir: /var/lib/clamav
+clamav_user: clamav
+clamav_group: clamav
+
+# Local UNIX socket for applications (no TCP listener, so no firewall rule). Only root and members
+# of clamav_group may connect (mode 0660); add application service users here, or give a
+# container `group_add: [<gid of clamav>]` and bind-mount the socket's directory.
+clamav_socket: /run/clamav/clamd.ctl
+clamav_socket_users: []
+
+# ---------------------------------------------------------------- signatures (freshclam)
+# freshclam runs as a daemon and checks clamav_freshclam_checks times per day.
+clamav_freshclam_checks: 12
+clamav_database_mirrors:
+  - database.clamav.net
+# Air-gapped sites: an internal mirror (e.g. cvdupdate served over HTTPS, or a caching proxy)
+# such as "https://clamav-mirror.example.internal". When set, freshclam uses only this mirror and
+# skips the DNS version check.
+clamav_private_mirror: ""
+# Outbound proxy for freshclam, "http://proxy.example.internal:3128" (credentials are not
+# supported here; use an IP-allowlisted proxy).
+clamav_https_proxy: ""
+# Extra signature databases (DatabaseCustomURL lines), e.g. from the internal mirror.
+clamav_custom_database_urls: []
+# Download signatures once during the play when none are present (a new host). If it fails
+# (no network, blocked mirror) the play stops unless some signature database is already there.
+clamav_initial_download: true
+
+# ---------------------------------------------------------------- engine limits
+clamav_max_threads: 4
+clamav_max_file_size: 100M
+clamav_max_scan_size: 400M
+clamav_max_directory_recursion: 30
+# Potentially unwanted applications (adware, hacking tools); noisy on admin hosts.
+clamav_detect_pua: false
+# Regular expressions clamd skips (ExcludePath), for the scheduled scan and on-access.
+clamav_exclude_paths:
+  - ^/proc/
+  - ^/sys/
+  - ^/dev/
+  - ^/run/
+  - ^/var/lib/docker/
+
+# ---------------------------------------------------------------- scheduled scan
+# Paths scanned weekly: the upload directories product roles declare plus clamav_scan_paths_default
+# and clamav_scan_paths_extra. A product role (or its group_vars) declares its upload directories
+# as a list variable named clamav_upload_paths_<role>; every such variable is collected, and
+# playbooks/security_scanning.yml also adds the hosts that declare one to clamav_hosts.
+clamav_scan_paths_default:
+  - /home
+  - /tmp
+clamav_scan_paths_extra: []
+clamav_upload_paths: >-
+  {{ query('ansible.builtin.varnames', '^clamav_upload_paths_.+') | map('extract', vars) | flatten | unique }}
+clamav_scan_paths: "{{ (clamav_upload_paths + clamav_scan_paths_default + clamav_scan_paths_extra) | unique }}"
+# systemd OnCalendar expression; Persistent=true catches up after downtime.
+clamav_scan_schedule: Sun *-*-* 02:00:00
+clamav_scan_randomized_delay: 2h
+# Low priority: the scan yields CPU and disk to the workload.
+clamav_scan_nice: 19
+clamav_scan_io_class: idle
+clamav_scan_cpu_quota: 50%
+
+# ---------------------------------------------------------------- on-access scanning
+# Off by default. clamonacc uses fanotify to hand every file opened (or, with prevention, every
+# open call) under the watched paths to clamd. Costs: every open waits for a scan (milliseconds
+# to seconds for archives), clamd keeps the full signature set in memory on each host
+# (about 1.5 GB, double during reloads) instead of only during the weekly scan, and with
+# prevention a slow or stopped clamd blocks applications. Prefer scanning uploads through the
+# socket in the application, and enable this only for directories other programs write to.
+clamav_on_access_enabled: false
+clamav_on_access_paths: "{{ clamav_upload_paths }}"
+# Deny access to infected files (blocks the open) instead of only logging them.
+clamav_on_access_prevention: false
+clamav_on_access_max_file_size: 25M
+
+# ---------------------------------------------------------------- metrics (node_exporter textfile)
+clamav_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+clamav_metrics_interval: 15min

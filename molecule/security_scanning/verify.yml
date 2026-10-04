@@ -1,0 +1,273 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_official_signatures: "{{ lookup('ansible.builtin.env', 'MOLECULE_CLAMAV_OFFICIAL') | default('false', true) | bool }}"
+    verify_textfile_dir: /var/lib/node_exporter/textfile_collector
+    verify_upload_dir: /srv/uploads
+    # The EICAR anti-virus test file, base64-encoded so this repository holds no detectable copy.
+    verify_eicar_b64: WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=
+    verify_workload_image: docker.io/library/alpine:3.19.1
+  tasks:
+    # ------------------------------------------------------------ ClamAV: signatures and clamd
+    - name: Find the signature databases
+      ansible.builtin.find:
+        paths: /var/lib/clamav
+        patterns: ["*.cvd", "*.cld", "*.hsb", "*.hdb", "*.ndb", "*.ldb"]
+      register: verify_signatures
+      tags: [chk_hrd_07]
+
+    - name: Signatures are present (the official daily database when the mirror is reachable)
+      ansible.builtin.assert:
+        that:
+          - verify_signatures.files | length > 0
+          - >-
+            not verify_official_signatures
+            or verify_signatures.files | selectattr('path', 'search', '/daily\.c[vl]d$') | list | length == 1
+      tags: [chk_hrd_07]
+
+    - name: Read the service states
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: [clamav-freshclam.service, clamav-daemon.service, clamav-scan.timer, clamav-metrics.timer]
+      register: verify_clamav_units
+      tags: [chk_hrd_07]
+
+    - name: Freshclam and clamd run, the scan and metrics timers are active
+      ansible.builtin.assert:
+        that:
+          - item.status.ActiveState == 'active'
+          - item.status.UnitFileState == 'enabled'
+        quiet: true
+      loop: "{{ verify_clamav_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_hrd_07]
+
+    - name: Send PING to clamd on its socket
+      ansible.builtin.command:
+        cmd: >-
+          python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.connect('/run/clamav/clamd.ctl');
+          s.sendall(b'zPING\0'); print(s.recv(64).rstrip(b'\0').decode())"
+      register: verify_ping
+      changed_when: false
+      tags: [chk_hrd_07]
+
+    - name: The clamd daemon answers PONG
+      ansible.builtin.assert:
+        that: verify_ping.stdout == 'PONG'
+      tags: [chk_hrd_07]
+
+    - name: Stat the clamd socket
+      ansible.builtin.stat:
+        path: /run/clamav/clamd.ctl
+      register: verify_socket
+      tags: [chk_hrd_07]
+
+    - name: Try the socket as an unprivileged user outside the clamav group
+      ansible.builtin.command:
+        cmd: setpriv --reuid=nobody --regid=nogroup --clear-groups clamdscan --ping 1
+      register: verify_ping_nobody
+      changed_when: false
+      failed_when: false
+      tags: [chk_hrd_07]
+
+    - name: The socket is restricted to root and the clamav group
+      ansible.builtin.assert:
+        that:
+          - verify_socket.stat.issock
+          - verify_socket.stat.mode == '0660'
+          - verify_socket.stat.gr_name == 'clamav'
+          - verify_ping_nobody.rc != 0
+      tags: [chk_hrd_07]
+
+    # ------------------------------------------------------------ ClamAV: EICAR detection
+    - name: Create an upload directory
+      ansible.builtin.file:
+        path: "{{ verify_upload_dir }}"
+        state: directory
+        mode: "0750"
+      tags: [chk_hrd_07]
+
+    - name: Create the EICAR test file in the upload directory
+      ansible.builtin.copy:
+        content: "{{ verify_eicar_b64 | b64decode }}"
+        dest: "{{ verify_upload_dir }}/eicar-test.txt"
+        mode: "0600"
+      tags: [chk_hrd_07]
+
+    - name: Hash the test file with sigtool
+      ansible.builtin.command:
+        cmd: sigtool --sha256 {{ verify_upload_dir }}/eicar-test.txt
+      register: verify_sigtool
+      changed_when: false
+      when: not verify_official_signatures
+      tags: [chk_hrd_07]
+
+    - name: The seeded test signature is the sigtool hash of the test file
+      ansible.builtin.assert:
+        that: verify_sigtool.stdout.split(':')[0:2] == ['275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f', '68']
+      when: not verify_official_signatures
+      tags: [chk_hrd_07]
+
+    - name: Scan the file the way an application does (stream over the socket)
+      ansible.builtin.command:
+        cmd: clamdscan --stream --no-summary {{ verify_upload_dir }}/eicar-test.txt
+      register: verify_stream
+      changed_when: false
+      failed_when: verify_stream.rc != 1
+      tags: [chk_hrd_07]
+
+    - name: Note the journal position
+      ansible.builtin.command:
+        cmd: date --utc '+%Y-%m-%d %H:%M:%S'
+      register: verify_since
+      changed_when: false
+      tags: [chk_hrd_07]
+
+    - name: Run the scheduled scan now
+      ansible.builtin.systemd_service:
+        name: clamav-scan.service
+        state: started
+      changed_when: false
+      tags: [chk_hrd_07]
+
+    - name: Read the scan journal
+      ansible.builtin.command:
+        cmd: journalctl --utc --since "{{ verify_since.stdout }}" -t clamav-scan --no-pager -o cat
+      register: verify_scan_journal
+      changed_when: false
+      tags: [chk_hrd_07, chk_log_01]
+
+    - name: Read the scan metrics
+      ansible.builtin.slurp:
+        src: "{{ verify_textfile_dir }}/clamav_scan.prom"
+      register: verify_scan_prom
+      tags: [chk_hrd_07]
+
+    - name: The EICAR file is detected, logged to journald and counted in the metrics
+      vars:
+        verify_metrics: "{{ verify_scan_prom.content | b64decode }}"
+        verify_infected: "{{ verify_metrics | regex_search('^clamav_scan_infected_files (\\d+)$', '\\1', multiline=True) | first | int }}"
+      ansible.builtin.assert:
+        that:
+          - verify_stream.stdout is search('FOUND')
+          - >-
+            verify_scan_journal.stdout is search(verify_upload_dir ~ '/eicar-test.txt: \S*EICAR\S* FOUND', ignorecase=True)
+          - >-
+            verify_scan_journal.stdout is search('scan finished: .*infected=[1-9]')
+          - verify_infected | int > 0
+          - verify_metrics is search('^clamav_scan_success 1$', multiline=True)
+          - verify_metrics is search('^clamav_scan_last_run_timestamp_seconds [0-9]{10}$', multiline=True)
+        fail_msg: "{{ verify_scan_journal.stdout_lines[-10:] }} / {{ verify_metrics }}"
+      tags: [chk_hrd_07, chk_log_01]
+
+    - name: Remove the EICAR test file
+      ansible.builtin.file:
+        path: "{{ verify_upload_dir }}/eicar-test.txt"
+        state: absent
+      tags: [chk_hrd_07]
+
+    - name: Collect the ClamAV metrics now
+      ansible.builtin.systemd_service:
+        name: clamav-metrics.service
+        state: started
+      changed_when: false
+      tags: [chk_hrd_07]
+
+    - name: Read the ClamAV metrics
+      ansible.builtin.slurp:
+        src: "{{ verify_textfile_dir }}/clamav.prom"
+      register: verify_clamav_prom
+      tags: [chk_hrd_07]
+
+    - name: Signature age, presence and clamd health are exported
+      vars:
+        verify_metrics: "{{ verify_clamav_prom.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - verify_metrics is search('^clamav_signatures_present 1$', multiline=True)
+          - verify_metrics is search('^clamav_signatures_age_hours [0-9]+\.[0-9]+$', multiline=True)
+          - verify_metrics is search('^clamav_clamd_up 1$', multiline=True)
+        fail_msg: "{{ verify_metrics }}"
+      tags: [chk_hrd_07]
+
+    # ------------------------------------------------------------ Trivy
+    - name: Note the journal position before the vulnerability scan
+      ansible.builtin.command:
+        cmd: date --utc '+%Y-%m-%d %H:%M:%S'
+      register: verify_trivy_since
+      changed_when: false
+      tags: [chk_hrd_05]
+
+    - name: Run the weekly vulnerability scan now (images of running containers and the host)
+      ansible.builtin.systemd_service:
+        name: trivy-scan.service
+        state: started
+      changed_when: false
+      tags: [chk_hrd_05]
+
+    - name: Read the vulnerability scan journal
+      ansible.builtin.command:
+        cmd: journalctl --utc --since "{{ verify_trivy_since.stdout }}" -t trivy-scan --no-pager -o cat
+      register: verify_trivy_journal
+      changed_when: false
+      tags: [chk_hrd_05, chk_log_01]
+
+    - name: Find the JSON reports
+      ansible.builtin.find:
+        paths: /var/lib/trivy-reports
+        patterns: ["*.json"]
+        recurse: true
+      register: verify_reports
+      tags: [chk_hrd_05]
+
+    - name: Read the workload image report
+      ansible.builtin.slurp:
+        src: "{{ (verify_reports.files | map(attribute='path') | select('search', 'image-.*alpine_3\\.19\\.1\\.json$') | list)[0] }}"
+      register: verify_alpine_report
+      tags: [chk_hrd_05]
+
+    - name: Read the Trivy metrics
+      ansible.builtin.slurp:
+        src: "{{ verify_textfile_dir }}/trivy.prom"
+      register: verify_trivy_prom
+      tags: [chk_hrd_05]
+
+    - name: Stat the reports directory
+      ansible.builtin.stat:
+        path: /var/lib/trivy-reports
+      register: verify_reports_dir
+      tags: [chk_hrd_05]
+
+    - name: Reports, journal summary and metrics cover the workload image and the host
+      vars:
+        verify_report: "{{ verify_alpine_report.content | b64decode | from_json }}"
+        verify_metrics: "{{ verify_trivy_prom.content | b64decode }}"
+        verify_label: 'image="{{ verify_workload_image }}",type="image"'
+      ansible.builtin.assert:
+        that:
+          - verify_reports_dir.stat.mode == '0750'
+          - verify_report.ArtifactName == verify_workload_image
+          - verify_report.Results | length > 0
+          - verify_reports.files | map(attribute='path') | select('search', '/rootfs\.json$') | list | length > 0
+          - verify_trivy_journal.stdout is search('image=' ~ verify_workload_image ~ ' type=image high=\d+ critical=\d+')
+          - verify_trivy_journal.stdout is search('image=rootfs type=rootfs high=\d+ critical=\d+')
+          - >-
+            verify_trivy_journal.stdout is search('scan finished: targets=2 failures=0')
+          - verify_metrics is search('^trivy_scan_vulnerabilities\{' ~ verify_label | regex_escape ~ ',severity="CRITICAL"\} \d+$', multiline=True)
+          - verify_metrics is search('^trivy_scan_vulnerabilities\{' ~ verify_label | regex_escape ~ ',severity="HIGH"\} \d+$', multiline=True)
+          - verify_metrics is search('^trivy_scan_success\{' ~ verify_label | regex_escape ~ '\} 1$', multiline=True)
+          - verify_metrics is search('^trivy_scan_critical_oldest_age_days\{' ~ verify_label | regex_escape ~ '\} [0-9.]+$', multiline=True)
+          - verify_metrics is search('^trivy_scan_last_run_timestamp_seconds [0-9]{10}$', multiline=True)
+          - verify_metrics is search('^trivy_db_updated_timestamp_seconds [0-9]{10}$', multiline=True)
+        fail_msg: "{{ verify_trivy_journal.stdout_lines[-10:] }} / {{ verify_metrics }}"
+      tags: [chk_hrd_05, chk_log_01]
+
+    - name: Show the scan summary
+      ansible.builtin.debug:
+        msg: "{{ verify_trivy_journal.stdout_lines | select('search', '^image=') | list }}"
+      tags: [chk_hrd_05]

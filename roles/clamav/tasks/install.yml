@@ -1,0 +1,39 @@
+---
+# The package would regenerate clamd.conf from debconf answers on every upgrade; this role owns it.
+- name: Install debconf-utils for the debconf module
+  ansible.builtin.apt:
+    name: debconf-utils
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Let the role manage clamd.conf instead of debconf
+  ansible.builtin.debconf:
+    name: clamav-daemon
+    question: clamav-daemon/debconf
+    value: "false"
+    vtype: boolean
+  tags: [chk_hrd_07]
+
+- name: Install the ClamAV packages
+  ansible.builtin.apt:
+    name: "{{ clamav_packages }}"
+    state: present
+  tags: [chk_hrd_07]
+
+- name: Allow application users to use the clamd socket
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: ["{{ clamav_group }}"]
+    append: true
+  loop: "{{ clamav_socket_users }}"
+  tags: [chk_hrd_07]
+
+- name: Let freshclam own the signature directory
+  ansible.builtin.file:
+    path: "{{ clamav_database_dir }}"
+    state: directory
+    owner: "{{ clamav_user }}"
+    group: "{{ clamav_group }}"
+    mode: "0755"
+  tags: [chk_hrd_07]

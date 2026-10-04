@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write ClamAV metrics for node_exporter (HRD-07)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clamav-metrics
+SyslogIdentifier=clamav-metrics
+Nice=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ clamav_textfile_dir }}

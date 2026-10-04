@@ -1,0 +1,16 @@
+---
+# File name patterns of ClamAV signature databases (official CVD/CLD containers and unsigned
+# local or third-party databases).
+clamav_signature_patterns:
+  - "*.cvd"
+  - "*.cld"
+  - "*.cud"
+  - "*.hdb"
+  - "*.hsb"
+  - "*.mdb"
+  - "*.msb"
+  - "*.ndb"
+  - "*.ldb"
+  - "*.cdb"
+  - "*.yar"
+  - "*.yara"

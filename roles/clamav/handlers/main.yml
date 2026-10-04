@@ -1,0 +1,29 @@
+---
+- name: Restart clamd
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop:
+    - clamav-daemon.socket
+    - clamav-daemon.service
+  # clamonacc holds a connection to clamd; restart it with clamd when it runs.
+  notify: Restart clamonacc
+
+- name: Restart clamonacc
+  ansible.builtin.systemd_service:
+    name: clamav-clamonacc.service
+    state: restarted
+  when: clamav_on_access_enabled | bool
+
+- name: Restart freshclam
+  ansible.builtin.systemd_service:
+    name: clamav-freshclam.service
+    state: restarted
+    daemon_reload: true
+
+- name: Collect ClamAV metrics
+  ansible.builtin.systemd_service:
+    name: clamav-metrics.service
+    state: started
+    daemon_reload: true

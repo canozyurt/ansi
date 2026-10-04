@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# Signature updates (HRD-07). Logs go to syslog (journald, shipped by the SIEM agent).
+DatabaseOwner {{ clamav_user }}
+DatabaseDirectory {{ clamav_database_dir }}
+LogSyslog true
+LogFacility LOG_LOCAL6
+LogTime false
+LogVerbose false
+Foreground false
+Checks {{ clamav_freshclam_checks }}
+MaxAttempts 5
+ConnectTimeout 30
+ReceiveTimeout 0
+TestDatabases yes
+ScriptedUpdates yes
+Bytecode true
+NotifyClamd /etc/clamav/clamd.conf
+{% if clamav_private_mirror | length > 0 %}
+PrivateMirror {{ clamav_private_mirror }}
+{% else %}
+DNSDatabaseInfo current.cvd.clamav.net
+{%   for mirror in clamav_database_mirrors %}
+DatabaseMirror {{ mirror }}
+{%   endfor %}
+{% endif %}
+{% for url in clamav_custom_database_urls %}
+DatabaseCustomURL {{ url }}
+{% endfor %}
+{% if clamav_https_proxy | length > 0 %}
+{%   set proxy = clamav_https_proxy | urlsplit %}
+HTTPProxyServer {{ proxy.scheme }}://{{ proxy.hostname }}
+HTTPProxyPort {{ proxy.port | default(3128, true) }}
+{% endif %}

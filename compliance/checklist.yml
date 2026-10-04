@@ -253,7 +253,8 @@ requirements:
       iso27001: ["8.8"]
       iso27017: []
     check: "Scanner results stored as evidence; open findings past due alert"
-    status: not_started
+    status: implemented
+    progress: "Done: weekly Trivy scan (roles/trivy_scan) of every running container image and the host root filesystem on container hosts for HIGH/CRITICAL; JSON reports kept 90 days and backed up, journald summary per image, metrics per severity, CriticalVulnerabilityOverdue alert when a CRITICAL finding stays open 14 days; offline DB mirror. Remaining: findings tracked in a ticketing system with risk acceptances; hosts outside container_hosts."
   - id: HRD-06
     requirement: "File integrity monitoring and host intrusion detection run on every host"
     controls:
@@ -262,6 +263,15 @@ requirements:
       iso27017: []
     check: "Agent status check in SIEM"
     status: not_started
+  - id: HRD-07
+    requirement: "Malware scanning on hosts that accept files, with current signatures"
+    controls:
+      soc2: [CC6.8]
+      iso27001: ["8.7"]
+      iso27017: []
+    check: "Signature age and scan results per host in monitoring; infected files and outdated signatures alert"
+    status: implemented
+    progress: "Done: ClamAV (roles/clamav) on clamav_hosts with freshclam, a clamd socket for upload scanning, weekly scheduled scan of upload directories, /home and /tmp, findings in journald, metrics and alerts (signatures > 48h, infected files, no scan for 8 days); optional on-access scanning. Remaining: product roles declare clamav_upload_paths_<role> and scan uploads through the socket."
   - id: NET-01
     requirement: "Every host firewall denies inbound by default; only declared ports are open"
     controls:

@@ -1,0 +1,12 @@
+---
+# clamd loads the whole signature set before it answers (up to a minute with the official
+# databases); it answers PING on its socket once ready.
+- name: Wait until clamd answers PING
+  ansible.builtin.command:
+    cmd: clamdscan --ping 1
+  register: clamav_ping
+  until: clamav_ping.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false
+  tags: [chk_hrd_07]

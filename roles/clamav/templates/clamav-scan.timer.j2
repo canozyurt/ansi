@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly ClamAV malware scan (HRD-07)
+
+[Timer]
+OnCalendar={{ clamav_scan_schedule }}
+RandomizedDelaySec={{ clamav_scan_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

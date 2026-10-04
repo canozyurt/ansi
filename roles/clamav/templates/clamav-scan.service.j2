@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Scheduled ClamAV malware scan (HRD-07)
+Requires=clamav-daemon.socket
+After=clamav-daemon.service clamav-daemon.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clamav-scan
+SyslogIdentifier=clamav-scan
+Nice={{ clamav_scan_nice }}
+IOSchedulingClass={{ clamav_scan_io_class }}
+CPUQuota={{ clamav_scan_cpu_quota }}
+TimeoutStartSec=12h
+RuntimeDirectory=clamav-scan
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ clamav_textfile_dir }}
+PrivateNetwork=true
