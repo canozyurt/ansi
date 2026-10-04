@@ -1,0 +1,71 @@
+---
+- name: Publish what other roles need
+  when: inventory_hostname == openbao_config_host
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_token }}"
+      body_format: json
+      validate_certs: false
+  block:
+    - name: Read the role_id of the AppRole {{ openbao_pki_approle }}
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/auth/approle/role/{{ openbao_pki_approle }}/role-id"
+      register: openbao_pki_role_id_response
+      tags: [chk_iam_08]
+
+    - name: Issue a new secret_id for the AppRole, valid for {{ openbao_pki_approle_secret_id_ttl }}
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/auth/approle/role/{{ openbao_pki_approle }}/secret-id"
+        method: POST
+        body:
+          metadata: '{"issued_by": "ansible openbao role"}'
+      register: openbao_pki_secret_id_response
+      when: openbao_pki_issue_secret_id | bool
+      no_log: true
+      changed_when: true
+      tags: [chk_iam_08]
+
+    - name: Write the AppRole credentials for the inventory vault (0600 on the controller)
+      ansible.builtin.copy:
+        content: >-
+          {{ {'pki_openbao_role_id': openbao_pki_role_id_response.json.data.role_id,
+              'pki_openbao_secret_id': openbao_pki_secret_id_response.json.data.secret_id,
+              'secret_id_accessor': openbao_pki_secret_id_response.json.data.secret_id_accessor,
+              'expires_after': openbao_pki_approle_secret_id_ttl} | to_nice_json }}
+        dest: "{{ openbao_init_output_dir }}/{{ openbao_cluster_name }}-pki-approle.json"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      when: openbao_pki_issue_secret_id | bool
+      no_log: true
+
+    - name: Read the SSH user CA public key
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/{{ openbao_ssh_mount }}/public_key"
+        return_content: true
+      register: openbao_ssh_ca_response
+      tags: [chk_iam_06]
+
+    - name: Write the SSH user CA public key for ssh_hardening_trusted_user_ca_keys
+      ansible.builtin.copy:
+        content: "{{ openbao_ssh_ca_response.content | trim }}\n"
+        dest: "{{ openbao_init_output_dir }}/{{ openbao_cluster_name }}-ssh-user-ca.pub"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      tags: [chk_iam_06]
+
+- name: Share the AppRole role_id and the SSH CA key with every host in the play
+  ansible.builtin.set_fact:
+    openbao_pki_role_id: "{{ hostvars[openbao_config_host].openbao_pki_role_id_response.json.data.role_id }}"
+    openbao_ssh_ca_public_key: "{{ hostvars[openbao_config_host].openbao_ssh_ca_response.content | trim }}"
+
+- name: Show how to wire the AppRole and the SSH CA into the inventory
+  ansible.builtin.debug:
+    msg:
+      - "pki_openbao_addr: {{ openbao_api_addr }}"
+      - "pki_openbao_role_id: {{ openbao_pki_role_id }}"
+      - "pki_openbao_secret_id: run with openbao_pki_issue_secret_id=true and vault the value it writes"
+      - "ssh_hardening_trusted_user_ca_keys: ['{{ openbao_ssh_ca_public_key }}']"
+  run_once: true

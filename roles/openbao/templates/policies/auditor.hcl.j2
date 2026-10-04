@@ -1,0 +1,10 @@
+# auditor: read-only metadata (which secrets, keys, mounts and policies exist), never values.
+path "secret/metadata/*" { capabilities = ["read", "list"] }
+path "sys/mounts" { capabilities = ["read"] }
+path "sys/auth" { capabilities = ["read"] }
+path "sys/policies/acl" { capabilities = ["list"] }
+path "sys/policies/acl/*" { capabilities = ["read"] }
+path "transit/keys" { capabilities = ["list"] }
+path "transit/keys/*" { capabilities = ["read"] }
+path "pki_int/roles" { capabilities = ["list"] }
+path "pki_int/roles/*" { capabilities = ["read"] }

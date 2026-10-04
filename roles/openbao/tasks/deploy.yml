@@ -1,0 +1,116 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create OpenBao directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ openbao_data_dir }}", mode: "0755" }
+    - { path: "{{ openbao_data_dir }}/config", owner: root, group: "{{ openbao_container_gid }}", mode: "0750" }
+    - { path: "{{ openbao_data_dir }}/data", owner: "{{ openbao_container_uid }}", group: "{{ openbao_container_gid }}", mode: "0700" }
+    - { path: "{{ openbao_data_dir }}/audit", owner: "{{ openbao_container_uid }}", group: "{{ openbao_container_gid }}", mode: "0700" }
+    - { path: "{{ openbao_snapshot_dir }}", owner: "{{ openbao_container_uid }}", group: "{{ openbao_container_gid }}", mode: "0700" }
+    - { path: /etc/openbao, mode: "0700" }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: openbao
+    tls_cert_dir: "{{ openbao_data_dir }}/tls"
+    tls_cert_owner: "{{ openbao_container_uid }}"
+    tls_cert_group: "{{ openbao_container_gid }}"
+    tls_cert_common_name: "{{ openbao_hostname }}"
+    tls_cert_alt_names: "{{ [openbao_node_address] + openbao_tls_alt_names }}"
+    tls_cert_src_cert: "{{ openbao_tls_cert_file }}"
+    tls_cert_src_key: "{{ openbao_tls_key_file }}"
+    # Once pki_openbao_addr is set, nodes re-issue their own certificate from this cluster. Until the
+    # internal CA is in the trust store, the bundle of current node certificates verifies the API.
+    tls_cert_pki_ca_file: >-
+      {{ pki_openbao_ca_file | default('', true) or (openbao_data_dir ~ '/tls/peers.pem') }}
+  tags: [chk_sec_03]
+
+# Each node trusts every node's certificate (self-signed on the first run, PKI-issued later) for the
+# Raft join and the bao CLI. OpenBao reloads its own certificate by itself (tls_auto_reload).
+- name: Read the certificate of every node
+  ansible.builtin.slurp:
+    src: "{{ openbao_data_dir }}/tls/tls.crt"
+  delegate_to: "{{ item }}"
+  loop: "{{ openbao_cluster_hosts }}"
+  register: openbao_peer_certs
+
+- name: Write the bundle of node certificates
+  ansible.builtin.copy:
+    content: "{{ openbao_peer_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n') }}\n"
+    dest: "{{ openbao_data_dir }}/tls/peers.pem"
+    owner: "{{ openbao_container_uid }}"
+    group: "{{ openbao_container_gid }}"
+    mode: "0644"
+  tags: [chk_sec_03]
+
+- name: Write the OpenBao configuration
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_data_dir }}/config/openbao.hcl"
+    owner: root
+    group: "{{ openbao_container_gid }}"
+    mode: "0640"
+  register: openbao_config_file
+  tags: [chk_sec_03, chk_log_01, chk_ha_01]
+
+- name: Write the OpenBao environment (may contain seal credentials)
+  ansible.builtin.template:
+    src: openbao.env.j2
+    dest: "{{ openbao_data_dir }}/openbao.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: openbao_env_file
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Rotate the audit log file (OpenBao reopens it on SIGHUP)
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/openbao
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_log_01]
+
+- name: Prepare a version change
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
+- name: Find the active node
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/leader"
+    validate_certs: false
+  register: openbao_leader
+  failed_when: false
+
+- name: Note whether this node is the active node
+  ansible.builtin.set_fact:
+    openbao_is_active: "{{ openbao_leader.json.is_self | default(false) | bool }}"
+
+# Standbys first, the active node last, one node at a time: each node is (re)started, unsealed and
+# healthy before the next one changes, so a configuration change or upgrade keeps the Raft quorum.
+- name: Start, restart or replace the nodes one at a time
+  ansible.builtin.include_tasks: node.yml
+  loop: >-
+    {{ ansible_play_hosts | reject('in', openbao_active_hosts) | list
+       + ansible_play_hosts | select('in', openbao_active_hosts) | list }}
+  loop_control:
+    loop_var: openbao_node
+  vars:
+    openbao_active_hosts: >-
+      {{ ansible_play_hosts | map('extract', hostvars, 'openbao_is_active')
+         | zip(ansible_play_hosts) | selectattr(0) | map(attribute=1) | list }}

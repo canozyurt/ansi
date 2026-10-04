@@ -1,0 +1,427 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_bao: https://127.0.0.1:8200
+    verify_admin: "{{ openbao_test_init.admin_token }}"
+    verify_root: "{{ openbao_test_init.root_token | split(' ') | first }}"
+    verify_approle: >-
+      {{ lookup('ansible.builtin.file', openbao_init_output_dir ~ '/openbao-pki-approle.json') | from_json }}
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: false
+      body_format: json
+  tasks:
+    - name: Inspect the OpenBao container
+      community.docker.docker_container_info:
+        name: openbao
+      register: verify_container
+      tags: [chk_hrd_02]
+
+    - name: The container runs unprivileged with no capabilities, no swap and no core dumps
+      ansible.builtin.assert:
+        that:
+          - verify_container.container.State.Running
+          - verify_container.container.Config.User == 'openbao'
+          - "'ALL' in verify_container.container.HostConfig.CapDrop"
+          - verify_container.container.HostConfig.CapAdd is none
+          - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
+          - verify_container.container.HostConfig.ReadonlyRootfs
+          - verify_container.container.HostConfig.MemorySwap == verify_container.container.HostConfig.Memory
+          - not verify_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02]
+
+    - name: Read the health of the node
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/sys/health"
+      register: verify_health
+      tags: [chk_ha_01]
+
+    - name: The node is initialised, unsealed and active
+      ansible.builtin.assert:
+        that:
+          - verify_health.json.initialized
+          - not verify_health.json.sealed
+          - not verify_health.json.standby
+      tags: [chk_ha_01]
+
+    - name: Read the Raft configuration
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/sys/storage/raft/configuration"
+        headers:
+          X-Vault-Token: "{{ verify_admin }}"
+      register: verify_raft
+      tags: [chk_ha_01]
+
+    - name: This node is the Raft leader and a voter
+      ansible.builtin.assert:
+        that:
+          - verify_raft.json.data.config.servers | selectattr('leader') | map(attribute='node_id') | list == [inventory_hostname]
+          - verify_raft.json.data.config.servers | selectattr('voter') | list | length == 1
+      tags: [chk_ha_01]
+
+    - name: The API refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8200 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: The API accepts TLS 1.2
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8200 -tls1_2
+      register: verify_tls12
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: Metrics are served without a token on the metrics listener only
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        status_code: "{{ item.status }}"
+        return_content: true
+      loop:
+        - { url: "https://127.0.0.1:8202/v1/sys/metrics?format=prometheus", status: 200 }
+        - { url: "{{ verify_bao }}/v1/sys/metrics?format=prometheus", status: [400, 403, 404] }
+      register: verify_metrics
+      tags: [chk_log_05]
+
+    - name: The metrics include the seal state
+      ansible.builtin.assert:
+        that: "'vault_core_unsealed' in verify_metrics.results[0].content"
+      tags: [chk_log_05]
+
+    - name: Read the audit devices
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/sys/audit"
+        headers:
+          X-Vault-Token: "{{ verify_admin }}"
+      register: verify_audit
+      tags: [chk_log_01, chk_sec_02]
+
+    - name: Two file audit devices are enabled (stdout and the host file)
+      ansible.builtin.assert:
+        that:
+          - verify_audit.json.data['stdout/'].type == 'file'
+          - verify_audit.json.data['stdout/'].options.file_path == 'stdout'
+          - verify_audit.json.data['file/'].options.file_path == '/openbao/audit/audit.log'
+      tags: [chk_log_01, chk_sec_02]
+
+    - name: Read the transit key
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/transit/keys/app-default"
+        headers:
+          X-Vault-Token: "{{ verify_admin }}"
+      register: verify_transit
+      tags: [chk_sec_06]
+
+    - name: The transit key rotates every 90 days and cannot be deleted or exported
+      ansible.builtin.assert:
+        that:
+          - verify_transit.json.data.auto_rotate_period == 7776000
+          - not verify_transit.json.data.deletion_allowed
+          - not verify_transit.json.data.exportable
+      tags: [chk_sec_06]
+
+    - name: Use the root token from initialisation
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/auth/token/lookup-self"
+        headers:
+          X-Vault-Token: "{{ verify_root }}"
+        status_code: 403
+      tags: [chk_iam_08]
+
+    - name: Log in with the ansible-pki AppRole (as roles/tls_cert does)
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/auth/approle/login"
+        method: POST
+        body:
+          role_id: "{{ verify_approle.pki_openbao_role_id }}"
+          secret_id: "{{ verify_approle.pki_openbao_secret_id }}"
+      register: verify_pki_login
+      no_log: true
+      tags: [chk_sec_05, chk_iam_08]
+
+    - name: The AppRole token is short-lived and holds only the issuing policy
+      ansible.builtin.assert:
+        that:
+          - verify_pki_login.json.auth.lease_duration <= 600
+          - verify_pki_login.json.auth.token_policies | difference(['default']) == ['pki-issue-server']
+      tags: [chk_sec_05, chk_iam_08]
+
+    - name: Issue a certificate for a test name from the intermediate CA
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/pki_int/issue/server"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_pki_login.json.auth.client_token }}"
+        body:
+          common_name: verify.test.internal
+          alt_names: verify.test.internal
+          ip_sans: 127.0.0.1
+          ttl: 2160h
+      register: verify_cert
+      tags: [chk_sec_05]
+
+    - name: The certificate chains to the root CA and uses an EC key
+      ansible.builtin.assert:
+        that:
+          - verify_cert.json.data.private_key_type == 'ec'
+          - verify_cert.json.data.ca_chain | length == 2
+          - verify_cert.json.data.certificate is search('BEGIN CERTIFICATE')
+      tags: [chk_sec_05]
+
+    - name: A certificate outside the allowed domains is refused
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/pki_int/issue/server"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_pki_login.json.auth.client_token }}"
+        body: { common_name: evil.example.com }
+        status_code: 400
+      tags: [chk_sec_05]
+
+    - name: Ask for a certificate longer than 90 days
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/pki_int/issue/server"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_pki_login.json.auth.client_token }}"
+        body: { common_name: verify.test.internal, ttl: 2400h }
+      register: verify_long_cert
+      tags: [chk_sec_05]
+
+    - name: The certificate lifetime is capped at 90 days
+      ansible.builtin.assert:
+        that: verify_long_cert.json.data.expiration - (now(utc=true).timestamp() | int) <= 90 * 86400 + 300
+      tags: [chk_sec_05]
+
+    - name: The AppRole cannot do anything else
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/secret/data/ops/x"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_pki_login.json.auth.client_token }}"
+        body: { data: { a: b } }
+        status_code: 403
+      tags: [chk_iam_08]
+
+    - name: Create a test AppRole with the operator policy
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/auth/approle/role/molecule-ops"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_admin }}"
+        body: { token_policies: [ops], token_ttl: 5m, secret_id_ttl: 10m }
+        status_code: 204
+      changed_when: false
+
+    - name: Get the test AppRole credentials
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/auth/approle/role/molecule-ops/{{ item.path }}"
+        method: "{{ item.method }}"
+        headers:
+          X-Vault-Token: "{{ verify_admin }}"
+      loop:
+        - { path: role-id, method: GET }
+        - { path: secret-id, method: POST }
+      register: verify_ops_creds
+      no_log: true
+
+    - name: Log in as an operator
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/auth/approle/login"
+        method: POST
+        body:
+          role_id: "{{ verify_ops_creds.results[0].json.data.role_id }}"
+          secret_id: "{{ verify_ops_creds.results[1].json.data.secret_id }}"
+      register: verify_ops_login
+      no_log: true
+
+    - name: Write a secret under the operations prefix
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/secret/data/ops/molecule"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_ops_login.json.auth.client_token }}"
+        body: { data: { password: molecule-test-value } }
+      changed_when: false
+      tags: [chk_sec_02]
+
+    - name: Read the secret back
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/secret/data/ops/molecule"
+        headers:
+          X-Vault-Token: "{{ verify_ops_login.json.auth.client_token }}"
+      register: verify_kv
+      tags: [chk_sec_02]
+
+    - name: KV v2 returns the stored value
+      ansible.builtin.assert:
+        that:
+          - verify_kv.json.data.data.password == 'molecule-test-value'
+          - verify_kv.json.data.metadata.version >= 1
+      tags: [chk_sec_02]
+
+    - name: Operators cannot write application secrets
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/secret/data/apps/molecule"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_ops_login.json.auth.client_token }}"
+        body: { data: { a: b } }
+        status_code: 403
+      tags: [chk_sec_02]
+
+    - name: The secret read is in the audit file, with the value hashed
+      ansible.builtin.command: grep -c 'secret/data/ops/molecule' /opt/openbao/audit/audit.log
+      register: verify_audit_lines
+      changed_when: false
+      failed_when: verify_audit_lines.stdout | int < 2
+      tags: [chk_log_01, chk_sec_02]
+
+    - name: The secret value never appears in the audit file
+      ansible.builtin.command: grep -c 'molecule-test-value' /opt/openbao/audit/audit.log
+      register: verify_audit_plain
+      changed_when: false
+      failed_when: verify_audit_plain.rc != 1
+      tags: [chk_sec_02]
+
+    - name: Create a test SSH key
+      community.crypto.openssh_keypair:
+        path: /root/molecule-ssh-key
+        type: ed25519
+      tags: [chk_iam_06]
+
+    - name: Read the test SSH public key
+      ansible.builtin.slurp:
+        src: /root/molecule-ssh-key.pub
+      register: verify_ssh_pub
+      tags: [chk_iam_06]
+
+    - name: Sign the key with the operator role
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/ssh-client-signer/sign/operator"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_ops_login.json.auth.client_token }}"
+        body:
+          public_key: "{{ verify_ssh_pub.content | b64decode }}"
+          valid_principals: operator
+      register: verify_ssh_signed
+      tags: [chk_iam_06]
+
+    - name: Save the certificate
+      ansible.builtin.copy:
+        content: "{{ verify_ssh_signed.json.data.signed_key }}"
+        dest: /root/molecule-ssh-key-cert.pub
+        mode: "0644"
+      changed_when: false
+      tags: [chk_iam_06]
+
+    - name: Inspect the certificate
+      ansible.builtin.command: ssh-keygen -L -f /root/molecule-ssh-key-cert.pub
+      register: verify_ssh_cert
+      changed_when: false
+      tags: [chk_iam_06]
+
+    - name: The certificate is a user certificate for the operator principal, valid at most 8 hours
+      vars:
+        verify_valid: "{{ verify_ssh_cert.stdout | regex_search('Valid: from (\\S+) to (\\S+)', '\\1', '\\2') }}"
+      ansible.builtin.assert:
+        that:
+          - "'user certificate' in verify_ssh_cert.stdout"
+          - verify_ssh_cert.stdout is search('Principals:\\s+operator')
+          - >-
+            ((verify_valid[1] | to_datetime('%Y-%m-%dT%H:%M:%S'))
+             - (verify_valid[0] | to_datetime('%Y-%m-%dT%H:%M:%S'))).total_seconds() <= 8 * 3600 + 60
+      tags: [chk_iam_06]
+
+    - name: Operators cannot sign for the platform-admin role
+      ansible.builtin.uri:
+        url: "{{ verify_bao }}/v1/ssh-client-signer/sign/platform-admin"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ verify_ops_login.json.auth.client_token }}"
+        body:
+          public_key: "{{ verify_ssh_pub.content | b64decode }}"
+        status_code: 403
+      tags: [chk_iam_06]
+
+    - name: The SSH CA public key is published for ssh_hardening
+      ansible.builtin.stat:
+        path: "{{ openbao_init_output_dir }}/openbao-ssh-user-ca.pub"
+      delegate_to: localhost
+      become: false
+      register: verify_ssh_ca_file
+      tags: [chk_iam_06]
+
+    - name: The published key is the CA key
+      ansible.builtin.assert:
+        that:
+          - verify_ssh_ca_file.stat.exists
+          - lookup('ansible.builtin.file', openbao_init_output_dir ~ '/openbao-ssh-user-ca.pub') is match('ssh-ed25519 ')
+      tags: [chk_iam_06]
+
+    - name: The init output file on the controller is private
+      ansible.builtin.stat:
+        path: "{{ openbao_test_init_file }}"
+      delegate_to: localhost
+      become: false
+      register: verify_init_file
+      tags: [chk_sec_02]
+
+    - name: Only its owner can read the init output
+      ansible.builtin.assert:
+        that: verify_init_file.stat.mode == '0600'
+      tags: [chk_sec_02]
+
+    - name: Take a Raft snapshot with the backup pre-command
+      ansible.builtin.command: /usr/local/sbin/openbao-snapshot
+      register: verify_snapshot
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: Read the snapshot
+      ansible.builtin.stat:
+        path: "{{ verify_snapshot.stdout_lines | last }}"
+      register: verify_snapshot_file
+      tags: [chk_bck_01]
+
+    - name: Read the snapshot token and the backup declaration
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/etc/openbao/snapshot.token, /etc/compliant-infra/backup.d/openbao.json, /usr/local/sbin/openbao-snapshot]
+      register: verify_backup_files
+      tags: [chk_bck_01]
+
+    - name: The snapshot is non-empty, its token is root-only and the backup is declared
+      ansible.builtin.assert:
+        that:
+          - verify_snapshot_file.stat.exists
+          - verify_snapshot_file.stat.size > 1000
+          - verify_backup_files.results[0].stat.mode == '0600'
+          - verify_backup_files.results[1].stat.exists
+          - verify_backup_files.results[2].stat.mode == '0700'
+      tags: [chk_bck_01]
+
+    - name: Read the backup declaration
+      ansible.builtin.slurp:
+        src: /etc/compliant-infra/backup.d/openbao.json
+      register: verify_backup_decl
+      tags: [chk_bck_01]
+
+    - name: The backup runs the snapshot script first and covers the snapshot directory
+      vars:
+        verify_decl: "{{ verify_backup_decl.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_decl.pre_command == '/usr/local/sbin/openbao-snapshot'
+          - verify_decl.paths == ['/opt/openbao/snapshots']
+      tags: [chk_bck_01]
+
+    - name: The snapshot script keeps the token off the command line
+      ansible.builtin.command: grep -c 'read -r BAO_TOKEN' /usr/local/sbin/openbao-snapshot
+      changed_when: false
+      tags: [chk_bck_01, chk_sec_02]

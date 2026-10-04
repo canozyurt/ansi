@@ -1,0 +1,182 @@
+---
+- name: Read the initialisation status
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/init"
+    validate_certs: false
+  register: openbao_init_status
+  until: openbao_init_status.status == 200
+  retries: 30
+  delay: 2
+
+- name: Create the output directory on the controller (init output, AppRole credentials, SSH CA key)
+  ansible.builtin.file:
+    path: "{{ openbao_init_output_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Initialise a new cluster
+  when:
+    - inventory_hostname == openbao_init_host
+    - not openbao_init_status.json.initialized
+  tags: [chk_sec_02]
+  block:
+    - name: Name the init output file
+      ansible.builtin.set_fact:
+        openbao_init_file: >-
+          {{ openbao_init_output_dir }}/{{ openbao_cluster_name }}-init-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.json
+
+    - name: Initialise OpenBao
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/init"
+        method: POST
+        body_format: json
+        body: >-
+          {{ {'secret_shares': openbao_key_shares | int, 'secret_threshold': openbao_key_threshold | int}
+             if openbao_seal_type == 'shamir' else
+             {'recovery_shares': openbao_key_shares | int, 'recovery_threshold': openbao_key_threshold | int} }}
+        validate_certs: false
+      register: openbao_init_response
+      no_log: true
+      changed_when: true
+
+    - name: Keep the keys and the root token for this run
+      ansible.builtin.set_fact:
+        openbao_init_keys: "{{ openbao_init_response.json.keys_base64 }}"
+        openbao_root_token: "{{ openbao_init_response.json.root_token }}"
+        openbao_init_record:
+          warning: >-
+            Move this file to sealed offline storage now (for example split across key holders or in a
+            safe) and delete it from this machine. Put the unseal keys and the admin token into
+            Ansible Vault (openbao_unseal_keys, openbao_admin_token).
+          cluster: "{{ openbao_cluster_name }}"
+          created: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+          seal_type: "{{ openbao_seal_type }}"
+          threshold: "{{ openbao_key_threshold | int }}"
+          unseal_keys_b64: "{{ openbao_init_response.json.keys_base64 }}"
+          recovery_keys_b64: "{{ openbao_init_response.json.recovery_keys_base64 | default([]) }}"
+          root_token: "{{ openbao_init_response.json.root_token }} (revoked as soon as the admin_token exists)"
+      no_log: true
+
+    - name: Write the init output once to the controller (0600)
+      ansible.builtin.copy:
+        content: "{{ openbao_init_record | to_nice_json }}\n"
+        dest: "{{ openbao_init_file }}"
+        mode: "0600"
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+- name: Share the new keys and root token with every node
+  ansible.builtin.set_fact:
+    openbao_init_keys: "{{ hostvars[openbao_init_host].openbao_init_keys | default([]) }}"
+    openbao_root_token: "{{ hostvars[openbao_init_host].openbao_root_token | default('') }}"
+    openbao_init_file: "{{ hostvars[openbao_init_host].openbao_init_file | default('') }}"
+    openbao_init_record: "{{ hostvars[openbao_init_host].openbao_init_record | default({}) }}"
+  no_log: true
+
+- name: Unseal the first node
+  ansible.builtin.include_tasks: health.yml
+  when: inventory_hostname == openbao_init_host
+
+- name: Unseal the other nodes (they join the Raft cluster while unsealing)
+  ansible.builtin.include_tasks: health.yml
+  when: inventory_hostname != openbao_init_host
+
+- name: Create the configuration token on a new cluster
+  when: openbao_root_token | length > 0
+  run_once: true
+  tags: [chk_iam_08]
+  block:
+    - name: Write the ansible-config policy
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/policies/acl/ansible-config"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_root_token }}"
+        body_format: json
+        body:
+          policy: "{{ lookup('ansible.builtin.template', 'policies/ansible-config.hcl.j2') }}"
+        status_code: [200, 204]
+        validate_certs: false
+      no_log: true
+      changed_when: true
+
+    - name: Create the periodic configuration token
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ openbao_api_port }}/v1/auth/token/create"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_root_token }}"
+        body_format: json
+        body:
+          policies: [ansible-config]
+          no_parent: true
+          period: "{{ openbao_admin_token_period }}"
+          display_name: ansible-config
+          meta:
+            purpose: Ansible configuration runs (openbao role)
+        validate_certs: false
+      register: openbao_admin_token_response
+      no_log: true
+      changed_when: true
+
+    - name: Add the configuration token to the init output file
+      ansible.builtin.copy:
+        content: >-
+          {{ openbao_init_record | combine({'admin_token': openbao_admin_token_response.json.auth.client_token})
+             | to_nice_json }}
+        dest: "{{ openbao_init_file }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # Revoked straight away, not at the end of the run: every later call uses the configuration token,
+    # and a run that fails half-way must not leave a live root token behind (IAM-08).
+    - name: Revoke the initial root token
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ openbao_api_port }}/v1/auth/token/revoke-self"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_root_token }}"
+        validate_certs: false
+        status_code: [200, 204]
+      no_log: true
+      changed_when: true
+
+- name: Use the configuration token for this run
+  ansible.builtin.set_fact:
+    openbao_token: >-
+      {{ openbao_admin_token_response.json.auth.client_token
+         if openbao_admin_token_response.json is defined else openbao_admin_token }}
+  run_once: true
+  no_log: true
+
+- name: Check a configuration token is available
+  ansible.builtin.assert:
+    that: openbao_token | length > 0
+    fail_msg: >-
+      Set openbao_admin_token (Ansible Vault) to the admin_token from the init output file. If it is
+      lost, set openbao_allow_generate_root for one run, generate a root token with the unseal keys
+      ("bao operator generate-root"), create a new token with the ansible-config policy and revoke the root token.
+    quiet: true
+  run_once: true
+
+- name: Renew the configuration token so it does not expire between runs
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/auth/token/renew-self"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_token }}"
+    body_format: json
+    body: {}
+    validate_certs: false
+  run_once: true
+  check_mode: false
+  no_log: true
+  changed_when: false
+  tags: [chk_iam_08]

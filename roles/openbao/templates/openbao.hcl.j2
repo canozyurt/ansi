@@ -1,0 +1,89 @@
+# {{ ansible_managed }}
+# Same file on every node, apart from node_id, the addresses and retry_join targets.
+ui            = true
+cluster_name  = "{{ openbao_cluster_name }}"
+api_addr      = "https://{{ openbao_node_address }}:{{ openbao_api_port }}"
+cluster_addr  = "https://{{ openbao_node_address }}:{{ openbao_cluster_port }}"
+log_level     = "{{ openbao_log_level }}"
+log_format    = "json"
+# No mlock setting: OpenBao removed mlock support (disable_mlock is obsolete), so the container needs
+# no IPC_LOCK capability. Swap is kept away from secrets by giving the container no swap allowance.
+
+storage "raft" {
+  path    = "/openbao/data"
+  node_id = "{{ openbao_node_address }}"
+{% for host in openbao_cluster_hosts if host != inventory_hostname %}
+
+  retry_join {
+    leader_api_addr       = "https://{{ hostvars[host].openbao_node_address | default(host) }}:{{ openbao_api_port }}"
+    leader_ca_cert_file   = "/openbao/tls/peers.pem"
+    leader_tls_servername = "{{ hostvars[host].openbao_node_address | default(host) }}"
+  }
+{% endfor %}
+}
+
+# Client API, TLS 1.2+ (SEC-03). Metrics are served only on the metrics listener below.
+listener "tcp" {
+  address                                  = "0.0.0.0:{{ openbao_api_port }}"
+  cluster_address                          = "0.0.0.0:{{ openbao_cluster_port }}"
+  tls_cert_file                            = "/openbao/tls/tls.crt"
+  tls_key_file                             = "/openbao/tls/tls.key"
+  tls_min_version                          = "tls12"
+  tls_auto_reload                          = true
+  disable_unauthed_rekey_endpoints         = true
+  disable_unauthed_generate_root_endpoints = {{ (not openbao_allow_generate_root | bool) | lower }}
+
+  telemetry {
+    disallow_metrics = true
+  }
+}
+
+# Prometheus metrics only, unauthenticated; the firewall admits the monitoring network only (LOG-05).
+listener "tcp" {
+  address         = "0.0.0.0:{{ openbao_metrics_port }}"
+  cluster_address = "127.0.0.1:{{ openbao_metrics_port + 1 }}"
+  tls_cert_file   = "/openbao/tls/tls.crt"
+  tls_key_file    = "/openbao/tls/tls.key"
+  tls_min_version = "tls12"
+  tls_auto_reload = true
+
+  telemetry {
+    metrics_only                   = true
+    unauthenticated_metrics_access = true
+  }
+}
+
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}
+
+# Audit devices are declared here; creating them through the API stays disabled (OpenBao default).
+# Two devices: OpenBao refuses a request only if no device can record it (LOG-01, SEC-02).
+audit "file" "stdout" {
+  description = "Audit log to the container log (journald, then central logging)"
+  options {
+    file_path = "stdout"
+    log_raw   = "false"
+  }
+}
+
+audit "file" "file" {
+  description = "Audit log file on the host for the SIEM agent"
+  options {
+    file_path = "/openbao/audit/audit.log"
+    mode      = "0600"
+    log_raw   = "false"
+  }
+}
+{% if openbao_seal_type == 'static' %}
+
+# Auto-unseal with a static key from the secrets store (env file, 0600).
+seal "static" {
+  current_key_id = "{{ openbao_static_seal_key_id }}"
+  current_key    = "env://BAO_STATIC_SEAL_KEY"
+}
+{% elif openbao_seal_type == 'custom' %}
+
+{{ openbao_seal_hcl }}
+{% endif %}

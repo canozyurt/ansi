@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: openbao
+  author: compliant-infra-ansible contributors
+  description: Highly available OpenBao for secrets, encryption keys, the internal PKI and the SSH user CA
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions
+  - role: rbac_model

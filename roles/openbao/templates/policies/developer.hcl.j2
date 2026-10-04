@@ -1,0 +1,4 @@
+# developer: reads and writes application secrets under the apps prefix.
+path "secret/data/{{ openbao_apps_kv_prefix }}/*" { capabilities = ["create", "read", "update", "patch", "delete"] }
+path "secret/metadata/{{ openbao_apps_kv_prefix }}/*" { capabilities = ["read", "list", "delete"] }
+path "secret/metadata/{{ openbao_apps_kv_prefix }}" { capabilities = ["list"] }

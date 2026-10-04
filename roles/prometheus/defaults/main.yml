@@ -56,7 +56,7 @@ prometheus_scrape_password: "{{ monitoring_scrape_password | default('') }}"
 prometheus_scrape_catalog:
   - { name: node, group: all, port: 9100, path: /metrics, scheme: https, basic_auth: true }
   - { name: keycloak, group: keycloak, port: 9000, path: /metrics, scheme: https }
-  - { name: openbao, group: openbao, port: 8200, path: /v1/sys/metrics, scheme: https, params: { format: [prometheus] } }
+  - { name: openbao, group: openbao, port: 8202, path: /v1/sys/metrics, scheme: https, params: { format: [prometheus] } }
   - { name: haproxy, group: edge, port: 8405, path: /metrics, scheme: https }
   - { name: prometheus, group: monitoring, port: 9090, path: /metrics, scheme: https, basic_auth: true }
   - { name: alertmanager, group: monitoring, port: 9093, path: /metrics, scheme: https, basic_auth: true }

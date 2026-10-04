@@ -1,0 +1,80 @@
+{# Configuration resources: path (POST), optional read path, body, and optional compare (the body as the
+   API returns it, e.g. durations in seconds). Rendered to YAML; values are JSON so any text is safe. #}
+{% set u = openbao_ttl_units %}
+{% macro secs(d) %}{{ (d[:-1] | int) * u[d[-1]] }}{% endmacro %}
+# Policies
+{% for name in openbao_policy_names %}
+- path: sys/policies/acl/{{ name }}
+  body: {{ {'policy': lookup('ansible.builtin.template', 'policies/' ~ name ~ '.hcl.j2')} | to_json }}
+{% endfor %}
+
+# KV v2
+- path: secret/config
+  body: {{ {'max_versions': openbao_kv_max_versions | int} | to_json }}
+
+# PKI (SEC-05)
+{% for mount, ttl in [['pki', openbao_pki_root_ttl], ['pki_int', openbao_pki_int_ttl]] %}
+- path: sys/mounts/{{ mount }}/tune
+  body: {{ {'max_lease_ttl': ttl} | to_json }}
+  compare: {{ {'max_lease_ttl': secs(ttl) | int} | to_json }}
+- path: {{ mount }}/config/urls
+  body: {{ {'issuing_certificates': [openbao_api_addr ~ '/v1/' ~ mount ~ '/ca'],
+            'crl_distribution_points': [openbao_api_addr ~ '/v1/' ~ mount ~ '/crl']} | to_json }}
+- path: {{ mount }}/config/auto-tidy
+  body: {{ {'enabled': true, 'interval_duration': openbao_pki_tidy_interval, 'tidy_cert_store': true,
+            'tidy_revoked_certs': true, 'tidy_revoked_cert_issuer_associations': true,
+            'tidy_expired_issuers': true, 'safety_buffer': openbao_pki_tidy_safety_buffer} | to_json }}
+  compare: {{ {'enabled': true, 'interval_duration': secs(openbao_pki_tidy_interval) | int, 'tidy_cert_store': true,
+               'tidy_revoked_certs': true, 'tidy_revoked_cert_issuer_associations': true,
+               'tidy_expired_issuers': true, 'safety_buffer': secs(openbao_pki_tidy_safety_buffer) | int} | to_json }}
+{% endfor %}
+{% set pki_role = {'allowed_domains': openbao_pki_allowed_domains, 'allow_subdomains': true, 'allow_bare_domains': true,
+                   'allow_localhost': true, 'allow_ip_sans': true, 'allow_wildcard_certificates': false,
+                   'enforce_hostnames': true, 'server_flag': true, 'client_flag': false,
+                   'key_type': openbao_pki_key_type, 'key_bits': openbao_pki_key_bits | int} %}
+- path: pki_int/roles/{{ openbao_pki_role }}
+  body: {{ pki_role | combine({'max_ttl': openbao_pki_max_ttl, 'ttl': openbao_pki_max_ttl}) | to_json }}
+  compare: {{ pki_role | combine({'max_ttl': secs(openbao_pki_max_ttl) | int, 'ttl': secs(openbao_pki_max_ttl) | int}) | to_json }}
+
+# AppRole for roles/tls_cert (IAM-08): short-lived tokens, secret_ids that expire
+- path: auth/approle/role/{{ openbao_pki_approle }}
+  body: {{ {'token_policies': ['pki-issue-server'], 'token_ttl': openbao_pki_approle_token_ttl,
+            'token_max_ttl': openbao_pki_approle_token_ttl, 'secret_id_ttl': openbao_pki_approle_secret_id_ttl,
+            'secret_id_num_uses': 0, 'secret_id_bound_cidrs': openbao_pki_approle_secret_id_cidrs} | to_json }}
+  compare: {{ {'token_policies': ['pki-issue-server'], 'token_ttl': secs(openbao_pki_approle_token_ttl) | int,
+               'token_max_ttl': secs(openbao_pki_approle_token_ttl) | int,
+               'secret_id_ttl': secs(openbao_pki_approle_secret_id_ttl) | int,
+               'secret_id_bound_cidrs': openbao_pki_approle_secret_id_cidrs} | to_json }}
+
+# Token role for the backup's snapshot tokens (BCK-01)
+- path: auth/token/roles/raft-snapshot
+  body: {{ {'allowed_policies': ['raft-snapshot'], 'orphan': true, 'renewable': true,
+            'token_period': openbao_snapshot_token_period, 'token_no_default_policy': true} | to_json }}
+  compare: {{ {'allowed_policies': ['raft-snapshot'], 'orphan': true, 'renewable': true,
+               'token_period': secs(openbao_snapshot_token_period) | int, 'token_no_default_policy': true} | to_json }}
+
+# SSH user CA (IAM-06): one signing role per default role; only some roles get login principals
+{% for role in rbac_model_all_roles | default(rbac_model_roles) %}
+{%   set principals = openbao_ssh_role_principals[role] | default([]) %}
+- path: {{ openbao_ssh_mount }}/roles/{{ role }}
+  body: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+            'allowed_users': principals | join(','), 'default_user': principals | first | default(''),
+            'allowed_extensions': 'permit-pty', 'default_extensions': {'permit-pty': ''},
+            'ttl': openbao_ssh_cert_ttl, 'max_ttl': openbao_ssh_cert_ttl} | to_json }}
+  compare: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+               'allowed_users': principals | join(','), 'default_user': principals | first | default(''),
+               'allowed_extensions': 'permit-pty', 'default_extensions': {'permit-pty': ''},
+               'ttl': secs(openbao_ssh_cert_ttl) | int, 'max_ttl': secs(openbao_ssh_cert_ttl) | int} | to_json }}
+{% endfor %}
+
+# Transit keys with automatic rotation (SEC-06)
+{% for key in openbao_transit_keys %}
+- path: transit/keys/{{ key.name }}
+  body: {{ {'type': key.type | default('aes256-gcm96')} | to_json }}
+- path: transit/keys/{{ key.name }}/config
+  read: transit/keys/{{ key.name }}
+  body: {{ {'auto_rotate_period': key.rotate_period | default(openbao_transit_rotate_period),
+            'deletion_allowed': false, 'exportable': false} | to_json }}
+  compare: {{ {'auto_rotate_period': secs(key.rotate_period | default(openbao_transit_rotate_period)) | int,
+               'deletion_allowed': false, 'exportable': false} | to_json }}
+{% endfor %}

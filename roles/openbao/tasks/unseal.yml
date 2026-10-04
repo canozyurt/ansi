@@ -1,0 +1,42 @@
+---
+- name: Check the unseal keys are available
+  ansible.builtin.assert:
+    that: openbao_unseal_keys_effective | length >= openbao_seal_status.json.t | int
+    fail_msg: >-
+      {{ inventory_hostname }} is sealed. Provide at least {{ openbao_seal_status.json.t }} keys in
+      openbao_unseal_keys (Ansible Vault), or unseal it by hand with "bao operator unseal".
+    quiet: true
+  vars:
+    openbao_unseal_keys_effective: "{{ openbao_init_keys | default(openbao_unseal_keys, true) }}"
+
+- name: Discard a half-finished unseal attempt
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      reset: true
+    validate_certs: false
+  when: openbao_seal_status.json.progress | int > 0
+  changed_when: true
+
+- name: Submit the unseal keys
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/unseal"
+    method: POST
+    body_format: json
+    body:
+      key: "{{ item }}"
+    validate_certs: false
+  loop: "{{ (openbao_init_keys | default(openbao_unseal_keys, true))[: openbao_seal_status.json.t | int] }}"
+  no_log: true
+  changed_when: true
+
+- name: Wait until the node is unsealed (a joining node first copies the Raft data)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/seal-status"
+    validate_certs: false
+  register: openbao_unsealed
+  until: openbao_unsealed.status == 200 and not openbao_unsealed.json.sealed
+  retries: 60
+  delay: 2

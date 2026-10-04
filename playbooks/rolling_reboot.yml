@@ -35,3 +35,11 @@
       when:
         - reboot_done is changed
         - inventory_hostname in groups['keycloak'] | default([])
+
+    - name: Unseal OpenBao on this host and wait until it rejoins the cluster
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: health
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['openbao'] | default([])

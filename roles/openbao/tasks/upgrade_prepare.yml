@@ -1,0 +1,52 @@
+---
+# Runs before any container changes. Detects a version change, refuses it outside playbooks/upgrade.yml
+# (one node per play batch), and takes a Raft snapshot once per upgrade before the first node changes
+# (CHG-07). upgrade.yml orders the nodes standbys first and the active node last.
+- name: Read the running OpenBao container
+  community.docker.docker_container_info:
+    name: "{{ openbao_container_name }}"
+  register: openbao_current_container
+
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    openbao_running_image: >-
+      {{ openbao_current_container.container.Config.Image if openbao_current_container.exists else '' }}
+    openbao_needs_upgrade: >-
+      {{ openbao_current_container.exists and openbao_current_container.container.Config.Image != openbao_image }}
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: >-
+      not openbao_needs_upgrade
+      or ansible_play_batch | length == 1
+      or openbao_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ openbao_running_image }} but this release pins {{ openbao_image }}.
+      Run playbooks/upgrade.yml, which takes a Raft snapshot and upgrades one node at a time, standbys first.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Take a Raft snapshot before the first node changes version
+  ansible.builtin.command: /usr/local/sbin/openbao-snapshot
+  register: openbao_upgrade_snapshot_result
+  when:
+    - openbao_needs_upgrade
+    - openbao_upgrade_snapshot | bool
+    - openbao_upgrade_snapshot_taken is not defined
+  changed_when: true
+  tags: [chk_chg_07, chk_bck_01]
+
+- name: Remember that this upgrade has its snapshot
+  ansible.builtin.set_fact:
+    openbao_upgrade_snapshot_taken: "{{ openbao_upgrade_snapshot_result.stdout | default('') }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ openbao_cluster_hosts }}"
+  when: openbao_upgrade_snapshot_result.stdout is defined
+
+- name: Report the upgrade
+  ansible.builtin.debug:
+    msg: >-
+      Upgrading {{ inventory_hostname }} from {{ openbao_running_image }} to {{ openbao_image }}
+      (snapshot {{ openbao_upgrade_snapshot_taken | default('skipped') }}).
+  when: openbao_needs_upgrade

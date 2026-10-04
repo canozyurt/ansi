@@ -1,0 +1,143 @@
+---
+openbao_image: "{{ versions_images.openbao }}"
+openbao_container_name: openbao
+# The upstream image runs as the unprivileged user openbao (uid 100, gid 1000).
+openbao_container_uid: 100
+openbao_container_gid: 1000
+openbao_memory_limit: 1g
+
+# Name clients use (DNS name of the cluster or its load balancer). Goes into the certificate and the
+# PKI URLs. Each node is also reached by its inventory name (openbao_node_address).
+openbao_hostname: bao.example.internal
+openbao_node_address: "{{ inventory_hostname }}"
+openbao_api_port: 8200
+openbao_cluster_port: 8201
+# Metrics-only listener (/v1/sys/metrics, unauthenticated); the firewall limits it to monitoring (LOG-05).
+openbao_metrics_port: 8202
+openbao_api_addr: "https://{{ openbao_hostname }}:{{ openbao_api_port }}"
+
+# High availability (HA-01): integrated Raft storage, every node joins the others with retry_join over TLS.
+openbao_min_nodes: 3
+openbao_allow_single_node: false
+openbao_cluster_hosts: "{{ ansible_play_hosts_all }}"
+openbao_cluster_name: openbao
+# Node that initialises a new cluster.
+openbao_init_host: "{{ openbao_cluster_hosts | first }}"
+
+openbao_data_dir: /opt/openbao
+openbao_log_level: info
+
+# TLS (SEC-03). Organisation-supplied files on the host; when empty, tls_cert issues one from the
+# internal PKI (pki_openbao_addr, i.e. this cluster once it runs) or a temporary self-signed one.
+openbao_tls_cert_file: ""
+openbao_tls_key_file: ""
+openbao_tls_alt_names: []
+
+# ------------------------------------------------------------------ seal and initialisation
+# shamir (default): 5 key shares, 3 needed to unseal. Keys are written once to a 0600 file on the
+# Ansible controller and must then move to sealed offline storage (see docs/architecture.md).
+# static: auto-unseal with a 32-byte key (openbao_static_seal_key, base64) from the secrets store.
+# custom: any other seal OpenBao supports (transit, awskms, gcpckms, azurekeyvault, pkcs11, kmip):
+#         put the stanza in openbao_seal_hcl and its credentials in openbao_seal_env.
+openbao_seal_type: shamir
+openbao_key_shares: 5
+openbao_key_threshold: 3
+openbao_static_seal_key: ""
+openbao_static_seal_key_id: "1"
+openbao_seal_hcl: ""
+openbao_seal_env: {}
+# Directory on the Ansible controller for the one-time init output (unseal/recovery keys, root and
+# admin tokens). Mode 0700; files 0600.
+openbao_init_output_dir: "{{ playbook_dir }}/../.openbao-init"
+
+# Unseal keys (base64) for later runs, from Ansible Vault. Only needed with the shamir seal.
+openbao_unseal_keys: []
+# Token for configuration runs after the first one (Ansible Vault). The first run creates it
+# (policy ansible-config, periodic, renewed by every run) and writes it to the init output file;
+# the root token is revoked when the first run finishes.
+openbao_admin_token: ""
+openbao_admin_token_period: 720h
+# Break-glass only: enable the unauthenticated generate-root endpoints to mint a new root token with
+# the unseal (or recovery) keys, e.g. when the admin token is lost. Turn it off again afterwards.
+openbao_allow_generate_root: false
+
+# ------------------------------------------------------------------ audit (LOG-01, SEC-02)
+# Two declarative audit devices: stdout (container log -> journald -> central logging, non-blocking)
+# and a file on the host for the SIEM agent. A request is refused only if every device fails, and a
+# slow log pipeline cannot block requests because the stdout log driver drops instead of waiting.
+openbao_audit_file: "{{ openbao_data_dir }}/audit/audit.log"
+openbao_audit_rotate_days: 7
+
+# ------------------------------------------------------------------ secrets engines
+openbao_kv_max_versions: 10
+
+# PKI (SEC-03, SEC-05): root CA in pki/ (long TTL, signs only the intermediate) and an issuing
+# intermediate in pki_int/. Role "server" matches what roles/tls_cert requests.
+openbao_pki_root_cn: "Compliant Infra Root CA"
+openbao_pki_int_cn: "Compliant Infra Issuing CA"
+openbao_pki_root_ttl: 87600h          # 10 years
+openbao_pki_int_ttl: 43800h           # 5 years
+openbao_pki_role: server
+openbao_pki_allowed_domains: []        # e.g. [example.internal]; required
+openbao_pki_max_ttl: 2160h             # 90 days
+openbao_pki_key_type: ec
+openbao_pki_key_bits: 256
+openbao_pki_tidy_interval: 12h
+openbao_pki_tidy_safety_buffer: 72h
+
+# AppRole used by roles/tls_cert: can only issue from pki_int/issue/server.
+openbao_pki_approle: ansible-pki
+openbao_pki_approle_token_ttl: 10m
+openbao_pki_approle_secret_id_ttl: 2160h   # rotate the secret_id every quarter (IAM-08)
+openbao_pki_approle_secret_id_cidrs: []
+# Issue a new secret_id in this run and write it to the init output directory (0600) for the
+# inventory vault (pki_openbao_secret_id).
+openbao_pki_issue_secret_id: false
+
+# SSH user CA (IAM-06): one signing role per default role. Only these roles get login principals;
+# map principals to local accounts with ssh_hardening's AuthorizedPrincipalsFile.
+openbao_ssh_mount: ssh-client-signer
+openbao_ssh_role_principals:
+  platform-admin: [platform-admin]
+  operator: [operator]
+openbao_ssh_cert_ttl: 8h
+
+# Transit (SEC-06): application encryption keys, rotated automatically.
+openbao_transit_keys:
+  - { name: app-default, type: aes256-gcm96 }
+openbao_transit_rotate_period: 2160h  # 90 days
+
+# ------------------------------------------------------------------ identity (IAM-01, IAM-09)
+openbao_oidc_enabled: "{{ oidc_clients_enabled | default(true) }}"
+openbao_oidc_client_id: openbao
+openbao_oidc_client_secret: ""
+openbao_oidc_discovery_url: "{{ (keycloak_hostname | default('')) ~ '/realms/' ~ (keycloak_realm | default('org')) }}"
+openbao_oidc_discovery_ca_pem: ""
+openbao_oidc_redirect_uris:
+  - "{{ openbao_api_addr }}/ui/vault/auth/oidc/oidc/callback"
+  - http://localhost:8250/oidc/callback     # bao login -method=oidc on the user's machine
+openbao_oidc_token_ttl: 1h
+openbao_oidc_token_max_ttl: 10h
+# Default role -> OpenBao policies. Roles not listed (member, extra roles) get no policy.
+openbao_role_policies:
+  platform-admin: [admin]
+  security-admin: [security-audit]
+  operator: [ops]
+  developer: [developer]
+  auditor: [auditor]
+# KV prefixes the operator and developer policies may write.
+openbao_ops_kv_prefix: ops
+openbao_apps_kv_prefix: apps
+
+# ------------------------------------------------------------------ backup (BCK-01)
+openbao_snapshot_dir: "{{ openbao_data_dir }}/snapshots"
+openbao_snapshot_keep: 7
+openbao_snapshot_token_file: /etc/openbao/snapshot.token
+openbao_snapshot_token_period: 768h   # renewed by every snapshot
+openbao_backup_rpo_hours: 24
+openbao_backup_rto_hours: 4
+
+# Upgrades (docs/upgrades.md): a version change runs only through playbooks/upgrade.yml, one node
+# at a time, standbys before the active node, after a Raft snapshot.
+openbao_upgrade_allow_parallel: false
+openbao_upgrade_snapshot: true

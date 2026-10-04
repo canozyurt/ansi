@@ -1,0 +1,69 @@
+---
+# BCK-01: the backup role runs /usr/local/sbin/openbao-snapshot before each backup. The script takes a
+# Raft snapshot with a token that can only do that (policy raft-snapshot), read from a root-only file.
+- name: Check the snapshot token on this node
+  ansible.builtin.slurp:
+    src: "{{ openbao_snapshot_token_file }}"
+  register: openbao_snapshot_token_current
+  failed_when: false
+  no_log: true
+
+- name: Check the snapshot token is still valid
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/auth/token/lookup-self"
+    headers:
+      X-Vault-Token: "{{ openbao_snapshot_token_current.content | b64decode | trim }}"
+    validate_certs: false
+    status_code: [200, 403]
+  register: openbao_snapshot_token_lookup
+  when: openbao_snapshot_token_current.content is defined
+  no_log: true
+
+- name: Create a snapshot token for this node
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/auth/token/create/raft-snapshot"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_token }}"
+    body_format: json
+    body:
+      display_name: "raft-snapshot-{{ inventory_hostname }}"
+      meta:
+        host: "{{ inventory_hostname }}"
+    validate_certs: false
+  register: openbao_snapshot_token_new
+  when: openbao_snapshot_token_lookup.status | default(0) != 200
+  no_log: true
+  changed_when: true
+  tags: [chk_bck_01, chk_iam_08]
+
+- name: Store the snapshot token (root only)
+  ansible.builtin.copy:
+    content: "{{ openbao_snapshot_token_new.json.auth.client_token }}\n"
+    dest: "{{ openbao_snapshot_token_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: openbao_snapshot_token_lookup.status | default(0) != 200
+  no_log: true
+  tags: [chk_bck_01, chk_sec_02]
+
+- name: Install the snapshot script
+  ansible.builtin.template:
+    src: openbao-snapshot.sh.j2
+    dest: /usr/local/sbin/openbao-snapshot
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [chk_bck_01]
+
+- name: Declare the OpenBao backup
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: openbao
+    backup_register_paths: ["{{ openbao_snapshot_dir }}"]
+    backup_register_pre_command: /usr/local/sbin/openbao-snapshot
+    backup_register_rpo_hours: "{{ openbao_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ openbao_backup_rto_hours }}"
+  tags: [chk_bck_01]

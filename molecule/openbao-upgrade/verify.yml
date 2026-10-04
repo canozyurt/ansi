@@ -1,0 +1,49 @@
+---
+- name: Verify the upgraded service still meets its checklist items
+  ansible.builtin.import_playbook: ../openbao/verify.yml
+
+- name: Verify the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    bundle: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/versions/defaults/main.yml') | from_yaml }}"
+  tasks:
+    - name: Inspect the OpenBao container
+      community.docker.docker_container_info:
+        name: openbao
+      register: verify_bao_container
+      tags: [chk_chg_07]
+
+    - name: OpenBao runs the version pinned by this release
+      ansible.builtin.assert:
+        that:
+          - verify_bao_container.container.Config.Image == bundle.versions_images.openbao
+          - verify_bao_container.container.State.Running
+      tags: [chk_chg_07]
+
+    - name: Read the health of the upgraded node
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8200/v1/sys/health
+        validate_certs: false
+      register: verify_bao_health
+      tags: [chk_chg_07]
+
+    - name: The upgraded node reports the new version and was unsealed after the restart
+      ansible.builtin.assert:
+        that:
+          - verify_bao_health.json.version == bundle.versions_images.openbao.split(':') | last
+          - not verify_bao_health.json.sealed
+      tags: [chk_chg_07]
+
+    - name: Find the Raft snapshots
+      ansible.builtin.find:
+        paths: /opt/openbao/snapshots
+        patterns: openbao-*.snap
+      register: verify_bao_snapshots
+      tags: [chk_chg_07]
+
+    - name: A snapshot was taken before the upgrade (verify adds one more)
+      ansible.builtin.assert:
+        that: verify_bao_snapshots.matched >= 2
+      tags: [chk_chg_07]

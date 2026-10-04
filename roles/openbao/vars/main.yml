@@ -1,0 +1,16 @@
+---
+# Seconds per duration unit, to compare durations with what the API returns.
+openbao_ttl_units: { s: 1, m: 60, h: 3600, d: 86400 }
+# The role talks to the node it runs on over loopback (traffic never leaves the host), so its own API
+# calls skip certificate verification; organisation certificates need not carry a 127.0.0.1 SAN.
+openbao_url: "https://127.0.0.1:{{ openbao_api_port }}"
+openbao_config_host: "{{ ansible_play_hosts | first }}"
+openbao_policy_names:
+  - ansible-config
+  - admin
+  - security-audit
+  - ops
+  - developer
+  - auditor
+  - pki-issue-server
+  - raft-snapshot

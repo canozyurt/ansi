@@ -1,0 +1,47 @@
+---
+# Included once per node (loop in deploy.yml); only the node named by openbao_node acts.
+- name: Start or update node {{ openbao_node }}
+  when: inventory_hostname == openbao_node
+  block:
+    - name: Run the OpenBao container
+      community.docker.docker_container:
+        name: "{{ openbao_container_name }}"
+        image: "{{ openbao_image }}"
+        command: [server]
+        network_mode: host
+        env_file: "{{ openbao_data_dir }}/openbao.env"
+        volumes:
+          - "{{ openbao_data_dir }}/config:/openbao/config:ro"
+          - "{{ openbao_data_dir }}/tls:/openbao/tls:ro"
+          - "{{ openbao_data_dir }}/data:/openbao/data"
+          - "{{ openbao_data_dir }}/audit:/openbao/audit"
+          - "{{ openbao_snapshot_dir }}:/openbao/snapshots"
+        tmpfs:
+          - /tmp:size=64m,mode=1777
+        read_only: true
+        restart_policy: unless-stopped
+        memory: "{{ openbao_memory_limit }}"
+        # Same as the memory limit: the container gets no swap, so secrets are never written to swap.
+        memory_swap: "{{ openbao_memory_limit }}"
+        pids_limit: 512
+        ulimits:
+          - core:0:0
+        # No capabilities: OpenBao has no mlock (so no IPC_LOCK) and listens on ports above 1024.
+        cap_drop: [ALL]
+        security_opts: [no-new-privileges:true]
+        log_driver: journald
+        log_options:
+          tag: openbao
+          # Never block OpenBao on a slow log pipeline; the audit file keeps the complete record.
+          mode: non-blocking
+          max-buffer-size: 4m
+        labels:
+          com.compliant-infra.role: openbao
+        state: started
+        restart: "{{ openbao_config_file is changed or openbao_env_file is changed }}"
+      register: openbao_container
+      tags: [chk_hrd_02]
+
+    - name: Wait for the restarted node and unseal it
+      ansible.builtin.include_tasks: health.yml
+      when: openbao_container is changed  # noqa: no-handler -- the next node must wait until this one is back

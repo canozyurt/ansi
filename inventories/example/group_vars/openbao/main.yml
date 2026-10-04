@@ -1,0 +1,19 @@
+---
+openbao_hostname: bao.example.internal
+openbao_pki_allowed_domains: [example.internal]
+# Keep secrets out of plain text: ansible-vault encrypt_string, or look them up from the secrets manager.
+openbao_oidc_client_secret: "{{ vault_openbao_oidc_client_secret }}"
+# After the first run: copy these from the init output file, then move that file to offline storage.
+openbao_unseal_keys: "{{ vault_openbao_unseal_keys | default([]) }}"
+openbao_admin_token: "{{ vault_openbao_admin_token | default('') }}"
+
+# Networks that reach OpenBao: every zone requests certificates and secrets (NET-01, NET-03).
+openbao_client_cidrs: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}", "{{ network_zones.data }}"]
+# Prometheus servers; replace with the monitoring hosts' addresses when the monitoring group exists.
+openbao_monitoring_cidrs: ["{{ network_zones.mgmt }}"]
+
+firewall_rules_openbao:
+  - { name: openbao-api, port: 8200, sources: "{{ openbao_client_cidrs }}" }
+  # Raft and request forwarding between OpenBao nodes (all in the mgmt zone); narrow to their /32s if you can.
+  - { name: openbao-cluster, port: 8201, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: openbao-metrics, port: 8202, sources: "{{ openbao_monitoring_cidrs }}" }

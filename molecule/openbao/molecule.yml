@@ -1,0 +1,65 @@
+---
+# OpenBao on a single node (lab mode) with Docker running inside the test container. Shamir seal,
+# self-signed TLS, OIDC skipped (no Keycloak in this scenario). Init output goes to the scenario's
+# ephemeral directory and later runs read the keys and admin token back from there.
+driver:
+  name: docker
+platforms:
+  - name: openbao-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [openbao, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          sre: [operator]
+          auditors: [auditor]
+        oidc_clients_enabled: false
+        openbao_allow_single_node: true
+        openbao_hostname: bao.test.internal
+        openbao_pki_allowed_domains: [test.internal]
+        # Issue a secret_id once (the first run), so later runs stay idempotent.
+        openbao_pki_issue_secret_id: >-
+          {{ query('ansible.builtin.fileglob', openbao_init_output_dir ~ '/openbao-pki-approle.json') | length == 0 }}
+        openbao_memory_limit: 512m
+        openbao_init_output_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/openbao-init
+        # Test only: read the keys and admin token back from the init output file of the first run.
+        openbao_test_init_file: >-
+          {{ query('ansible.builtin.fileglob', openbao_init_output_dir ~ '/openbao-init-*.json') | sort | last | default('') }}
+        openbao_test_init: >-
+          {{ (lookup('ansible.builtin.file', openbao_test_init_file) | from_json) if openbao_test_init_file else {} }}
+        openbao_unseal_keys: "{{ openbao_test_init.unseal_keys_b64 | default([]) }}"
+        openbao_admin_token: "{{ openbao_test_init.admin_token | default('') }}"
+        # Nested overlay filesystems are not always possible; vfs works everywhere.
+        container_runtime_daemon_extra:
+          storage-driver: vfs
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

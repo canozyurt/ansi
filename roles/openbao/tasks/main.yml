@@ -1,0 +1,36 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - openbao_seal_type in ['shamir', 'static', 'custom']
+      - openbao_seal_type != 'static' or openbao_static_seal_key | length > 0
+      - openbao_seal_type != 'custom' or openbao_seal_hcl | length > 0
+      - openbao_key_threshold | int <= openbao_key_shares | int
+      - openbao_pki_allowed_domains | length > 0
+      - not (openbao_oidc_enabled | bool) or openbao_oidc_client_secret | length >= 32
+    fail_msg: >-
+      Set openbao_pki_allowed_domains, a valid seal (openbao_seal_type shamir, static with
+      openbao_static_seal_key, or custom with openbao_seal_hcl) and, with OIDC, an
+      openbao_oidc_client_secret of 32+ characters from Ansible Vault.
+    quiet: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: openbao_cluster_hosts | length >= openbao_min_nodes or openbao_allow_single_node | bool
+    fail_msg: >-
+      OpenBao needs at least {{ openbao_min_nodes }} Raft nodes (found {{ openbao_cluster_hosts | length }}).
+      Set openbao_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy OpenBao
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Initialise and unseal the cluster
+  ansible.builtin.import_tasks: init.yml
+
+- name: Configure OpenBao through its API
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Register the Raft snapshot backup
+  ansible.builtin.import_tasks: backup.yml

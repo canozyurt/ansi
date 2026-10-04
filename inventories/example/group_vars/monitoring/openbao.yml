@@ -1,0 +1,42 @@
+---
+# OpenBao alert rules for Prometheus (collected from prometheus_rules_* variables).
+prometheus_rules_openbao:
+  - name: openbao
+    rules:
+      - alert: OpenBaoSealed
+        expr: vault_core_unsealed == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "An OpenBao node is sealed (see the instance label); unseal it (run playbooks/secrets.yml)" }
+      - alert: OpenBaoDown
+        expr: up{job="openbao"} == 0
+        for: 2m
+        labels: { severity: critical }
+      - alert: OpenBaoNoLeader
+        expr: max(vault_core_active) < 1
+        for: 1m
+        labels: { severity: critical }
+      - alert: OpenBaoRaftPeersLow
+        expr: max(vault_raft_peers) < 3
+        for: 5m
+        labels: { severity: warning }
+      - alert: OpenBaoAutopilotUnhealthy
+        expr: vault_autopilot_healthy == 0
+        for: 5m
+        labels: { severity: critical }
+      - alert: OpenBaoAuditLogFailures
+        expr: increase(vault_audit_log_request_failure[5m]) > 0 or increase(vault_audit_log_response_failure[5m]) > 0
+        labels: { severity: critical }
+        annotations: { summary: "An OpenBao audit device failed to write (LOG-01)" }
+      - alert: OpenBaoHighRequestLatency
+        expr: vault_core_handle_request{quantile="0.99"} > 1000
+        for: 10m
+        labels: { severity: warning }
+      - alert: OpenBaoRootTokenCreated
+        # root token creation must be rare; pair with a SIEM rule on the audit log (path sys/generate-root or auth/token/create with policies root)
+        expr: increase(vault_token_creation{policies=~".*root.*"}[10m]) > 0
+        labels: { severity: critical }
+      - alert: OpenBaoSnapshotStale
+        # from the backup role's textfile metrics once it exists (BCK-01)
+        expr: time() - backup_last_success_timestamp_seconds{name="openbao"} > 26 * 3600
+        labels: { severity: warning }

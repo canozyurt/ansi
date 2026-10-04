@@ -1,0 +1,98 @@
+---
+# People log in through Keycloak; the "roles" claim selects identity groups that carry the policies
+# (IAM-01, IAM-09). Only the break-glass path (unseal keys, generate-root) works without Keycloak.
+- name: Register OpenBao as an OIDC client in Keycloak
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_id: "{{ openbao_oidc_client_id }}"
+    oidc_client_name: OpenBao
+    oidc_client_secret: "{{ openbao_oidc_client_secret }}"
+    oidc_client_redirect_uris: "{{ openbao_oidc_redirect_uris }}"
+    oidc_client_root_url: "{{ openbao_api_addr }}"
+  tags: [chk_iam_01, chk_iam_09]
+
+- name: Configure the OIDC auth method
+  when: inventory_hostname == openbao_config_host
+  tags: [chk_iam_01, chk_iam_09]
+  block:
+    - name: Point the OIDC auth method at Keycloak (contains the client secret)
+      ansible.builtin.include_tasks: api_resources.yml
+      vars:
+        openbao_api_no_log: true
+        openbao_api_resources:
+          - path: auth/oidc/config
+            body: >-
+              {{ {'oidc_discovery_url': openbao_oidc_discovery_url, 'oidc_client_id': openbao_oidc_client_id,
+                  'oidc_client_secret': openbao_oidc_client_secret, 'default_role': 'default'}
+                 | combine({'oidc_discovery_ca_pem': openbao_oidc_discovery_ca_pem}
+                           if openbao_oidc_discovery_ca_pem | length > 0 else {}) }}
+            compare:
+              oidc_discovery_url: "{{ openbao_oidc_discovery_url }}"
+              oidc_client_id: "{{ openbao_oidc_client_id }}"
+              default_role: default
+
+    - name: Create the login role and the identity groups of the default roles
+      ansible.builtin.include_tasks: api_resources.yml
+      vars:
+        openbao_api_resources: >-
+          {{ [openbao_oidc_role_resource] + openbao_oidc_group_resources }}
+        openbao_oidc_role_resource:
+          path: auth/oidc/role/default
+          body:
+            role_type: oidc
+            user_claim: sub
+            groups_claim: roles
+            bound_audiences: ["{{ openbao_oidc_client_id }}"]
+            allowed_redirect_uris: "{{ openbao_oidc_redirect_uris }}"
+            oidc_scopes: [profile, email]
+            token_policies: []
+            token_ttl: "{{ openbao_oidc_token_ttl }}"
+            token_max_ttl: "{{ openbao_oidc_token_max_ttl }}"
+            verbose_oidc_logging: false
+          compare:
+            role_type: oidc
+            user_claim: sub
+            groups_claim: roles
+            bound_audiences: ["{{ openbao_oidc_client_id }}"]
+            allowed_redirect_uris: "{{ openbao_oidc_redirect_uris }}"
+            token_ttl: "{{ (openbao_oidc_token_ttl[:-1] | int) * openbao_ttl_units[openbao_oidc_token_ttl[-1]] }}"
+            token_max_ttl: "{{ (openbao_oidc_token_max_ttl[:-1] | int) * openbao_ttl_units[openbao_oidc_token_max_ttl[-1]] }}"
+        openbao_oidc_group_resources: >-
+          {%- set out = [] -%}
+          {%- for role in rbac_model_all_roles if openbao_role_policies[role] | default([]) | length > 0 -%}
+          {%-   set _ = out.append({'path': 'identity/group/name/' ~ role,
+                                    'body': {'type': 'external', 'policies': openbao_role_policies[role],
+                                             'metadata': {'source': 'rbac_model'}}}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Read the identity groups and the OIDC mount
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/{{ item }}"
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+        validate_certs: false
+      loop: >-
+        {{ ['sys/auth'] + (rbac_model_all_roles
+                           | select('in', openbao_role_policies | dict2items | selectattr('value') | map(attribute='key') | list)
+                           | map('regex_replace', '^', 'identity/group/name/') | list) }}
+      register: openbao_groups
+
+    - name: Link each group to its value of the roles claim
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/identity/group-alias"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ openbao_token }}"
+        body_format: json
+        body:
+          name: "{{ item.json.data.name }}"
+          mount_accessor: "{{ openbao_groups.results[0].json.data['oidc/'].accessor }}"
+          canonical_id: "{{ item.json.data.id }}"
+        validate_certs: false
+      loop: "{{ openbao_groups.results[1:] }}"
+      loop_control:
+        label: "{{ item.json.data.name }}"
+      when: (item.json.data.alias | default({}, true)).name | default('') != item.json.data.name
+      changed_when: true

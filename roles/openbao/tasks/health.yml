@@ -1,0 +1,29 @@
+---
+# Waits until this node answers, unseals it when it is sealed and keys are available, and waits until it
+# is an unsealed active or standby node. Used after restarts, by upgrade.yml and by rolling_reboot.yml.
+- name: Wait until the OpenBao API answers
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/seal-status"
+    validate_certs: false
+  register: openbao_seal_status
+  until: openbao_seal_status.status == 200
+  retries: 60
+  delay: 2
+
+- name: Unseal this node
+  ansible.builtin.include_tasks: unseal.yml
+  when:
+    - openbao_seal_type == 'shamir'
+    - openbao_seal_status.json.initialized
+    - openbao_seal_status.json.sealed
+
+- name: Wait until the node is unsealed and part of the cluster
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ openbao_api_port }}/v1/sys/health?standbyok=true&perfstandbyok=true"
+    validate_certs: false
+  register: openbao_health
+  until: openbao_health.status == 200
+  retries: 60
+  delay: 2
+  when: openbao_seal_status.json.initialized
+  tags: [chk_log_05, chk_ha_01]

@@ -1,0 +1,11 @@
+# security-admin: reads the audit configuration and system state, never secret values.
+path "sys/audit" { capabilities = ["read", "list", "sudo"] }
+path "sys/audit-hash/*" { capabilities = ["update"] }
+path "sys/*" { capabilities = ["read", "list"] }
+path "sys/storage/raft/snapshot" { capabilities = ["deny"] }
+path "sys/raw/*" { capabilities = ["deny"] }
+path "auth/*" { capabilities = ["read", "list"] }
+path "identity/*" { capabilities = ["read", "list"] }
+path "secret/metadata/*" { capabilities = ["read", "list"] }
+path "transit/keys" { capabilities = ["list"] }
+path "transit/keys/*" { capabilities = ["read"] }

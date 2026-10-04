@@ -9,6 +9,9 @@
 - name: Prepare container hosts
   ansible.builtin.import_playbook: container_hosts.yml
 
+- name: Deploy secrets management, the internal PKI and the SSH CA
+  ansible.builtin.import_playbook: secrets.yml
+
 - name: Deploy the identity provider
   ansible.builtin.import_playbook: identity.yml
 

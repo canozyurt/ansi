@@ -1,0 +1,144 @@
+---
+# Configuration through the HTTP API, once per run, with the configuration token. Each resource is read
+# first and written only when it differs, so runs are idempotent and report real changes.
+- name: Configure OpenBao
+  when: inventory_hostname == openbao_config_host
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_token }}"
+      body_format: json
+      validate_certs: false
+  block:
+    - name: Read the enabled secrets engines and auth methods
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/sys/{{ item }}"
+      loop: [mounts, auth]
+      register: openbao_enabled
+
+    - name: Enable the secrets engines (KV v2, PKI root and intermediate, SSH CA, transit)
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/sys/mounts/{{ item.path }}"
+        method: POST
+        body: "{{ item.body }}"
+        status_code: [200, 204]
+      loop:
+        - { path: secret, body: { type: kv, description: Key/value secrets, options: { version: "2" } } }
+        - { path: pki, body: { type: pki, description: Root CA, config: { max_lease_ttl: "{{ openbao_pki_root_ttl }}" } } }
+        - { path: pki_int, body: { type: pki, description: Issuing CA, config: { max_lease_ttl: "{{ openbao_pki_int_ttl }}" } } }
+        - { path: "{{ openbao_ssh_mount }}", body: { type: ssh, description: SSH user CA } }
+        - { path: transit, body: { type: transit, description: Application encryption keys } }
+      loop_control:
+        label: "{{ item.path }}"
+      when: (item.path ~ '/') not in openbao_enabled.results[0].json.data
+      changed_when: true
+      tags: [chk_sec_02, chk_sec_05, chk_sec_06, chk_iam_06]
+
+    - name: Enable the auth methods (AppRole for automation, OIDC for people)
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/sys/auth/{{ item.path }}"
+        method: POST
+        body: "{{ item.body }}"
+        status_code: [200, 204]
+      loop:
+        - { path: approle, body: { type: approle, description: Automation }, enabled: true }
+        - { path: oidc, body: { type: oidc, description: Keycloak SSO }, enabled: "{{ openbao_oidc_enabled | bool }}" }
+      loop_control:
+        label: "{{ item.path }}"
+      when:
+        - item.enabled
+        - (item.path ~ '/') not in openbao_enabled.results[1].json.data
+      changed_when: true
+      tags: [chk_iam_01, chk_iam_08]
+
+    - name: Read the certificate authorities
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/{{ item }}/issuers?list=true"
+        status_code: [200, 404]
+      loop: [pki, pki_int]
+      register: openbao_issuers
+
+    - name: Generate the root CA (its key never leaves OpenBao)
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/pki/root/generate/internal"
+        method: POST
+        body:
+          common_name: "{{ openbao_pki_root_cn }}"
+          issuer_name: root-ca
+          key_type: ec
+          key_bits: 384
+          ttl: "{{ openbao_pki_root_ttl }}"
+      when: openbao_issuers.results[0].status == 404
+      changed_when: true
+      tags: [chk_sec_05]
+
+    - name: Create the intermediate CA, signed by the root
+      when: openbao_issuers.results[1].status == 404
+      tags: [chk_sec_05]
+      block:
+        - name: Generate the intermediate key and signing request
+          ansible.builtin.uri:
+            url: "{{ openbao_url }}/v1/pki_int/intermediate/generate/internal"
+            method: POST
+            body:
+              common_name: "{{ openbao_pki_int_cn }}"
+              key_type: ec
+              key_bits: 384
+          register: openbao_int_csr
+          changed_when: true
+
+        - name: Sign the intermediate with the root CA
+          ansible.builtin.uri:
+            url: "{{ openbao_url }}/v1/pki/root/sign-intermediate"
+            method: POST
+            body:
+              csr: "{{ openbao_int_csr.json.data.csr }}"
+              common_name: "{{ openbao_pki_int_cn }}"
+              ttl: "{{ openbao_pki_int_ttl }}"
+              format: pem
+          register: openbao_int_signed
+          changed_when: true
+
+        - name: Install the signed intermediate with its chain
+          ansible.builtin.uri:
+            url: "{{ openbao_url }}/v1/pki_int/intermediate/set-signed"
+            method: POST
+            body:
+              certificate: "{{ openbao_int_signed.json.data.certificate }}\n{{ openbao_int_signed.json.data.issuing_ca }}"
+          changed_when: true
+
+    - name: Read the SSH user CA key
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/{{ openbao_ssh_mount }}/config/ca"
+        status_code: [200, 400, 404]
+      register: openbao_ssh_ca
+
+    - name: Create the SSH user CA key
+      ansible.builtin.uri:
+        url: "{{ openbao_url }}/v1/{{ openbao_ssh_mount }}/config/ca"
+        method: POST
+        body:
+          generate_signing_key: true
+          key_type: ed25519
+        status_code: [200, 204]
+      when: openbao_ssh_ca.status != 200
+      changed_when: true
+      tags: [chk_iam_06]
+
+    - name: Build the list of configuration resources
+      ansible.builtin.set_fact:
+        openbao_resources: "{{ lookup('ansible.builtin.template', 'resources.yml.j2') | from_yaml }}"
+      tags: [chk_sec_02, chk_sec_05, chk_sec_06, chk_iam_06, chk_iam_08]
+
+    - name: Apply the configuration resources
+      ansible.builtin.include_tasks: api_resources.yml
+      vars:
+        openbao_api_resources: "{{ openbao_resources }}"
+      tags: [chk_sec_02, chk_sec_05, chk_sec_06, chk_iam_06, chk_iam_08]
+
+- name: Connect Keycloak (OIDC) and map the default roles to policies
+  ansible.builtin.include_tasks: oidc.yml
+  when: openbao_oidc_enabled | bool
+
+- name: Publish the AppRole role_id and the SSH CA key
+  ansible.builtin.import_tasks: publish.yml

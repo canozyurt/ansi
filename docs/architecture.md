@@ -53,6 +53,44 @@ Organizations set `rbac_model_group_assignments` (IdP group to roles) and may ad
 roles translate into their own permission system. Rules no configuration can override: no deleting logs
 or backups inside their retention period, and no approving one's own change.
 
+## Secrets, PKI and SSH CA (OpenBao)
+
+- OpenBao (MPL-2.0 fork of Vault) runs as an unprivileged container (uid 100, no capabilities, read-only
+  root, no swap allowance, core dumps off) with host networking on the `openbao` group, 3 nodes minimum,
+  on integrated Raft storage. Nodes join with `retry_join` over TLS, trusting a bundle of every node's
+  certificate. OpenBao has no mlock, so no IPC_LOCK.
+- Listeners: 8200 client API (TLS 1.2+, metrics disabled, unauthenticated rekey/generate-root endpoints
+  off), 8201 Raft/cluster between nodes, 8202 metrics-only (unauthenticated, firewalled to monitoring).
+  Certificates come from `tls_cert`: self-signed or organisation files on the first run, re-issued from
+  OpenBao's own PKI once `pki_openbao_addr` is set; OpenBao reloads them without a restart.
+- First run initialises the cluster with Shamir keys (5 shares, threshold 3) and writes keys, root and
+  admin token once to a 0600 file in `openbao_init_output_dir` on the controller. That file must move to
+  sealed offline storage (split among key holders) and be deleted; the keys and the admin token go into
+  Ansible Vault (`openbao_unseal_keys`, `openbao_admin_token`). Auto-unseal is available with a static
+  key (`openbao_seal_type: static`) or any KMS seal stanza (`custom`).
+- The root token is used only to create the `ansible-config` policy and a periodic admin token, then is
+  revoked immediately. Configuration runs use the admin token (renewed each run, so it expires only if no
+  run happens for 30 days). If it is lost, the unseal keys mint a new root through generate-root, which is
+  off by default (`openbao_allow_generate_root` for one run).
+- Everything is configured through the HTTP API with read-compare-write, so runs are idempotent: KV v2
+  at `secret/`; root CA `pki` (10 y, EC P-384) signing the issuing CA `pki_int` (5 y) with role `server`
+  (allowed domains, 90-day EC P-256 certs, auto-tidy); AppRole `ansible-pki` limited to
+  `pki_int/issue/server` for `tls_cert`; SSH user CA `ssh-client-signer` with one role per default role
+  (8-hour certificates, principals only for platform-admin and operator); transit keys rotating every
+  90 days, never exportable or deletable.
+- People log in through Keycloak (OIDC client `openbao`); the `roles` claim selects external identity
+  groups: platform-admin = admin, security-admin = security-audit (audit config and sys read, no secret
+  values), operator = ops (KV under `ops/`, SSH signing as operator), developer = KV under `apps/`,
+  auditor = read-only metadata.
+- Audit: two declarative file devices (API creation stays disabled): stdout into journald (non-blocking
+  log driver, so a slow pipeline cannot stall requests) and `/opt/openbao/audit/audit.log` on the host for
+  the SIEM agent (rotated daily, 7 kept locally). Request values are HMAC-hashed.
+- Backup: `/usr/local/sbin/openbao-snapshot` (root only) takes a Raft snapshot with a narrow periodic token
+  read from a 0600 file and passed on stdin; registered with `backup_register` (RPO 24 h, RTO 4 h).
+  Restoring needs the unseal keys of the cluster the snapshot came from.
+- Upgrades go through `playbooks/upgrade.yml` only: Raft snapshot first, standbys before the active
+  node, one node at a time, each unsealed and healthy before the next.
+
 ## Identity provider (Keycloak)
 
 - Runs as a container with host networking on the `keycloak` group, 3 nodes minimum; nodes discover each

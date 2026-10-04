@@ -7,6 +7,49 @@
 # Every service is upgraded one node at a time; the run stops at the first node that
 # does not come back healthy. Services back up their data before a version change.
 
+- name: Check OpenBao is healthy and order its nodes for the upgrade
+  hosts: openbao
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Every OpenBao node is unsealed and in the cluster
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: health
+      when: not (upgrade_skip_preflight | default(false) | bool)
+      tags: [chk_chg_07]
+
+    - name: Find the active node
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ openbao_api_port | default(8200) }}/v1/sys/leader"
+        validate_certs: false
+      register: upgrade_openbao_leader
+      failed_when: false
+
+    - name: Upgrade the standbys first and the active node last
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: openbao_upgrade_order
+      loop: >-
+        {{ ansible_play_hosts | reject('in', upgrade_openbao_active) | list
+           + ansible_play_hosts | select('in', upgrade_openbao_active) | list }}
+      vars:
+        upgrade_openbao_active: >-
+          {{ ansible_play_hosts | map('extract', hostvars, 'upgrade_openbao_leader')
+             | map(attribute='json', default={}) | map(attribute='is_self', default=false)
+             | zip(ansible_play_hosts) | selectattr(0) | map(attribute=1) | list }}
+      run_once: true
+      changed_when: false
+      tags: [chk_chg_07]
+
+- name: Upgrade OpenBao one node at a time (snapshot first, unseal after each restart)
+  hosts: openbao_upgrade_order
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: openbao
+
 - name: Check the identity provider is healthy before upgrading
   hosts: keycloak
   become: true

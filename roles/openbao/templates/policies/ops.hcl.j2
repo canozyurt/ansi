@@ -1,0 +1,7 @@
+# operator: writes secrets under the operations prefix and signs SSH certificates for host login.
+path "secret/data/{{ openbao_ops_kv_prefix }}/*" { capabilities = ["create", "read", "update", "patch", "delete"] }
+path "secret/metadata/{{ openbao_ops_kv_prefix }}/*" { capabilities = ["read", "list", "delete"] }
+path "secret/metadata/{{ openbao_ops_kv_prefix }}" { capabilities = ["list"] }
+path "{{ openbao_ssh_mount }}/sign/operator" { capabilities = ["update"] }
+path "transit/keys" { capabilities = ["list"] }
+path "transit/keys/*" { capabilities = ["read"] }

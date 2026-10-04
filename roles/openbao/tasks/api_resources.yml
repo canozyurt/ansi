@@ -1,0 +1,38 @@
+---
+# Reads each resource and writes it only when it is missing or differs from what is wanted.
+# Input: openbao_api_resources (list of {path, body, read?, compare?}), openbao_api_no_log.
+- name: Read the current configuration
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/{{ item.read | default(item.path) }}"
+    headers:
+      X-Vault-Token: "{{ openbao_token }}"
+    validate_certs: false
+    status_code: [200, 400, 404]
+  loop: "{{ openbao_api_resources }}"
+  loop_control:
+    label: "{{ item.read | default(item.path) }}"
+  register: openbao_current
+  no_log: "{{ openbao_api_no_log | default(false) }}"
+
+- name: Write the configuration that differs
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/{{ item.path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ openbao_token }}"
+    body_format: json
+    body: "{{ item.body }}"
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_api_resources }}"
+  loop_control:
+    label: "{{ item.path }}"
+    index_var: openbao_idx
+  vars:
+    openbao_want: "{{ item.compare | default(item.body) }}"
+    openbao_have: "{{ openbao_current.results[openbao_idx].json.data | default({}, true) }}"
+  when: >-
+    openbao_current.results[openbao_idx].status != 200
+    or (openbao_have | dict2items | selectattr('key', 'in', openbao_want.keys() | list) | items2dict) != openbao_want
+  changed_when: true
+  no_log: "{{ openbao_api_no_log | default(false) }}"

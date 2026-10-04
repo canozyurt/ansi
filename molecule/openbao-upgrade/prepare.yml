@@ -1,0 +1,8 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../openbao/converge.yml
+  vars:
+    openbao_image: "{{ versions_upgrade_from.openbao }}"

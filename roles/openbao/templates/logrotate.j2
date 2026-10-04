@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+{{ openbao_audit_file }} {
+    daily
+    rotate {{ openbao_audit_rotate_days }}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 {{ openbao_container_uid }} {{ openbao_container_gid }}
+    postrotate
+        docker kill --signal=HUP {{ openbao_container_name }} >/dev/null 2>&1 || true
+    endscript
+}

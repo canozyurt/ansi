@@ -1,0 +1,23 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Takes a Raft snapshot of OpenBao into {{ openbao_snapshot_dir }} and keeps the newest {{ openbao_snapshot_keep }}.
+# The token is read from a root-only file and passed on stdin, never on a command line.
+# Restore: bao operator raft snapshot restore <file> (needs the unseal keys of the snapshot's cluster).
+set -euo pipefail
+umask 077
+
+token_file={{ openbao_snapshot_token_file | quote }}
+name="openbao-$(date -u +%Y%m%dT%H%M%SZ).snap"
+
+docker exec -i {{ openbao_container_name | quote }} /bin/sh -c '
+  set -e
+  read -r BAO_TOKEN
+  export BAO_TOKEN
+  bao token renew >/dev/null
+  bao operator raft snapshot save "/openbao/snapshots/$1.partial"
+  mv "/openbao/snapshots/$1.partial" "/openbao/snapshots/$1"
+' sh "$name" < "$token_file"
+
+cd {{ openbao_snapshot_dir | quote }}
+ls -1t openbao-*.snap | tail -n +{{ openbao_snapshot_keep + 1 }} | xargs -r rm -f --
+echo "{{ openbao_snapshot_dir }}/$name"

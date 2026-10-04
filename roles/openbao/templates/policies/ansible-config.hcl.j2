@@ -1,0 +1,25 @@
+# Configuration runs of the openbao role (Ansible). Manages mounts, policies, auth methods, PKI, SSH
+# and transit configuration; cannot read KV secret values or use transit keys.
+path "sys/mounts" { capabilities = ["read", "list"] }
+path "sys/mounts/*" { capabilities = ["create", "read", "update", "list"] }
+path "sys/auth" { capabilities = ["read", "list"] }
+path "sys/auth/*" { capabilities = ["create", "read", "update", "sudo"] }
+path "sys/policies/acl" { capabilities = ["list"] }
+path "sys/policies/acl/*" { capabilities = ["create", "read", "update", "list"] }
+path "sys/audit" { capabilities = ["read", "sudo"] }
+path "sys/storage/raft/configuration" { capabilities = ["read"] }
+path "pki/*" { capabilities = ["create", "read", "update", "list"] }
+path "pki_int/*" { capabilities = ["create", "read", "update", "list"] }
+path "{{ openbao_ssh_mount }}/*" { capabilities = ["create", "read", "update", "list"] }
+path "transit/keys" { capabilities = ["list"] }
+path "transit/keys/*" { capabilities = ["create", "read", "update"] }
+path "secret/config" { capabilities = ["create", "read", "update"] }
+path "auth/approle/role/*" { capabilities = ["create", "read", "update", "list"] }
+path "auth/oidc/*" { capabilities = ["create", "read", "update", "list"] }
+path "auth/token/roles/*" { capabilities = ["create", "read", "update"] }
+path "auth/token/create/raft-snapshot" { capabilities = ["update"] }
+path "auth/token/lookup" { capabilities = ["update"] }
+path "identity/group" { capabilities = ["create", "update"] }
+path "identity/group/*" { capabilities = ["create", "read", "update", "list"] }
+path "identity/group-alias" { capabilities = ["create", "update"] }
+path "identity/group-alias/*" { capabilities = ["read", "update", "list"] }
