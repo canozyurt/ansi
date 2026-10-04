@@ -1,0 +1,4 @@
+// Managed by Ansible (roles/node_exporter). Refresh the patch metrics for node_exporter (HRD-04)
+// after package lists change and after packages are installed or upgraded.
+APT::Update::Post-Invoke-Success { "if [ -d /run/systemd/system ]; then systemctl start --no-block node-exporter-apt-metrics.service || true; fi"; };
+DPkg::Post-Invoke { "if [ -d /run/systemd/system ]; then systemctl start --no-block node-exporter-apt-metrics.service || true; fi"; };

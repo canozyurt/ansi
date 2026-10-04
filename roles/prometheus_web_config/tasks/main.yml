@@ -1,0 +1,82 @@
+---
+- name: Check the web configuration parameters
+  ansible.builtin.assert:
+    that:
+      - prometheus_web_config_path | length > 0
+      - prometheus_web_config_container_tls_dir | length > 0
+      - prometheus_web_config_users | length > 0
+      - prometheus_web_config_users.values() | map('string') | map('length') | min >= 16
+    fail_msg: >-
+      prometheus_web_config needs a path, the container TLS directory and at least one user whose password
+      has 16+ characters (from the secrets manager or Ansible Vault). Anonymous access is not allowed.
+    quiet: true
+  no_log: true
+  tags: [chk_iam_01]
+
+- name: Install the bcrypt library used to hash the passwords
+  ansible.builtin.apt:
+    name: python3-bcrypt
+    state: present
+
+- name: Read the current web configuration
+  ansible.builtin.slurp:
+    src: "{{ prometheus_web_config_path }}"
+  register: prometheus_web_config_current
+  failed_when: false
+  no_log: true
+
+# Passwords travel on stdin, never on the command line. A stored hash is reused while it matches.
+- name: Hash the basic auth passwords
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, sys, bcrypt
+        req = json.load(sys.stdin)
+        out = {}
+        for user, password in req["users"].items():
+            old = req["current"].get(user) or ""
+            try:
+                ok = bool(old) and bcrypt.checkpw(password.encode(), old.encode())
+            except ValueError:
+                ok = False
+            out[user] = old if ok else bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=req["cost"])).decode()
+        print(json.dumps(out))
+    stdin: >-
+      {{ {'users': prometheus_web_config_users,
+          'current': prometheus_web_config_current_users,
+          'cost': prometheus_web_config_bcrypt_cost | int} | to_json }}
+  vars:
+    prometheus_web_config_current_users: >-
+      {{ ((prometheus_web_config_current.content | default('') | b64decode | from_yaml) or {}).basic_auth_users | default({}) }}
+  register: prometheus_web_config_hashes
+  changed_when: false
+  no_log: true
+
+- name: Write the web configuration (TLS and basic auth)
+  ansible.builtin.copy:
+    content: "{{ prometheus_web_config_content | to_nice_yaml(indent=2) }}"
+    dest: "{{ prometheus_web_config_path }}"
+    owner: "{{ prometheus_web_config_owner }}"
+    group: "{{ prometheus_web_config_group }}"
+    mode: "0600"
+  vars:
+    prometheus_web_config_content:
+      tls_server_config:
+        cert_file: "{{ prometheus_web_config_container_tls_dir }}/tls.crt"
+        key_file: "{{ prometheus_web_config_container_tls_dir }}/tls.key"
+        min_version: TLS12
+      http_server_config:
+        headers:
+          Strict-Transport-Security: max-age=31536000; includeSubDomains
+          X-Content-Type-Options: nosniff
+          X-Frame-Options: deny
+      basic_auth_users: "{{ prometheus_web_config_hashes.stdout | from_json }}"
+  register: prometheus_web_config_written
+  no_log: true
+  tags: [chk_sec_03, chk_iam_01]
+
+- name: Note the change
+  ansible.builtin.set_fact:
+    prometheus_web_config_changed: "{{ prometheus_web_config_written is changed }}"

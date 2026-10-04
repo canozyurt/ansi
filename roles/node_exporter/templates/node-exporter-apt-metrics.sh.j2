@@ -1,0 +1,95 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Writes apt patch metrics for the node_exporter textfile collector (HRD-04).
+#
+# A pending security upgrade is one whose candidate version comes from a *-security suite.
+# Its age is counted from the first run of this collector that saw it (state file below);
+# per-package publication dates are not available offline. Package lists are refreshed by
+# apt-daily.timer (and unattended-upgrades), which runs before this timer most of the time.
+set -euo pipefail
+umask 022
+
+out_dir={{ node_exporter_textfile_dir | quote }}
+state={{ node_exporter_apt_metrics_state_file | quote }}
+now=$(date +%s)
+
+if sim=$(LC_ALL=C apt-get --simulate -o Debug::NoLocking=true dist-upgrade 2>/dev/null); then
+  success=1
+else
+  success=0
+  sim=""
+fi
+
+# "Inst <pkg> [<old>] (<new> <origin>:<release>/<suite>[, ...] [<arch>])"
+upgrades=$(printf '%s\n' "$sim" | grep -c '^Inst ' || true)
+security=$(printf '%s\n' "$sim" | awk '
+  /^Inst / {
+    p = index($0, "(")
+    if (p == 0) next
+    rest = substr($0, p + 1)
+    if (rest !~ /\/[^ ,\]]*-security/) next
+    split(rest, f, " ")
+    print $2 "=" f[1]
+  }' | sort -u)
+
+touch "$state"
+tmp_state=$(mktemp "${state}.XXXXXX")
+count=0
+oldest=""
+while IFS= read -r key; do
+  [ -n "$key" ] || continue
+  count=$((count + 1))
+  seen=$(awk -v k="$key" '$1 == k { print $2; exit }' "$state")
+  [ -n "$seen" ] || seen=$now
+  printf '%s %s\n' "$key" "$seen" >> "$tmp_state"
+  if [ -z "$oldest" ] || [ "$seen" -lt "$oldest" ]; then
+    oldest=$seen
+  fi
+done <<< "$security"
+mv "$tmp_state" "$state"
+
+if [ -n "$oldest" ]; then
+  age_days=$(awk -v n="$now" -v o="$oldest" 'BEGIN { printf "%.2f", (n - o) / 86400 }')
+else
+  age_days=0
+fi
+
+if [ -f /run/reboot-required ]; then
+  reboot=1
+  reboot_since=$(stat -c %Y /run/reboot-required)
+else
+  reboot=0
+  reboot_since=0
+fi
+
+lists_updated=$( (stat -c %Y /var/lib/apt/lists/*Release 2>/dev/null || true) | sort -n | tail -n 1)
+
+tmp=$(mktemp "${out_dir}/apt.prom.XXXXXX")
+cat > "$tmp" <<METRICS
+# HELP apt_upgrades_pending Packages with a pending upgrade.
+# TYPE apt_upgrades_pending gauge
+apt_upgrades_pending ${upgrades}
+# HELP apt_security_upgrades_pending Packages with a pending upgrade from a security suite.
+# TYPE apt_security_upgrades_pending gauge
+apt_security_upgrades_pending ${count}
+# HELP apt_security_upgrades_oldest_pending_age_days Days since the oldest pending security upgrade was first seen on this host.
+# TYPE apt_security_upgrades_oldest_pending_age_days gauge
+apt_security_upgrades_oldest_pending_age_days ${age_days}
+# HELP apt_reboot_required 1 when /run/reboot-required exists.
+# TYPE apt_reboot_required gauge
+apt_reboot_required ${reboot}
+# HELP apt_reboot_required_since_timestamp_seconds When the pending reboot was first requested (0 when none).
+# TYPE apt_reboot_required_since_timestamp_seconds gauge
+apt_reboot_required_since_timestamp_seconds ${reboot_since}
+# HELP apt_package_lists_updated_timestamp_seconds Last refresh of the apt package lists.
+# TYPE apt_package_lists_updated_timestamp_seconds gauge
+apt_package_lists_updated_timestamp_seconds ${lists_updated:-0}
+# HELP apt_metrics_success 1 when apt could compute the pending upgrades.
+# TYPE apt_metrics_success gauge
+apt_metrics_success ${success}
+# HELP apt_metrics_last_run_timestamp_seconds Last run of the apt metrics collector.
+# TYPE apt_metrics_last_run_timestamp_seconds gauge
+apt_metrics_last_run_timestamp_seconds ${now}
+METRICS
+chmod 0644 "$tmp"
+mv "$tmp" "${out_dir}/apt.prom"

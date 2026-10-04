@@ -1,0 +1,66 @@
+---
+grafana_image: "{{ versions_images.grafana }}"
+grafana_container_name: grafana
+grafana_data_dir: /opt/grafana
+# The upstream image runs as uid 472 / gid 0.
+grafana_container_uid: 472
+grafana_memory_limit: 1g
+
+# High availability (HA-01): at least 2 identical nodes behind the edge proxy. Each node keeps its
+# own SQLite database because everything that matters (datasources, dashboards, roles from the IdP)
+# is provisioned from this role; see docs/architecture.md.
+grafana_min_nodes: 2
+grafana_allow_single_node: "{{ monitoring_allow_single_node | default(false) }}"
+grafana_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+grafana_port: 3000
+# Public URL (through the edge proxy). Also the OIDC redirect base.
+grafana_root_url: "https://grafana.example.internal"
+
+grafana_tls_cert_file: ""
+grafana_tls_key_file: ""
+
+# Break-glass admin (IAM-01): the only local account. Usable through the API with basic auth; the
+# login form stays hidden unless grafana_break_glass_login_form is set during an incident.
+grafana_admin_user: break-glass-admin
+grafana_admin_password: ""
+grafana_break_glass_login_form: false
+# Encrypts datasource secrets in the database (32+ characters, same on every node).
+grafana_secret_key: ""
+
+# Session lifetimes aligned with the IdP (30 minutes idle, 10 hours maximum).
+grafana_login_maximum_inactive_lifetime: 30m
+grafana_login_maximum_lifetime: 10h
+
+# ---------------------------------------------------------------- SSO (IAM-01, IAM-09)
+grafana_oidc_enabled: "{{ oidc_clients_enabled | default(true) }}"
+grafana_oidc_client_id: grafana
+grafana_oidc_client_secret: ""
+grafana_oidc_keycloak_url: "{{ keycloak_hostname | default('') }}"
+grafana_oidc_realm: "{{ keycloak_realm | default('org') }}"
+# The "roles" claim maps to Grafana organisation roles; the first match wins. Roles not listed
+# (member, and any role without monitoring access) get no access (role_attribute_strict).
+grafana_oidc_role_map:
+  - { role: platform-admin, grafana_role: Admin }
+  - { role: operator, grafana_role: Editor }
+  - { role: security-admin, grafana_role: Editor }
+  - { role: developer, grafana_role: Viewer }
+  - { role: auditor, grafana_role: Viewer }
+grafana_oidc_tls_skip_verify: false
+
+# ---------------------------------------------------------------- datasources
+# One datasource per Prometheus replica; the first is the default.
+grafana_prometheus_hosts: "{{ groups['monitoring'] | default([]) }}"
+grafana_prometheus_port: "{{ prometheus_port | default(9090) }}"
+grafana_prometheus_user: "{{ monitoring_grafana_user | default('grafana') }}"
+grafana_prometheus_password: "{{ monitoring_grafana_password | default('') }}"
+grafana_prometheus_tls_skip_verify: "{{ (pki_openbao_addr | default('')) | length == 0 }}"
+grafana_scrape_interval: "{{ prometheus_scrape_interval | default('30s') }}"
+
+# /metrics for Prometheus (basic auth).
+grafana_metrics_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+grafana_metrics_password: "{{ monitoring_scrape_password | default('') }}"
+
+# Provisioned dashboards are read-only in the UI; change them in this repository.
+grafana_dashboards_allow_ui_updates: false
+grafana_env_extra: {}

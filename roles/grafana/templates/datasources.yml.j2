@@ -1,0 +1,24 @@
+{# Built as data and dumped, so quoting is always right. #}
+{% set sources = [] %}
+{% for host in grafana_prometheus_hosts %}
+{%   set _ = sources.append({
+       'name': 'Prometheus ' ~ host,
+       'uid': 'prometheus-' ~ loop.index,
+       'type': 'prometheus',
+       'access': 'proxy',
+       'url': 'https://' ~ (hostvars[host].monitoring_address | default(host)) ~ ':' ~ grafana_prometheus_port,
+       'isDefault': loop.first,
+       'editable': false,
+       'basicAuth': true,
+       'basicAuthUser': grafana_prometheus_user,
+       'jsonData': {
+         'tlsSkipVerify': grafana_prometheus_tls_skip_verify | bool,
+         'httpMethod': 'POST',
+         'timeInterval': grafana_scrape_interval,
+         'prometheusType': 'Prometheus'
+       },
+       'secureJsonData': {'basicAuthPassword': grafana_prometheus_password}
+     }) %}
+{% endfor %}
+# {{ ansible_managed }}
+{{ {'apiVersion': 1, 'prune': true, 'datasources': sources} | to_nice_yaml(indent=2, width=1000) }}

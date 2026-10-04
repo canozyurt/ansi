@@ -1,0 +1,47 @@
+---
+# node_exporter on every host (LOG-05) with TLS and basic auth, a textfile collector for host-level
+# compliance metrics (patch age, reboot required, backup status) and the systemd unit states used by
+# the log shipper alert (LOG-06).
+node_exporter_image: "{{ versions_images.node_exporter }}"
+node_exporter_container_name: node-exporter
+node_exporter_port: 9100
+node_exporter_data_dir: /opt/node_exporter
+# Upstream image runs as nobody (65534).
+node_exporter_container_uid: 65534
+node_exporter_memory_limit: 128m
+# Mount propagation of the read-only host root: rslave makes later mounts visible to the filesystem
+# collector. It needs / to be a shared mount (systemd does this on every normal host); set "" only
+# where / is private, such as test containers.
+node_exporter_rootfs_propagation: rslave
+
+# Shared with every role that writes host metrics (backup, SIEM agent, ...). Write *.prom files
+# atomically: write a temporary file in the same directory, then mv it into place.
+node_exporter_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# Basic auth for scrapes. Prometheus uses monitoring_scrape_user/monitoring_scrape_password
+# (group_vars/all, from Vault or OpenBao).
+node_exporter_web_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+node_exporter_web_password: "{{ monitoring_scrape_password | default('') }}"
+
+# TLS (SEC-03): organisation files, else the internal PKI, else self-signed (see roles/tls_cert).
+node_exporter_tls_cert_file: ""
+node_exporter_tls_key_file: ""
+
+# systemd units whose state is exported (node_systemd_unit_state). The log shipper alert (LOG-06)
+# reads monitoring_log_shipper_unit from this list.
+node_exporter_systemd_units:
+  - "{{ monitoring_log_shipper_unit | default('wazuh-agent.service') }}"
+  - docker.service
+  - containerd.service
+  - chrony.service
+  - nftables.service
+  - auditd.service
+  - ssh.service
+  - unattended-upgrades.service
+  - node-exporter-apt-metrics.service
+node_exporter_extra_args: []
+
+# apt patch metrics for HRD-04 (pending security updates and their age, reboot required).
+node_exporter_apt_metrics_enabled: true
+node_exporter_apt_metrics_interval: 1h
+node_exporter_apt_metrics_state_file: /var/lib/node_exporter/apt-security-first-seen

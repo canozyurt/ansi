@@ -1,0 +1,15 @@
+---
+- name: Reload prometheus
+  ansible.builtin.command: docker kill --signal=HUP {{ prometheus_container_name }}
+  changed_when: true
+  throttle: 1
+  when: not (prometheus_container.changed | default(false))
+
+- name: Restart prometheus
+  community.docker.docker_container:
+    name: "{{ prometheus_container_name }}"
+    image: "{{ prometheus_image }}"
+    state: started
+    restart: true
+  throttle: 1  # one replica at a time keeps scraping and alerting available
+  when: not (prometheus_container.changed | default(false))

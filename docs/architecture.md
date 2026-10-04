@@ -66,6 +66,39 @@ or backups inside their retention period, and no approving one's own change.
 - The master realm keeps one break-glass admin (`keycloak_admin_user`); Keycloak flags it as a temporary
   bootstrap admin until a permanent admin flow is added.
 
+## Monitoring and alerting
+
+- `playbooks/monitoring.yml`: node_exporter on every host; Prometheus, Alertmanager, blackbox_exporter and
+  Grafana on the `monitoring` group. All run as hardened containers (non-root, no capabilities,
+  read-only root, memory and PID limits) with host networking.
+- Every listener is HTTPS (TLS 1.2+, certificates from `tls_cert`). Prometheus, Alertmanager and the exporters
+  require HTTP basic auth (bcrypt) via the upstream web config; nothing is anonymous. Prometheus has no
+  SSO: people use Grafana, and the Prometheus/Alertmanager accounts are for machines and break-glass use.
+- Prometheus runs as 2+ identical replicas. Each scrapes everything in `prometheus_scrape_catalog` (targets
+  are the hosts of each entry's inventory group, when it exists) and keeps 30 days (`prometheus_retention_days`).
+  Alerts carry a `replica` external label that is dropped before sending, so Alertmanager deduplicates.
+- Alertmanager runs as a 3-node gossip cluster over mutual TLS (peers verified against the internal CA once
+  the PKI exists). Routes: default (email + webhook), critical (shorter repeat), Watchdog to a heartbeat
+  webhook (dead man's switch); critical alerts and a down host inhibit lesser ones.
+- blackbox_exporter next to each replica probes the TLS handshake of every https endpoint in the catalog
+  plus `blackbox_extra_targets`; certificates renew at 30 days (tls_cert) and alert at 14 (SEC-05).
+- node_exporter exports timex (clock drift, LOG-03), systemd unit states (log shipper running, LOG-06) and
+  a textfile collector (`/var/lib/node_exporter/textfile_collector`). A systemd timer and an apt hook write
+  pending security updates, the age of the oldest one (counted from when this host first saw it) and
+  the reboot-required flag (HRD-04).
+- Grafana nodes are stateless: each has its own SQLite database, and everything that matters (datasources
+  for every Prometheus replica, dashboards, organisation roles from the IdP) is provisioned or comes with
+  the login. Losing a node loses only sessions and personal preferences, so there is nothing to back up or
+  replicate. Behind the edge proxy, use sticky sessions; a user moved to another node just signs in
+  again through SSO.
+- Grafana logs in through Keycloak (generic OAuth, PKCE). The `roles` claim maps platform-admin to Admin,
+  operator and security-admin to Editor, developer and auditor to Viewer; anything else (member) is refused
+  (role_attribute_strict). The login form is hidden; the break-glass admin works through the API with basic
+  auth, or the form is re-enabled with `grafana_break_glass_login_form` during an incident.
+- Logs: all containers log to journald; Grafana logs JSON with request logging (`router_logging`).
+  Prometheus TSDB and Alertmanager silences are not backed up (replicated across replicas/members; metrics
+  older than retention are not evidence).
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

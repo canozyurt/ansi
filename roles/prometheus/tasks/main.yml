@@ -1,0 +1,31 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - prometheus_scrape_password | length >= 16
+      - prometheus_web_users.values() | map('string') | map('length') | min >= 16
+      - prometheus_retention_days | int >= prometheus_retention_min_days | int
+    fail_msg: >-
+      Set monitoring_scrape_password and monitoring_grafana_password (16+ characters, from Ansible Vault
+      or OpenBao) and keep prometheus_retention_days at {{ prometheus_retention_min_days }} or more.
+    quiet: true
+  no_log: true
+  tags: [chk_log_05]
+
+- name: Require at least two replicas (HA-01)
+  ansible.builtin.assert:
+    that: prometheus_cluster_hosts | length >= prometheus_min_nodes or prometheus_allow_single_node | bool
+    fail_msg: >-
+      Prometheus needs at least {{ prometheus_min_nodes }} replicas (found {{ prometheus_cluster_hosts | length }}).
+      Set monitoring_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy Prometheus
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Apply pending reloads before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

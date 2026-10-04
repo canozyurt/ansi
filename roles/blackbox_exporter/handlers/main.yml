@@ -1,0 +1,9 @@
+---
+- name: Restart blackbox_exporter
+  community.docker.docker_container:
+    name: "{{ blackbox_exporter_container_name }}"
+    image: "{{ blackbox_exporter_image }}"
+    state: started
+    restart: true
+  throttle: 1
+  when: not (blackbox_exporter_container.changed | default(false))

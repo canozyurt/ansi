@@ -1,0 +1,11 @@
+---
+- name: Wait until Grafana and its database are healthy
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ grafana_port }}/api/health"
+    validate_certs: false
+    status_code: 200
+  register: grafana_ready
+  until: grafana_ready.status == 200 and (grafana_ready.json.database | default('')) == 'ok'
+  retries: 60
+  delay: 5
+  tags: [chk_log_05]

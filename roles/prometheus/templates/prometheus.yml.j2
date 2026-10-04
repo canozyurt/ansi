@@ -1,0 +1,95 @@
+{# Built as data and dumped, so quoting is always right. #}
+{% set tls_insecure_default = not (prometheus_tls_verify | bool) %}
+{% set ns = namespace(jobs=[], probes={'tls_connect': [], 'tls_connect_insecure': []}) %}
+{% set strip_port = [{'source_labels': ['__address__'], 'regex': '(.+):[0-9]+', 'target_label': 'instance', 'replacement': '$1'}] %}
+{% for job in prometheus_jobs %}
+{%   set targets = [] %}
+{%   for host in groups[job.group] %}
+{%     set _ = targets.append((hostvars[host].monitoring_address | default(host)) ~ ':' ~ job.port) %}
+{%   endfor %}
+{%   set insecure = job.tls_insecure | default(tls_insecure_default) | bool %}
+{%   set scheme = job.scheme | default('https') %}
+{%   set entry = {
+       'job_name': job.name,
+       'scheme': scheme,
+       'metrics_path': job.path | default('/metrics'),
+       'static_configs': [{'targets': targets}],
+       'relabel_configs': strip_port
+     } %}
+{%   if job.params is defined %}
+{%     set params = {} %}
+{%     for key, value in job.params.items() %}
+{%       set _ = params.update({key: value if value is not string and value is iterable else [value | string]}) %}
+{%     endfor %}
+{%     set entry = entry | combine({'params': params}) %}
+{%   endif %}
+{%   if scheme == 'https' %}
+{%     set entry = entry | combine({'tls_config': {'insecure_skip_verify': insecure, 'min_version': 'TLS12'}}) %}
+{%   endif %}
+{%   if job.basic_auth | default(false) | bool %}
+{%     set entry = entry | combine({'basic_auth': {'username': prometheus_scrape_user, 'password_file': '/etc/prometheus/secrets/scrape_password'}}) %}
+{%   elif job.bearer_token is defined %}
+{%     set entry = entry | combine({'authorization': {'type': 'Bearer', 'credentials_file': '/etc/prometheus/secrets/' ~ job.name ~ '.token'}}) %}
+{%   endif %}
+{%   set ns.jobs = ns.jobs + [entry] %}
+{%   if scheme == 'https' and job.probe_tls | default(true) | bool %}
+{%     set module = 'tls_connect_insecure' if insecure else 'tls_connect' %}
+{%     set _ = ns.probes[module].extend(targets) %}
+{%   endif %}
+{% endfor %}
+{% for extra in prometheus_blackbox_extra_targets %}
+{%   if extra is string %}
+{%     set _ = ns.probes['tls_connect'].append(extra) %}
+{%   else %}
+{%     set module = extra.module | default('tls_connect') %}
+{%     if module not in ns.probes %}
+{%       set _ = ns.probes.update({module: []}) %}
+{%     endif %}
+{%     set _ = ns.probes[module].append(extra.target) %}
+{%   endif %}
+{% endfor %}
+{% set probe_configs = [] %}
+{% for module, targets in ns.probes.items() if targets | length > 0 %}
+{%   set _ = probe_configs.append({'targets': targets | unique | list, 'labels': {'__param_module': module, 'module': module}}) %}
+{% endfor %}
+{% if probe_configs | length > 0 %}
+{%   set ns.jobs = ns.jobs + [{
+       'job_name': 'blackbox-tls',
+       'scrape_interval': prometheus_probe_interval,
+       'metrics_path': '/probe',
+       'scheme': 'https',
+       'tls_config': {'insecure_skip_verify': tls_insecure_default, 'min_version': 'TLS12'},
+       'basic_auth': {'username': prometheus_scrape_user, 'password_file': '/etc/prometheus/secrets/scrape_password'},
+       'static_configs': probe_configs,
+       'relabel_configs': [
+         {'source_labels': ['__address__'], 'target_label': '__param_target'},
+         {'source_labels': ['__param_target'], 'target_label': 'instance'},
+         {'target_label': '__address__', 'replacement': '127.0.0.1:' ~ prometheus_blackbox_port}
+       ]
+     }] %}
+{% endif %}
+{% set alertmanagers = [] %}
+{% for host in groups[prometheus_alertmanager_group] | default([]) %}
+{%   set _ = alertmanagers.append((hostvars[host].monitoring_address | default(host)) ~ ':' ~ prometheus_alertmanager_port) %}
+{% endfor %}
+{% set config = {
+  'global': {
+    'scrape_interval': prometheus_scrape_interval,
+    'scrape_timeout': prometheus_scrape_timeout,
+    'evaluation_interval': prometheus_evaluation_interval,
+    'external_labels': prometheus_external_labels | combine({'replica': inventory_hostname})
+  },
+  'rule_files': ['/etc/prometheus/rules/*.yml'],
+  'alerting': {
+    'alert_relabel_configs': [{'action': 'labeldrop', 'regex': 'replica'}],
+    'alertmanagers': [{
+      'scheme': 'https',
+      'tls_config': {'insecure_skip_verify': tls_insecure_default, 'min_version': 'TLS12'},
+      'basic_auth': {'username': prometheus_scrape_user, 'password_file': '/etc/prometheus/secrets/scrape_password'},
+      'static_configs': [{'targets': alertmanagers}]
+    }]
+  },
+  'scrape_configs': ns.jobs
+} %}
+# {{ ansible_managed }}
+{{ config | to_nice_yaml(indent=2, width=1000) }}

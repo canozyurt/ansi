@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Refresh apt patch metrics for node_exporter (HRD-04)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ node_exporter_apt_metrics_interval }}
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

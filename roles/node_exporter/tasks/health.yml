@@ -1,0 +1,16 @@
+---
+- name: Wait until node_exporter serves metrics over TLS with authentication
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ node_exporter_port }}/metrics"
+    url_username: "{{ node_exporter_web_user }}"
+    url_password: "{{ node_exporter_web_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: false
+    status_code: 200
+  register: node_exporter_ready
+  until: node_exporter_ready.status == 200
+  retries: 30
+  delay: 2
+  no_log: true
+  tags: [chk_log_05]

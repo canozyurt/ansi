@@ -1,0 +1,111 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create Grafana directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ grafana_data_dir }}", mode: "0755" }
+    - { path: "{{ grafana_data_dir }}/provisioning", mode: "0755" }
+    - { path: "{{ grafana_data_dir }}/provisioning/datasources", owner: "{{ grafana_container_uid }}", mode: "0700" }
+    - { path: "{{ grafana_data_dir }}/provisioning/dashboards", mode: "0755" }
+    - { path: "{{ grafana_data_dir }}/provisioning/alerting", mode: "0755" }
+    - { path: "{{ grafana_data_dir }}/provisioning/plugins", mode: "0755" }
+    - { path: "{{ grafana_data_dir }}/dashboards", mode: "0755" }
+    # SQLite database: sessions and preferences only; rebuilt from provisioning when lost.
+    - { path: "{{ grafana_data_dir }}/data", owner: "{{ grafana_container_uid }}", mode: "0700" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: grafana
+    tls_cert_dir: "{{ grafana_data_dir }}/tls"
+    tls_cert_owner: "{{ grafana_container_uid }}"
+    tls_cert_common_name: "{{ grafana_root_url | urlsplit('hostname') }}"
+    tls_cert_alt_names: ["{{ inventory_hostname }}"]
+    tls_cert_src_cert: "{{ grafana_tls_cert_file }}"
+    tls_cert_src_key: "{{ grafana_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart Grafana when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Grafana restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart grafana
+
+- name: Write the Grafana environment (contains secrets)
+  ansible.builtin.template:
+    src: grafana.env.j2
+    dest: "{{ grafana_data_dir }}/grafana.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart grafana
+  tags: [chk_sec_02, chk_iam_01, chk_iam_09]
+
+- name: Provision the Prometheus datasources (one per replica)
+  ansible.builtin.template:
+    src: datasources.yml.j2
+    dest: "{{ grafana_data_dir }}/provisioning/datasources/prometheus.yml"
+    owner: "{{ grafana_container_uid }}"
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart grafana
+  tags: [chk_log_05, chk_ha_01]
+
+- name: Provision the dashboard folder
+  ansible.builtin.template:
+    src: dashboards.yml.j2
+    dest: "{{ grafana_data_dir }}/provisioning/dashboards/compliant-infra.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart grafana
+  tags: [chk_log_05]
+
+- name: Install the dashboards
+  ansible.builtin.copy:
+    src: dashboards/
+    dest: "{{ grafana_data_dir }}/dashboards/"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_log_05]
+
+- name: Run the Grafana container
+  community.docker.docker_container:
+    name: "{{ grafana_container_name }}"
+    image: "{{ grafana_image }}"
+    network_mode: host
+    user: "{{ grafana_container_uid }}:0"
+    env_file: "{{ grafana_data_dir }}/grafana.env"
+    volumes:
+      - "{{ grafana_data_dir }}/data:/var/lib/grafana"
+      - "{{ grafana_data_dir }}/tls:/etc/grafana/tls:ro"
+      - "{{ grafana_data_dir }}/provisioning:/etc/grafana/provisioning:ro"
+      - "{{ grafana_data_dir }}/dashboards:/var/lib/grafana-dashboards:ro"
+      # The host trust store holds the internal CA, used for Keycloak and Prometheus TLS.
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ grafana_memory_limit }}"
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: grafana
+    state: started
+  register: grafana_container
+  tags: [chk_hrd_02, chk_iam_01]

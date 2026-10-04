@@ -1,0 +1,136 @@
+# [[ ansible_managed ]]
+# Availability, capacity and self-monitoring rules (LOG-05). Rendered with square-bracket Jinja delimiters so
+# Prometheus template expressions pass through unchanged.
+groups:
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: [[ prometheus_alert_target_down_for ]]
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} on {{ $labels.instance }} is down"
+          description: "Prometheus ({{ $externalLabels.replica }}) cannot scrape {{ $labels.job }} on {{ $labels.instance }}."
+
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: Always firing; proves the alerting pipeline works end to end (dead man's switch).
+
+  - name: capacity
+    rules:
+      - alert: DiskSpaceLow
+        expr: >-
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}
+               / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}) * 100
+          > [[ prometheus_alert_disk_used_percent ]]
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+
+      - alert: DiskSpaceCritical
+        expr: >-
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}
+               / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}) * 100
+          > [[ prometheus_alert_disk_critical_percent ]]
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% full"
+
+      - alert: DiskWillFillIn24Hours
+        expr: >-
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}[6h], 86400) < 0
+          and node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|squashfs|overlay|nsfs|fuse.*"} < 0.4
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} will be full within 24 hours"
+
+      - alert: MemoryHigh
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > [[ prometheus_alert_memory_used_percent ]]
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory on {{ $labels.instance }} is {{ $value | printf \"%.0f\" }}% used"
+
+      - alert: HostOutOfMemoryKills
+        expr: increase(node_vmstat_oom_kill[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The kernel killed processes for lack of memory on {{ $labels.instance }}"
+
+  - name: monitoring-pipeline
+    rules:
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus on {{ $labels.instance }} failed to load its configuration"
+
+      - alert: PrometheusRuleEvaluationFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus on {{ $labels.instance }} fails to evaluate rules in {{ $labels.rule_group }}"
+
+      - alert: PrometheusNotConnectedToAlertmanagers
+        expr: prometheus_notifications_alertmanagers_discovered < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus on {{ $labels.instance }} has no Alertmanager to send alerts to"
+
+      - alert: PrometheusNotificationsFailing
+        expr: rate(prometheus_notifications_errors_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus on {{ $labels.instance }} fails to deliver alerts to {{ $labels.alertmanager }}"
+
+      - alert: PrometheusReplicaMissing
+        expr: count(up{job="prometheus"} == 1) < [[ prometheus_min_nodes if not (prometheus_allow_single_node | bool) else 1 ]]
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Fewer Prometheus replicas are up than high availability needs (HA-01)
+
+      - alert: AlertmanagerClusterDegraded
+        expr: min(alertmanager_cluster_members) < count(up{job="alertmanager"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager members do not all see each other (HA-01)"
+
+      - alert: AlertmanagerConfigReloadFailed
+        expr: alertmanager_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager on {{ $labels.instance }} failed to load its configuration"
+
+      - alert: AlertmanagerNotificationsFailing
+        expr: rate(alertmanager_notifications_failed_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager on {{ $labels.instance }} fails to send {{ $labels.integration }} notifications"

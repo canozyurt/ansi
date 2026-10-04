@@ -1,0 +1,15 @@
+---
+- name: Reload alertmanager
+  ansible.builtin.command: docker kill --signal=HUP {{ alertmanager_container_name }}
+  changed_when: true
+  throttle: 1
+  when: not (alertmanager_container.changed | default(false))
+
+- name: Restart alertmanager
+  community.docker.docker_container:
+    name: "{{ alertmanager_container_name }}"
+    image: "{{ alertmanager_image }}"
+    state: started
+    restart: true
+  throttle: 1  # rolling restart keeps the cluster available
+  when: not (alertmanager_container.changed | default(false))

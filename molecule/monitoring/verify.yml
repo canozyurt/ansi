@@ -1,0 +1,345 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_prom: https://127.0.0.1:9090
+    verify_am: https://127.0.0.1:9093
+    verify_grafana: https://127.0.0.1:3000
+    verify_user: prometheus
+    verify_password: test-only-scrape-password
+  tasks:
+    # ------------------------------------------------------------ containers
+    - name: Inspect the monitoring containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [node-exporter, blackbox-exporter, alertmanager, prometheus, grafana]
+      register: verify_containers
+      tags: [chk_hrd_02]
+
+    - name: Containers run as non-root with no capabilities, no privilege escalation and a read-only root
+      ansible.builtin.assert:
+        that:
+          - item.container.State.Running
+          - "'ALL' in item.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - item.container.HostConfig.ReadonlyRootfs
+          - not item.container.HostConfig.Privileged
+          - item.container.Config.User not in ['', 'root', '0', '0:0']
+          - item.container.HostConfig.Memory > 0
+        quiet: true
+      loop: "{{ verify_containers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_hrd_02]
+
+    - name: The node_exporter container shares the host PID namespace and reads the host root read-only
+      vars:
+        verify_ne: "{{ verify_containers.results | selectattr('item', 'equalto', 'node-exporter') | first }}"
+      ansible.builtin.assert:
+        that:
+          - verify_ne.container.HostConfig.PidMode == 'host'
+          - verify_ne.container.HostConfig.NetworkMode == 'host'
+          - verify_ne.container.HostConfig.Binds | select('match', '^/:/host:ro') | list | length == 1
+      tags: [chk_log_05]
+
+    - name: Prometheus keeps 30 days of data
+      vars:
+        verify_pr: "{{ verify_containers.results | selectattr('item', 'equalto', 'prometheus') | first }}"
+      ansible.builtin.assert:
+        that: "'--storage.tsdb.retention.time=30d' in verify_pr.container.Args"
+      tags: [chk_log_05]
+
+    # ------------------------------------------------------------ access control
+    - name: Anonymous Prometheus API access is refused
+      ansible.builtin.uri:
+        url: "{{ verify_prom }}/api/v1/query?query=up"
+        validate_certs: false
+        status_code: 401
+      tags: [chk_iam_01, chk_sec_03]
+
+    - name: A wrong Prometheus password is refused
+      ansible.builtin.uri:
+        url: "{{ verify_prom }}/api/v1/query?query=up"
+        url_username: "{{ verify_user }}"
+        url_password: not-the-password-at-all
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 401
+      tags: [chk_iam_01]
+
+    - name: Anonymous scrapes of node_exporter, blackbox_exporter and Alertmanager are refused
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ item }}/metrics"
+        validate_certs: false
+        status_code: 401
+      loop: [9100, 9115, 9093]
+      tags: [chk_iam_01]
+
+    - name: Plain HTTP is not served by Prometheus
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9090/-/healthy
+      register: verify_plain
+      failed_when: verify_plain.status not in [-1, 400]
+      tags: [chk_sec_03]
+
+    - name: Prometheus refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:9090 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    # ------------------------------------------------------------ scraping
+    - name: Prometheus scrapes node_exporter and itself
+      ansible.builtin.uri:
+        url: "{{ verify_prom }}/api/v1/targets?state=active"
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_targets
+      vars:
+        verify_up_jobs: >-
+          {{ verify_targets.json.data.activeTargets | default([]) | selectattr('health', 'equalto', 'up')
+             | map(attribute='labels.job') | list }}
+      until: "'node' in verify_up_jobs and 'prometheus' in verify_up_jobs"
+      retries: 24
+      delay: 5
+      tags: [chk_log_05]
+
+    - name: The catalog targets of this host are up (node, prometheus, alertmanager, blackbox, grafana)
+      vars:
+        verify_health: >-
+          {{ verify_targets.json.data.activeTargets | items2dict(key_name='scrapePool', value_name='health') }}
+      ansible.builtin.assert:
+        that:
+          - verify_health.node == 'up'
+          - verify_health.prometheus == 'up'
+          - verify_health.alertmanager | default('down') in ['up', 'unknown']
+          - verify_health.blackbox | default('down') in ['up', 'unknown']
+          - verify_health.grafana | default('down') in ['up', 'unknown']
+          - "'keycloak' not in verify_health"
+        fail_msg: "{{ verify_health | to_json }}"
+      tags: [chk_log_05]
+
+    - name: The apt patch metrics appear in node_exporter output
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9100/metrics
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: verify_node_metrics
+      tags: [chk_hrd_04]
+
+    - name: Pending security updates, their age and the reboot flag are exported
+      ansible.builtin.assert:
+        that:
+          - verify_node_metrics.content is search('(?m)^apt_security_upgrades_pending [0-9]+')
+          - verify_node_metrics.content is search('(?m)^apt_security_upgrades_oldest_pending_age_days [0-9.]+')
+          - verify_node_metrics.content is search('(?m)^apt_reboot_required [01]')
+          - verify_node_metrics.content is search('(?m)^apt_metrics_success 1')
+          - verify_node_metrics.content is search('(?m)^node_textfile_scrape_error 0')
+      tags: [chk_hrd_04]
+
+    - name: Clock synchronisation metrics are exported for the drift alert
+      ansible.builtin.assert:
+        that:
+          - verify_node_metrics.content is search('(?m)^node_timex_offset_seconds ')
+          - verify_node_metrics.content is search('(?m)^node_timex_sync_status ')
+      tags: [chk_log_03]
+
+    # ------------------------------------------------------------ rules
+    - name: Check the rule files with promtool
+      ansible.builtin.command:
+        argv: [docker, exec, prometheus, sh, -c, promtool check rules /etc/prometheus/rules/*.yml]
+      register: verify_promtool
+      changed_when: false
+      tags: [chk_log_05]
+
+    - name: Read the loaded rules
+      ansible.builtin.uri:
+        url: "{{ verify_prom }}/api/v1/rules"
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_rules
+      until: >-
+        verify_rules.json.data.groups | map(attribute='rules') | flatten
+        | selectattr('lastEvaluation', 'defined') | rejectattr('lastEvaluation', 'match', '^0001') | list | length > 0
+      retries: 12
+      delay: 5
+      tags: [chk_log_05, chk_sec_05, chk_log_03, chk_hrd_04, chk_bck_01, chk_bck_03, chk_log_06]
+
+    - name: The compliance alert rules are loaded and evaluate without errors
+      vars:
+        verify_all_rules: "{{ verify_rules.json.data.groups | map(attribute='rules') | flatten }}"
+        verify_names: "{{ verify_all_rules | map(attribute='name') | list }}"
+      ansible.builtin.assert:
+        that:
+          - verify_all_rules | rejectattr('health', 'in', ['ok', 'unknown']) | list | length == 0
+          - "'TargetDown' in verify_names"
+          - "'DiskSpaceLow' in verify_names"
+          - "'MemoryHigh' in verify_names"
+          - "'CertificateExpiringSoon' in verify_names"
+          - "'ClockDrift' in verify_names"
+          - "'ClockNotSynchronised' in verify_names"
+          - "'SecurityUpdatesOverdue' in verify_names"
+          - "'RebootRequiredTooLong' in verify_names"
+          - "'BackupRPOExceeded' in verify_names"
+          - "'RestoreTestOverdue' in verify_names"
+          - "'LogShipperNotRunning' in verify_names"
+        fail_msg: "{{ verify_all_rules | rejectattr('health', 'in', ['ok', 'unknown']) | list | to_json }}"
+      tags: [chk_log_05, chk_sec_05, chk_log_03, chk_hrd_04, chk_bck_01, chk_bck_03, chk_log_06]
+
+    # ------------------------------------------------------------ certificate probes
+    - name: The blackbox_exporter completes a TLS handshake and reports the certificate expiry
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9115/probe?module=tls_connect_insecure&target=127.0.0.1:9090
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: verify_probe
+      failed_when: >-
+        verify_probe.content is not search('(?m)^probe_success 1')
+        or verify_probe.content is not search('(?m)^probe_ssl_earliest_cert_expiry [0-9.e+]+')
+      tags: [chk_sec_05]
+
+    - name: Prometheus records certificate expiry for the https endpoints of the catalog
+      ansible.builtin.uri:
+        url: "{{ verify_prom }}/api/v1/query?query=probe_ssl_earliest_cert_expiry%7Bjob%3D%22blackbox-tls%22%7D"
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_expiry
+      until: verify_expiry.json.data.result | length >= 4
+      retries: 24
+      delay: 5
+      tags: [chk_sec_05]
+
+    # ------------------------------------------------------------ alerting
+    - name: Read the Alertmanager cluster status
+      ansible.builtin.uri:
+        url: "{{ verify_am }}/api/v2/status"
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_am_status
+      until: verify_am_status.json.cluster.status == 'ready'
+      retries: 24
+      delay: 5
+      tags: [chk_ha_01, chk_log_05]
+
+    - name: Alerts flow from Prometheus to Alertmanager (the Watchdog alert arrives)
+      ansible.builtin.uri:
+        url: "{{ verify_am }}/api/v2/alerts?filter=alertname%3D%22Watchdog%22"
+        url_username: "{{ verify_user }}"
+        url_password: "{{ verify_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_am_alerts
+      until: verify_am_alerts.json | length > 0
+      retries: 24
+      delay: 5
+      tags: [chk_log_05]
+
+    - name: Alerts reach Alertmanager without the replica label (deduplication across replicas)
+      ansible.builtin.assert:
+        that: "'replica' not in verify_am_alerts.json[0].labels"
+      tags: [chk_ha_01]
+
+    # ------------------------------------------------------------ grafana
+    - name: Grafana and its database are healthy
+      ansible.builtin.uri:
+        url: "{{ verify_grafana }}/api/health"
+        validate_certs: false
+      register: verify_grafana_health
+      failed_when: verify_grafana_health.json.database != 'ok'
+      tags: [chk_log_05]
+
+    - name: Anonymous Grafana API access is refused
+      ansible.builtin.uri:
+        url: "{{ verify_grafana }}/api/search"
+        validate_certs: false
+        status_code: 401
+      tags: [chk_iam_01]
+
+    - name: Read the provisioned datasources
+      ansible.builtin.uri:
+        url: "{{ verify_grafana }}/api/datasources"
+        url_username: break-glass-admin
+        url_password: test-only-admin-password
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_datasources
+      tags: [chk_log_05]
+
+    - name: The Prometheus datasource is provisioned
+      ansible.builtin.assert:
+        that:
+          - verify_datasources.json | selectattr('uid', 'equalto', 'prometheus-1') | list | length == 1
+          - (verify_datasources.json | selectattr('uid', 'equalto', 'prometheus-1') | first).isDefault
+          - (verify_datasources.json | selectattr('uid', 'equalto', 'prometheus-1') | first).readOnly
+      tags: [chk_log_05]
+
+    - name: Grafana queries Prometheus through the datasource
+      ansible.builtin.uri:
+        url: "{{ verify_grafana }}/api/datasources/uid/prometheus-1/health"
+        url_username: break-glass-admin
+        url_password: test-only-admin-password
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_ds_health
+      failed_when: verify_ds_health.json.status | default('') != 'OK'
+      tags: [chk_log_05]
+
+    - name: Read the provisioned dashboards
+      ansible.builtin.uri:
+        url: "{{ verify_grafana }}/api/search?type=dash-db"
+        url_username: break-glass-admin
+        url_password: test-only-admin-password
+        force_basic_auth: true
+        validate_certs: false
+      register: verify_dashboards
+      tags: [chk_log_05]
+
+    - name: The node overview and compliance alert dashboards are provisioned
+      ansible.builtin.assert:
+        that:
+          - "'node-overview' in verify_dashboards.json | map(attribute='uid')"
+          - "'compliance-alerts' in verify_dashboards.json | map(attribute='uid')"
+      tags: [chk_log_05]
+
+    - name: Read the Grafana environment
+      ansible.builtin.slurp:
+        src: /opt/grafana/grafana.env
+      register: verify_grafana_env
+      no_log: true
+      tags: [chk_iam_09]
+
+    - name: The roles claim maps to Grafana roles and unmapped roles get no access
+      vars:
+        verify_env: "{{ verify_grafana_env.content | b64decode }}"
+        verify_path: "{{ verify_env | regex_findall('(?m)^GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=(.*)$') | first }}"
+      ansible.builtin.assert:
+        that:
+          - verify_path is search("contains\\(roles \\|\\| `\\[\\]`, 'platform-admin'\\) && 'Admin'")
+          - verify_path is search("'operator'\\) && 'Editor'")
+          - verify_path is search("'security-admin'\\) && 'Editor'")
+          - verify_path is search("'developer'\\) && 'Viewer'")
+          - verify_path is search("'auditor'\\) && 'Viewer'")
+          - "'member' not in verify_path"
+          - verify_env is search('(?m)^GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=true$')
+          - verify_env is search('(?m)^GF_AUTH_ANONYMOUS_ENABLED=false$')
+          - verify_env is search('(?m)^GF_USERS_ALLOW_SIGN_UP=false$')
+        quiet: true
+      tags: [chk_iam_01, chk_iam_09]

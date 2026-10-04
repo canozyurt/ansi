@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: node_exporter
+  author: compliant-infra-ansible contributors
+  description: Prometheus node_exporter with TLS, basic auth, systemd states and apt patch metrics
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+apiVersion: 1
+providers:
+  - name: compliant-infra
+    folder: Platform
+    type: file
+    disableDeletion: true
+    allowUiUpdates: {{ grafana_dashboards_allow_ui_updates | bool | lower }}
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana-dashboards
+      foldersFromFilesStructure: false

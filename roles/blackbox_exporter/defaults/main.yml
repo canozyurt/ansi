@@ -1,0 +1,51 @@
+---
+# blackbox_exporter on every monitoring host. Each Prometheus replica probes through its local
+# exporter: TLS handshakes to every https endpoint for certificate expiry (SEC-05) and uptime checks.
+blackbox_exporter_image: "{{ versions_images.blackbox_exporter }}"
+blackbox_exporter_container_name: blackbox-exporter
+blackbox_exporter_port: 9115
+blackbox_exporter_data_dir: /opt/blackbox_exporter
+# The upstream image runs as root; run it as nobody.
+blackbox_exporter_container_uid: 65534
+blackbox_exporter_memory_limit: 128m
+
+# HA-01: runs next to each Prometheus replica.
+blackbox_exporter_min_nodes: 2
+blackbox_exporter_allow_single_node: "{{ monitoring_allow_single_node | default(false) }}"
+blackbox_exporter_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+blackbox_exporter_web_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+blackbox_exporter_web_password: "{{ monitoring_scrape_password | default('') }}"
+
+blackbox_exporter_tls_cert_file: ""
+blackbox_exporter_tls_key_file: ""
+
+blackbox_exporter_probe_timeout: 10s
+# Probe modules. tls_connect verifies the chain against the host trust store (which holds the
+# internal CA); tls_connect_insecure only records the certificate (labs, self-signed endpoints).
+blackbox_exporter_modules:
+  tls_connect:
+    prober: tcp
+    timeout: "{{ blackbox_exporter_probe_timeout }}"
+    tcp:
+      tls: true
+      tls_config:
+        insecure_skip_verify: false
+        min_version: TLS12
+  tls_connect_insecure:
+    prober: tcp
+    timeout: "{{ blackbox_exporter_probe_timeout }}"
+    tcp:
+      tls: true
+      tls_config:
+        insecure_skip_verify: true
+        min_version: TLS12
+  http_2xx:
+    prober: http
+    timeout: "{{ blackbox_exporter_probe_timeout }}"
+    http:
+      preferred_ip_protocol: ip4
+      fail_if_not_ssl: true
+      tls_config:
+        min_version: TLS12
+blackbox_exporter_modules_extra: {}

@@ -1,0 +1,58 @@
+{# Built as data and dumped, so quoting is always right. #}
+{% set email_default = alertmanager_smtp_smarthost | length > 0 and alertmanager_email_to | length > 0 %}
+{% set email_critical = alertmanager_smtp_smarthost | length > 0 and alertmanager_critical_email_to | length > 0 %}
+{% set http_config = {'authorization': {'type': 'Bearer', 'credentials': alertmanager_webhook_bearer_token}} if alertmanager_webhook_bearer_token | length > 0 else {} %}
+{% set ns = namespace(receivers=[]) %}
+{% set default_receiver = {'name': 'default'} %}
+{% if email_default %}
+{%   set default_receiver = default_receiver | combine({'email_configs': [{'to': alertmanager_email_to | join(', '), 'send_resolved': true}]}) %}
+{% endif %}
+{% if alertmanager_webhook_url | length > 0 %}
+{%   set default_receiver = default_receiver | combine({'webhook_configs': [{'url': alertmanager_webhook_url, 'send_resolved': true, 'http_config': http_config}]}) %}
+{% endif %}
+{% set critical_receiver = {'name': 'critical'} %}
+{% if email_critical %}
+{%   set critical_receiver = critical_receiver | combine({'email_configs': [{'to': alertmanager_critical_email_to | join(', '), 'send_resolved': true}]}) %}
+{% endif %}
+{% if alertmanager_critical_webhook_url | length > 0 %}
+{%   set critical_receiver = critical_receiver | combine({'webhook_configs': [{'url': alertmanager_critical_webhook_url, 'send_resolved': true, 'http_config': http_config}]}) %}
+{% endif %}
+{% set heartbeat_receiver = {'name': 'heartbeat'} %}
+{% if alertmanager_heartbeat_webhook_url | length > 0 %}
+{%   set heartbeat_receiver = heartbeat_receiver | combine({'webhook_configs': [{'url': alertmanager_heartbeat_webhook_url, 'send_resolved': false, 'http_config': http_config}]}) %}
+{% endif %}
+{% set global = {'resolve_timeout': '5m'} %}
+{% if alertmanager_smtp_smarthost | length > 0 %}
+{%   set global = global | combine({
+       'smtp_smarthost': alertmanager_smtp_smarthost,
+       'smtp_from': alertmanager_smtp_from,
+       'smtp_hello': alertmanager_smtp_hello,
+       'smtp_require_tls': alertmanager_smtp_require_tls | bool}) %}
+{%   if alertmanager_smtp_auth_username | length > 0 %}
+{%     set global = global | combine({'smtp_auth_username': alertmanager_smtp_auth_username, 'smtp_auth_password': alertmanager_smtp_auth_password}) %}
+{%   endif %}
+{% endif %}
+{% set config = {
+  'global': global,
+  'route': {
+    'receiver': 'default',
+    'group_by': alertmanager_group_by,
+    'group_wait': alertmanager_group_wait,
+    'group_interval': alertmanager_group_interval,
+    'repeat_interval': alertmanager_repeat_interval,
+    'routes': [
+      {'receiver': 'heartbeat', 'matchers': ['alertname = Watchdog'], 'group_wait': '0s', 'group_interval': '1m', 'repeat_interval': '1m'}
+    ] + alertmanager_routes_extra + [
+      {'receiver': 'critical', 'matchers': ['severity = critical'], 'group_wait': '10s', 'repeat_interval': alertmanager_critical_repeat_interval, 'continue': false}
+    ]
+  },
+  'inhibit_rules': [
+    {'source_matchers': ['severity = critical'], 'target_matchers': ['severity =~ warning|info'], 'equal': ['alertname', 'instance']},
+    {'source_matchers': ['alertname = TargetDown', 'job = node'], 'target_matchers': ['severity =~ warning|info', 'alertname != TargetDown'], 'equal': ['instance']},
+    {'source_matchers': ['alertname = TLSProbeFailed'], 'target_matchers': ['alertname = CertificateExpiringSoon'], 'equal': ['instance']}
+  ] + alertmanager_inhibit_rules_extra,
+  'receivers': [default_receiver, critical_receiver, heartbeat_receiver] + alertmanager_receivers_extra,
+  'templates': []
+} %}
+# {{ ansible_managed }}
+{{ config | to_nice_yaml(indent=2, width=1000) }}

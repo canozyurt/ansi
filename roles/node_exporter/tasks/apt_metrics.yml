@@ -1,0 +1,54 @@
+---
+# Patch-age metrics for HRD-04: pending security updates, how long the oldest one has been pending,
+# and whether (and since when) a reboot is required. Prometheus alerts on the SLA.
+- name: Install the apt metrics collector
+  ansible.builtin.template:
+    src: node-exporter-apt-metrics.sh.j2
+    dest: /usr/local/sbin/node-exporter-apt-metrics
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Reload systemd and collect apt metrics
+  tags: [chk_hrd_04]
+
+- name: Install the apt metrics service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - node-exporter-apt-metrics.service
+    - node-exporter-apt-metrics.timer
+  notify: Reload systemd and collect apt metrics
+  tags: [chk_hrd_04]
+
+- name: Refresh the metrics after every apt run
+  ansible.builtin.copy:
+    src: 99node-exporter-apt-metrics
+    dest: /etc/apt/apt.conf.d/99node-exporter-apt-metrics
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_hrd_04]
+
+- name: Enable the apt metrics timer
+  ansible.builtin.systemd_service:
+    name: node-exporter-apt-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_hrd_04]
+
+- name: Check for the apt metrics file
+  ansible.builtin.stat:
+    path: "{{ node_exporter_textfile_dir }}/apt.prom"
+  register: node_exporter_apt_prom
+
+- name: Collect the apt metrics once on a new host
+  ansible.builtin.systemd_service:
+    name: node-exporter-apt-metrics.service
+    state: started
+  when: not node_exporter_apt_prom.stat.exists
+  tags: [chk_hrd_04]

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write apt patch metrics for node_exporter (HRD-04)
+After=apt-daily.service apt-daily-upgrade.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/node-exporter-apt-metrics
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

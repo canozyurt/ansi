@@ -1,0 +1,24 @@
+---
+# Writes the web configuration file of a Prometheus-ecosystem server (Prometheus, Alertmanager,
+# node_exporter, blackbox_exporter): TLS 1.2+ and HTTP basic auth with bcrypt hashes (SEC-03, IAM-01).
+# Called by the monitoring roles through include_role:
+#
+#   - ansible.builtin.include_role:
+#       name: prometheus_web_config
+#     vars:
+#       prometheus_web_config_path: /opt/node_exporter/web.yml
+#       prometheus_web_config_container_tls_dir: /etc/node_exporter/tls
+#       prometheus_web_config_owner: "65534"
+#       prometheus_web_config_users: { prometheus: "{{ monitoring_scrape_password }}" }
+#
+# Existing hashes are kept while they still match the password, so reruns change nothing.
+# Sets the fact prometheus_web_config_changed.
+
+prometheus_web_config_path: ""
+# Where the service sees tls.crt and tls.key inside its container.
+prometheus_web_config_container_tls_dir: ""
+prometheus_web_config_owner: "65534"
+prometheus_web_config_group: "65534"
+# user -> password. Passwords come from the secrets manager or Ansible Vault (16+ characters).
+prometheus_web_config_users: {}
+prometheus_web_config_bcrypt_cost: 10

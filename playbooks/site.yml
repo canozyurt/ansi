@@ -11,3 +11,6 @@
 
 - name: Deploy the identity provider
   ansible.builtin.import_playbook: identity.yml
+
+- name: Deploy monitoring and alerting
+  ansible.builtin.import_playbook: monitoring.yml

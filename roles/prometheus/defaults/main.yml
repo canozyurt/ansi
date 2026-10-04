@@ -1,0 +1,97 @@
+---
+prometheus_image: "{{ versions_images.prometheus }}"
+prometheus_container_name: prometheus
+prometheus_data_dir: /opt/prometheus
+prometheus_container_uid: 65534
+prometheus_memory_limit: 2g
+
+# High availability (HA-01): at least 2 identical replicas. Each scrapes every target and sends every
+# alert to every Alertmanager, which deduplicates. Grafana has a datasource per replica.
+prometheus_min_nodes: 2
+prometheus_allow_single_node: "{{ monitoring_allow_single_node | default(false) }}"
+prometheus_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+prometheus_port: 9090
+prometheus_external_url: "https://{{ inventory_hostname }}:{{ prometheus_port }}"
+
+# Retention (LOG-05 history, capacity trends). At least prometheus_retention_min_days.
+prometheus_retention_days: 30
+prometheus_retention_min_days: 30
+prometheus_retention_size: ""          # optional cap, e.g. 50GB
+
+prometheus_scrape_interval: 30s
+prometheus_scrape_timeout: 10s
+prometheus_evaluation_interval: 30s
+prometheus_probe_interval: 60s
+prometheus_external_labels: {}         # a "replica" label is added and dropped again from alerts
+
+# UI and API: TLS plus basic auth, no anonymous access. Prometheus has no SSO: people use Grafana
+# (OIDC); these accounts are for machines (Grafana, the other replica) and break-glass use.
+prometheus_web_users: >-
+  {{ {monitoring_scrape_user | default('prometheus'): monitoring_scrape_password | default(''),
+      monitoring_grafana_user | default('grafana'): monitoring_grafana_password | default('')} }}
+prometheus_web_users_extra: {}
+
+prometheus_tls_cert_file: ""
+prometheus_tls_key_file: ""
+
+# Verify target certificates against the host trust store (internal CA). Without an internal PKI
+# the services use self-signed certificates, so verification is off unless a catalog entry sets it.
+prometheus_tls_verify: "{{ (pki_openbao_addr | default('')) | length > 0 }}"
+
+# Credentials Prometheus presents to the exporters of this repo (node_exporter, blackbox,
+# Alertmanager, Grafana metrics, Prometheus itself).
+prometheus_scrape_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+prometheus_scrape_password: "{{ monitoring_scrape_password | default('') }}"
+
+# ---------------------------------------------------------------- scrape catalog (LOG-05)
+# One entry per service. Targets are the hosts of "group" when that inventory group exists.
+#   name:         job name
+#   group:        inventory group whose hosts expose the endpoint
+#   port, path, scheme (https|http), params (dict), tls_insecure (bool, default: not prometheus_tls_verify)
+#   basic_auth:   true to present prometheus_scrape_user/password
+#   bearer_token: optional token (from Vault/OpenBao), written to a 0600 file
+#   probe_tls:    false to leave the endpoint out of the certificate expiry probes (default true for https)
+# A host's address is hostvars[host].monitoring_address, else its inventory name.
+prometheus_scrape_catalog:
+  - { name: node, group: all, port: 9100, path: /metrics, scheme: https, basic_auth: true }
+  - { name: keycloak, group: keycloak, port: 9000, path: /metrics, scheme: https }
+  - { name: openbao, group: openbao, port: 8200, path: /v1/sys/metrics, scheme: https, params: { format: [prometheus] } }
+  - { name: haproxy, group: edge, port: 8405, path: /metrics, scheme: https }
+  - { name: prometheus, group: monitoring, port: 9090, path: /metrics, scheme: https, basic_auth: true }
+  - { name: alertmanager, group: monitoring, port: 9093, path: /metrics, scheme: https, basic_auth: true }
+  - { name: blackbox, group: monitoring, port: 9115, path: /metrics, scheme: https, basic_auth: true }
+  - { name: grafana, group: monitoring, port: 3000, path: /metrics, scheme: https, basic_auth: true }
+# Entries for services outside this list, same format.
+prometheus_scrape_extra: []
+
+# Extra endpoints for the TLS certificate probes (SEC-05): "host:port" strings or
+# { target: "host:port", module: tls_connect | tls_connect_insecure }. Set blackbox_extra_targets
+# in the inventory (group_vars/monitoring).
+prometheus_blackbox_extra_targets: "{{ blackbox_extra_targets | default([]) }}"
+prometheus_blackbox_port: "{{ blackbox_exporter_port | default(9115) }}"
+
+# Alertmanagers that receive alerts: every host of this group.
+prometheus_alertmanager_group: monitoring
+prometheus_alertmanager_port: "{{ alertmanager_port | default(9093) }}"
+
+# ---------------------------------------------------------------- alert thresholds
+prometheus_alert_target_down_for: 5m
+prometheus_alert_disk_used_percent: 85
+prometheus_alert_disk_critical_percent: 95
+prometheus_alert_memory_used_percent: 90
+prometheus_alert_cert_expiry_days: 14                  # SEC-05
+prometheus_alert_clock_offset_seconds: 0.05            # LOG-03
+prometheus_alert_security_update_age_days: 14          # HRD-04
+prometheus_alert_reboot_required_days: 7
+prometheus_alert_apt_metrics_stale_hours: 6
+prometheus_alert_backup_rpo_hours: 24                  # BCK-01, used when no backup_rpo_seconds metric exists
+prometheus_alert_restore_test_age_days: 35             # BCK-03
+# LOG-06: the log shipper unit every host runs (systemd state exported by node_exporter).
+prometheus_alert_log_shipper_enabled: true
+prometheus_alert_log_shipper_unit: "{{ monitoring_log_shipper_unit | default('wazuh-agent.service') }}"
+prometheus_alert_log_shipper_silent_minutes: 15
+
+# Extra rule groups (Prometheus rule group format). Service roles may also define variables named
+# prometheus_rules_<service> (each a list of groups); they are collected automatically.
+prometheus_alert_rules_extra: []

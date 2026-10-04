@@ -1,0 +1,15 @@
+---
+- name: Restart node_exporter
+  community.docker.docker_container:
+    name: "{{ node_exporter_container_name }}"
+    image: "{{ node_exporter_image }}"
+    state: started
+    restart: true
+    container_default_behavior: no_defaults
+  when: not (node_exporter_container.changed | default(false))
+
+- name: Reload systemd and collect apt metrics
+  ansible.builtin.systemd_service:
+    name: node-exporter-apt-metrics.service
+    state: started
+    daemon_reload: true

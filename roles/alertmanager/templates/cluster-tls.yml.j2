@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# Mutual TLS for cluster gossip (experimental upstream flag --cluster.tls-config).
+tls_server_config:
+  cert_file: /etc/alertmanager/tls/tls.crt
+  key_file: /etc/alertmanager/tls/tls.key
+  min_version: TLS12
+{% if alertmanager_cluster_ca_file | length > 0 %}
+  client_auth_type: RequireAndVerifyClientCert
+  client_ca_file: /etc/alertmanager-ca/ca.crt
+{% else %}
+  # No internal PKI yet: encrypted, and a client certificate is required, but peers are not verified.
+  client_auth_type: RequireAnyClientCert
+{% endif %}
+tls_client_config:
+  cert_file: /etc/alertmanager/tls/tls.crt
+  key_file: /etc/alertmanager/tls/tls.key
+{% if alertmanager_cluster_ca_file | length > 0 %}
+  ca_file: /etc/alertmanager-ca/ca.crt
+  insecure_skip_verify: false
+{% else %}
+  insecure_skip_verify: true
+{% endif %}

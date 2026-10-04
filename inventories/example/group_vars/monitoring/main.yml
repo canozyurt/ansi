@@ -1,0 +1,38 @@
+---
+# Prometheus, Alertmanager, blackbox_exporter and Grafana (playbooks/monitoring.yml).
+# Keep secrets out of plain text: ansible-vault encrypt_string, or look them up from the secrets manager.
+
+# Grafana's account on the Prometheus API.
+monitoring_grafana_user: grafana
+monitoring_grafana_password: "{{ vault_monitoring_grafana_password }}"
+
+prometheus_retention_days: 30
+# Endpoints outside the inventory whose certificates must be watched (SEC-05).
+blackbox_extra_targets: []
+#  - www.example.com:443
+
+alertmanager_smtp_smarthost: smtp.example.internal:587
+alertmanager_smtp_from: alerts@example.com
+alertmanager_smtp_auth_username: alerts@example.com
+alertmanager_smtp_auth_password: "{{ vault_alertmanager_smtp_password }}"
+alertmanager_email_to: [ops@example.com]
+alertmanager_critical_email_to: [oncall@example.com]
+alertmanager_webhook_url: ""
+alertmanager_heartbeat_webhook_url: ""
+
+grafana_root_url: https://grafana.example.internal
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+grafana_secret_key: "{{ vault_grafana_secret_key }}"
+grafana_oidc_client_secret: "{{ vault_grafana_oidc_client_secret }}"
+
+# Prometheus and Alertmanager UIs/APIs from management networks (VPN, bastion) and the other
+# monitoring hosts; Grafana also from the edge proxy (app zone); gossip only between members.
+firewall_rules_prometheus:
+  - { name: prometheus-https, port: 9090, sources: ["{{ network_zones.mgmt }}"] }
+firewall_rules_alertmanager:
+  - { name: alertmanager-https, port: 9093, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: alertmanager-cluster, port: 9094, sources: ["{{ network_zones.mgmt }}"] }
+firewall_rules_blackbox_exporter:
+  - { name: blackbox-exporter, port: 9115, sources: ["{{ network_zones.mgmt }}"] }
+firewall_rules_grafana:
+  - { name: grafana-https, port: 3000, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }

@@ -1,0 +1,35 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - alertmanager_web_password | length >= 16
+      - alertmanager_smtp_smarthost | length == 0 or alertmanager_smtp_from | length > 0
+      - >-
+        alertmanager_allow_no_receivers | bool
+        or (alertmanager_smtp_smarthost | length > 0 and alertmanager_email_to | length > 0)
+        or alertmanager_webhook_url | length > 0
+      - alertmanager_webhook_url | length == 0 or alertmanager_webhook_url is match('^https://')
+    fail_msg: >-
+      Set monitoring_scrape_password (16+ characters) and at least one notification target: SMTP
+      (alertmanager_smtp_smarthost, alertmanager_smtp_from, alertmanager_email_to) or an https
+      alertmanager_webhook_url. alertmanager_allow_no_receivers is for labs only.
+    quiet: true
+  no_log: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: alertmanager_cluster_hosts | length >= alertmanager_min_nodes or alertmanager_allow_single_node | bool
+    fail_msg: >-
+      Alertmanager needs at least {{ alertmanager_min_nodes }} nodes (found {{ alertmanager_cluster_hosts | length }}).
+      Set monitoring_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy Alertmanager
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Apply pending reloads before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

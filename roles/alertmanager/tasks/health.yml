@@ -1,0 +1,15 @@
+---
+- name: Wait until Alertmanager is ready
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ alertmanager_port }}/-/ready"
+    url_username: "{{ alertmanager_web_user }}"
+    url_password: "{{ alertmanager_web_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: alertmanager_ready
+  until: alertmanager_ready.status == 200
+  retries: 30
+  delay: 2
+  no_log: true
+  tags: [chk_log_05]

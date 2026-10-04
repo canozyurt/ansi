@@ -1,0 +1,17 @@
+---
+# Monitoring settings every host needs (playbooks/monitoring.yml).
+
+# Account Prometheus uses for every exporter of this repo (node_exporter, blackbox_exporter,
+# Alertmanager, Grafana metrics, Prometheus itself). Keep the password in Ansible Vault or OpenBao.
+monitoring_scrape_user: prometheus
+monitoring_scrape_password: "{{ vault_monitoring_scrape_password }}"
+
+# Networks the Prometheus replicas scrape from.
+monitoring_source_cidrs: ["{{ network_zones.mgmt }}"]
+
+# The log shipper unit every host runs; its state feeds the LOG-06 alert.
+monitoring_log_shipper_unit: wazuh-agent.service
+
+# node_exporter is reachable only from the monitoring hosts (NET-01, NET-03).
+firewall_rules_node_exporter:
+  - { name: node-exporter, port: 9100, sources: "{{ monitoring_source_cidrs }}" }

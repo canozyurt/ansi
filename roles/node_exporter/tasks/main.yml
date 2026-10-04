@@ -1,0 +1,20 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - node_exporter_web_password | length >= 16
+    fail_msg: >-
+      Set monitoring_scrape_password (16+ characters) in group_vars/all from Ansible Vault or OpenBao;
+      node_exporter never serves metrics without authentication.
+    quiet: true
+  no_log: true
+
+- name: Deploy node_exporter
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Collect apt patch metrics
+  ansible.builtin.import_tasks: apt_metrics.yml
+  when: node_exporter_apt_metrics_enabled | bool
+
+- name: Wait for node_exporter
+  ansible.builtin.import_tasks: health.yml

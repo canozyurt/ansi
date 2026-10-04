@@ -142,7 +142,8 @@ requirements:
       iso27001: ["8.24"]
       iso27017: []
     check: "Monitoring rule plus expiry scan"
-    status: not_started
+    status: implemented
+    progress: "Done: tls_cert renews 30 days before expiry; blackbox_exporter probes every https catalog endpoint plus blackbox_extra_targets and CertificateExpiringSoon fires under 14 days. Remaining: expiry scan of certificates not served on a network port."
   - id: SEC-06
     requirement: "Encryption keys have a defined rotation period that is enforced"
     controls:
@@ -175,8 +176,8 @@ requirements:
       iso27001: ["8.17"]
       iso27017: []
     check: "chrony check in monitoring"
-    status: designed
-    progress: "Done: chrony with common sources, clock changes logged. Remaining: drift alert in monitoring."
+    status: implemented
+    progress: "Done: chrony with common sources, clock changes logged; node_exporter timex metrics with ClockNotSynchronised and ClockDrift (>50 ms) alerts."
   - id: LOG-04
     requirement: "Security events (failed logins, privilege use, file changes, intrusions) alert the on-call with a severity"
     controls:
@@ -192,7 +193,8 @@ requirements:
       iso27001: ["8.6", "8.16"]
       iso27017: []
     check: "CI asserts each role registers scrape targets and alert rules"
-    status: not_started
+    status: implemented
+    progress: "Done: node_exporter on every host, Prometheus scrape catalog with availability, capacity and pipeline alerts, Grafana dashboards. Remaining: each new service role registers its endpoint and rules."
   - id: LOG-06
     requirement: "A log source or agent going silent raises an alert"
     controls:
@@ -200,7 +202,8 @@ requirements:
       iso27001: ["8.16"]
       iso27017: []
     check: "Monitoring rule: missing heartbeat"
-    status: not_started
+    status: designed
+    progress: "Done: LogShipperNotRunning on the wazuh-agent unit and LogShipperSilent on log_shipper_last_ack_timestamp_seconds. Remaining: the SIEM agent must export that metric."
   - id: HRD-01
     requirement: "Hosts pass the CIS Level 1 benchmark for their Debian/Ubuntu version; exceptions are documented"
     controls:
@@ -235,8 +238,8 @@ requirements:
       iso27001: ["8.8"]
       iso27017: []
     check: "Patch-age report from hosts and images"
-    status: designed
-    progress: "Done: unattended security upgrades. Remaining: patch-age report against the 14/30-day SLA."
+    status: implemented
+    progress: "Done: unattended security upgrades; textfile metrics for pending security updates, their age and reboot-required, with SecurityUpdatesOverdue (>14 days) and RebootRequiredTooLong (>7 days) alerts; rolling reboot playbook. Remaining: 30-day SLA for high severity (apt has no severity), container images."
   - id: HRD-05
     requirement: "Hosts and images are scanned for vulnerabilities weekly; findings are tracked to closure"
     controls:

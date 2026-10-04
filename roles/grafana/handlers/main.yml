@@ -1,0 +1,9 @@
+---
+- name: Restart grafana
+  community.docker.docker_container:
+    name: "{{ grafana_container_name }}"
+    image: "{{ grafana_image }}"
+    state: started
+    restart: true
+  throttle: 1  # one node at a time stays behind the edge proxy
+  when: not (grafana_container.changed | default(false))

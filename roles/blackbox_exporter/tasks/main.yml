@@ -1,0 +1,101 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - blackbox_exporter_web_password | length >= 16
+    fail_msg: Set monitoring_scrape_password (16+ characters) from Ansible Vault or OpenBao.
+    quiet: true
+  no_log: true
+
+- name: Require a probe exporter next to every Prometheus replica (HA-01)
+  ansible.builtin.assert:
+    that: blackbox_exporter_cluster_hosts | length >= blackbox_exporter_min_nodes or blackbox_exporter_allow_single_node | bool
+    fail_msg: >-
+      blackbox_exporter needs at least {{ blackbox_exporter_min_nodes }} nodes (found {{ blackbox_exporter_cluster_hosts | length }}).
+      Set monitoring_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create the blackbox_exporter directory
+  ansible.builtin.file:
+    path: "{{ blackbox_exporter_data_dir }}"
+    state: directory
+    owner: root
+    group: "{{ blackbox_exporter_container_uid }}"
+    mode: "0750"
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: blackbox_exporter
+    tls_cert_dir: "{{ blackbox_exporter_data_dir }}/tls"
+    tls_cert_owner: "{{ blackbox_exporter_container_uid }}"
+    tls_cert_common_name: "{{ inventory_hostname }}"
+    tls_cert_src_cert: "{{ blackbox_exporter_tls_cert_file }}"
+    tls_cert_src_key: "{{ blackbox_exporter_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart blackbox_exporter when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; blackbox_exporter restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart blackbox_exporter
+
+- name: Write the web configuration (TLS and basic auth)
+  ansible.builtin.include_role:
+    name: prometheus_web_config
+  vars:
+    prometheus_web_config_path: "{{ blackbox_exporter_data_dir }}/web.yml"
+    prometheus_web_config_container_tls_dir: /etc/blackbox_exporter/tls
+    prometheus_web_config_owner: "{{ blackbox_exporter_container_uid }}"
+    prometheus_web_config_group: "{{ blackbox_exporter_container_uid }}"
+    prometheus_web_config_users: "{{ {blackbox_exporter_web_user: blackbox_exporter_web_password} }}"
+  tags: [chk_sec_03, chk_iam_01]
+
+- name: Write the probe modules
+  ansible.builtin.copy:
+    content: "{{ {'modules': blackbox_exporter_modules | combine(blackbox_exporter_modules_extra)} | to_nice_yaml(indent=2) }}"
+    dest: "{{ blackbox_exporter_data_dir }}/config.yml"
+    owner: root
+    group: "{{ blackbox_exporter_container_uid }}"
+    mode: "0640"
+    validate: >-
+      docker run --rm --network=none --user=0:0 --volume=%s:/config.yml:ro {{ blackbox_exporter_image }}
+      --config.file=/config.yml --config.check
+  notify: Restart blackbox_exporter
+  tags: [chk_sec_05]
+
+- name: Run the blackbox_exporter container
+  community.docker.docker_container:
+    name: "{{ blackbox_exporter_container_name }}"
+    image: "{{ blackbox_exporter_image }}"
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+      - --web.config.file=/etc/blackbox_exporter/web.yml
+      - --web.listen-address=:{{ blackbox_exporter_port }}
+    network_mode: host
+    user: "{{ blackbox_exporter_container_uid }}:{{ blackbox_exporter_container_uid }}"
+    volumes:
+      - "{{ blackbox_exporter_data_dir }}:/etc/blackbox_exporter:ro"
+      # The host trust store holds the internal CA (tls_cert), so probes verify internal certificates.
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ blackbox_exporter_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: blackbox_exporter
+    state: started
+  register: blackbox_exporter_container
+  tags: [chk_hrd_02, chk_sec_05]
+
+- name: Wait for blackbox_exporter
+  ansible.builtin.import_tasks: health.yml

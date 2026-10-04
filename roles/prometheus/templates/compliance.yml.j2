@@ -1,0 +1,181 @@
+# [[ ansible_managed ]]
+# Compliance alert rules; each group names the checklist item it serves.
+groups:
+  - name: certificates  # SEC-05
+    rules:
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < [[ prometheus_alert_cert_expiry_days ]]
+        for: 10m
+        labels:
+          severity: warning
+          checklist: SEC-05
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in {{ $value | printf \"%.1f\" }} days"
+          description: Certificates renew automatically 30 days before expiry; this one did not.
+
+      - alert: CertificateExpiryImminent
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 3
+        for: 10m
+        labels:
+          severity: critical
+          checklist: SEC-05
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in {{ $value | printf \"%.1f\" }} days"
+
+      - alert: TLSProbeFailed
+        expr: probe_success{job="blackbox-tls"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          checklist: SEC-05
+        annotations:
+          summary: "TLS handshake with {{ $labels.instance }} fails ({{ $labels.module }}); its certificate cannot be checked"
+
+  - name: time  # LOG-03
+    rules:
+      - alert: ClockNotSynchronised
+        expr: min_over_time(node_timex_sync_status[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          checklist: LOG-03
+        annotations:
+          summary: "The clock of {{ $labels.instance }} is not synchronised to the time sources"
+
+      - alert: ClockDrift
+        expr: abs(node_timex_offset_seconds) > [[ prometheus_alert_clock_offset_seconds ]]
+        for: 10m
+        labels:
+          severity: warning
+          checklist: LOG-03
+        annotations:
+          summary: "The clock of {{ $labels.instance }} is off by {{ $value | humanizeDuration }}"
+
+  - name: patching  # HRD-04
+    rules:
+      - alert: SecurityUpdatesOverdue
+        expr: apt_security_upgrades_oldest_pending_age_days > [[ prometheus_alert_security_update_age_days ]]
+        labels:
+          severity: critical
+          checklist: HRD-04
+        annotations:
+          summary: "{{ $labels.instance }} has had security updates pending for {{ $value | printf \"%.0f\" }} days"
+          description: The patch SLA is [[ prometheus_alert_security_update_age_days ]] days for critical updates.
+
+      - alert: RebootRequiredTooLong
+        expr: >-
+          apt_reboot_required == 1
+          and (time() - apt_reboot_required_since_timestamp_seconds) > [[ prometheus_alert_reboot_required_days | int * 86400 ]]
+        labels:
+          severity: warning
+          checklist: HRD-04
+        annotations:
+          summary: "{{ $labels.instance }} has needed a reboot for more than [[ prometheus_alert_reboot_required_days ]] days"
+          description: Updated kernels and libraries are not in use until the host restarts (playbooks/rolling_reboot.yml).
+
+      - alert: PatchMetricsStale
+        expr: >-
+          (time() - apt_metrics_last_run_timestamp_seconds) > [[ prometheus_alert_apt_metrics_stale_hours | int * 3600 ]]
+          or apt_metrics_success == 0
+        for: 30m
+        labels:
+          severity: warning
+          checklist: HRD-04
+        annotations:
+          summary: "Patch metrics of {{ $labels.instance }} are stale or failing"
+
+      - alert: PatchMetricsMissing
+        expr: up{job="node"} == 1 unless on(job, instance) apt_metrics_last_run_timestamp_seconds
+        for: 2h
+        labels:
+          severity: warning
+          checklist: HRD-04
+        annotations:
+          summary: "{{ $labels.instance }} reports no patch metrics"
+
+  - name: backups  # BCK-01, BCK-03
+    rules:
+      - alert: BackupRPOExceeded
+        expr: >-
+          (time() - backup_last_success_timestamp_seconds)
+            > on(job, instance, name) group_left() backup_rpo_seconds
+          or
+          (time() - backup_last_success_timestamp_seconds)
+            > [[ prometheus_alert_backup_rpo_hours | int * 3600 ]]
+            unless on(job, instance, name) backup_rpo_seconds
+        labels:
+          severity: critical
+          checklist: BCK-01
+        annotations:
+          summary: "The last good backup of {{ $labels.name }} on {{ $labels.instance }} ({{ $labels.repo }}) is older than its RPO"
+
+      - alert: BackupNeverRan
+        expr: backup_rpo_seconds unless on(job, instance, name) backup_last_success_timestamp_seconds
+        for: 1d
+        labels:
+          severity: critical
+          checklist: BCK-01
+        annotations:
+          summary: "{{ $labels.name }} on {{ $labels.instance }} is declared for backup but has no backup yet"
+
+      - alert: BackupFailed
+        expr: backup_last_status == 0
+        labels:
+          severity: warning
+          checklist: BCK-01
+        annotations:
+          summary: "The last backup attempt of {{ $labels.name }} on {{ $labels.instance }} ({{ $labels.repo }}) failed"
+
+      - alert: RestoreTestOverdue
+        expr: >-
+          (time() - backup_restore_test_last_success_timestamp_seconds)
+          > [[ prometheus_alert_restore_test_age_days | int * 86400 ]]
+        labels:
+          severity: warning
+          checklist: BCK-03
+        annotations:
+          summary: "{{ $labels.name }} on {{ $labels.instance }} has no successful restore test in [[ prometheus_alert_restore_test_age_days ]] days"
+
+      - alert: RestoreTestMissing
+        expr: backup_rpo_seconds unless on(job, instance, name) backup_restore_test_last_success_timestamp_seconds
+        for: [[ prometheus_alert_restore_test_age_days ]]d
+        labels:
+          severity: warning
+          checklist: BCK-03
+        annotations:
+          summary: "{{ $labels.name }} on {{ $labels.instance }} has never been restore-tested"
+
+      - alert: RestoreSlowerThanRTO
+        expr: backup_restore_test_duration_seconds > on(job, instance, name) group_left() backup_rto_seconds
+        labels:
+          severity: warning
+          checklist: BCK-03
+        annotations:
+          summary: "Restoring {{ $labels.name }} on {{ $labels.instance }} took longer than its RTO"
+[% if prometheus_alert_log_shipper_enabled | bool %]
+
+  - name: log-shipping  # LOG-06
+    rules:
+      - alert: LogShipperNotRunning
+        expr: >-
+          up{job="node"} == 1
+          unless on(job, instance)
+          node_systemd_unit_state{name="[[ prometheus_alert_log_shipper_unit ]]", state="active"} == 1
+        for: [[ prometheus_alert_log_shipper_silent_minutes ]]m
+        labels:
+          severity: critical
+          checklist: LOG-06
+        annotations:
+          summary: "The log shipper ([[ prometheus_alert_log_shipper_unit ]]) is not running on {{ $labels.instance }}"
+          description: Logs from this host are not reaching central logging.
+
+      - alert: LogShipperSilent
+        expr: >-
+          (time() - log_shipper_last_ack_timestamp_seconds) > [[ prometheus_alert_log_shipper_silent_minutes | int * 60 ]]
+        labels:
+          severity: critical
+          checklist: LOG-06
+        annotations:
+          summary: "The log shipper on {{ $labels.instance }} has not delivered events for {{ $value | humanizeDuration }}"
+          description: The agent runs but the SIEM has not acknowledged its events.
+[% endif %]

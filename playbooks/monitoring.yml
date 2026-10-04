@@ -1,0 +1,17 @@
+---
+# Monitoring and alerting (LOG-05). node_exporter runs on every host; Prometheus, Alertmanager,
+# blackbox_exporter and Grafana run on the monitoring group.
+- name: Deploy node_exporter on every host
+  hosts: all
+  become: true
+  roles:
+    - role: node_exporter
+
+- name: Deploy monitoring and alerting
+  hosts: monitoring
+  become: true
+  roles:
+    - role: blackbox_exporter
+    - role: alertmanager
+    - role: prometheus
+    - role: grafana

@@ -1,0 +1,5 @@
+---
+# Catalog entries whose inventory group exists and has hosts.
+prometheus_jobs: >-
+  {{ (prometheus_scrape_catalog + prometheus_scrape_extra)
+     | selectattr('group', 'in', groups | dict2items | selectattr('value') | map(attribute='key') | list) | list }}

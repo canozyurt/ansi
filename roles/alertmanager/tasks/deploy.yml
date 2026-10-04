@@ -1,0 +1,118 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create Alertmanager directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ alertmanager_container_uid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ alertmanager_data_dir }}", mode: "0750" }
+    - { path: "{{ alertmanager_data_dir }}/config", mode: "0750" }
+    # Silences and the notification log; replicated to the other members by gossip.
+    - { path: "{{ alertmanager_data_dir }}/data", owner: "{{ alertmanager_container_uid }}", mode: "0750" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: alertmanager
+    tls_cert_dir: "{{ alertmanager_data_dir }}/config/tls"
+    tls_cert_owner: "{{ alertmanager_container_uid }}"
+    tls_cert_common_name: "{{ alertmanager_external_url | urlsplit('hostname') }}"
+    tls_cert_alt_names: ["{{ inventory_hostname }}"]
+    tls_cert_ip_sans: "{{ ['127.0.0.1', alertmanager_cluster_advertise_address] | unique }}"
+    tls_cert_src_cert: "{{ alertmanager_tls_cert_file }}"
+    tls_cert_src_key: "{{ alertmanager_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart Alertmanager when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Alertmanager restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart alertmanager
+
+- name: Write the web configuration (TLS and basic auth)
+  ansible.builtin.include_role:
+    name: prometheus_web_config
+  vars:
+    prometheus_web_config_path: "{{ alertmanager_data_dir }}/config/web.yml"
+    prometheus_web_config_container_tls_dir: /etc/alertmanager/tls
+    prometheus_web_config_owner: "{{ alertmanager_container_uid }}"
+    prometheus_web_config_group: "{{ alertmanager_container_uid }}"
+    prometheus_web_config_users: "{{ {alertmanager_web_user: alertmanager_web_password} | combine(alertmanager_web_users_extra) }}"
+  tags: [chk_sec_03, chk_iam_01]
+
+- name: Write the cluster TLS configuration (mutual TLS gossip)
+  ansible.builtin.template:
+    src: cluster-tls.yml.j2
+    dest: "{{ alertmanager_data_dir }}/config/cluster-tls.yml"
+    owner: root
+    group: "{{ alertmanager_container_uid }}"
+    mode: "0640"
+  notify: Restart alertmanager
+  tags: [chk_sec_03]
+
+- name: Write the routing configuration (contains secrets)
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ alertmanager_data_dir }}/config/alertmanager.yml"
+    owner: "{{ alertmanager_container_uid }}"
+    group: "{{ alertmanager_container_uid }}"
+    mode: "0600"
+    validate: >-
+      docker run --rm --network=none --user=0:0 --entrypoint=/bin/amtool --volume=%s:/alertmanager.yml:ro
+      {{ alertmanager_image }} check-config /alertmanager.yml
+  no_log: true
+  notify: Reload alertmanager
+  tags: [chk_log_05, chk_sec_02]
+
+- name: Run the Alertmanager container
+  community.docker.docker_container:
+    name: "{{ alertmanager_container_name }}"
+    image: "{{ alertmanager_image }}"
+    command: "{{ alertmanager_args + alertmanager_peer_args }}"
+    network_mode: host
+    user: "{{ alertmanager_container_uid }}:{{ alertmanager_container_uid }}"
+    volumes: "{{ alertmanager_volumes + alertmanager_ca_volume }}"
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ alertmanager_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: alertmanager
+    state: started
+  vars:
+    alertmanager_volumes:
+      - "{{ alertmanager_data_dir }}/config:/etc/alertmanager:ro"
+      - "{{ alertmanager_data_dir }}/data:/alertmanager"
+      # The host trust store holds the internal CA; used for SMTP and webhook TLS.
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    alertmanager_ca_volume: >-
+      {{ [alertmanager_cluster_ca_file ~ ':/etc/alertmanager-ca/ca.crt:ro'] if alertmanager_cluster_ca_file | length > 0 else [] }}
+    alertmanager_args:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.config.file=/etc/alertmanager/web.yml
+      - --web.listen-address=:{{ alertmanager_port }}
+      - --web.external-url={{ alertmanager_external_url }}
+      - --cluster.listen-address=0.0.0.0:{{ alertmanager_cluster_port }}
+      - --cluster.advertise-address={{ alertmanager_cluster_advertise_address }}:{{ alertmanager_cluster_port }}
+      - --cluster.peer-name={{ inventory_hostname }}
+      - --cluster.label={{ alertmanager_cluster_label }}
+      - --cluster.tls-config=/etc/alertmanager/cluster-tls.yml
+    alertmanager_peer_args: >-
+      {{ alertmanager_cluster_hosts | difference([inventory_hostname])
+         | map('extract', hostvars) | map(attribute='monitoring_address', default='') | list
+         | zip(alertmanager_cluster_hosts | difference([inventory_hostname]))
+         | map('select') | map('first')
+         | map('regex_replace', '^(.*)$', '--cluster.peer=\\1:' ~ alertmanager_cluster_port) | list }}
+  register: alertmanager_container
+  tags: [chk_hrd_02, chk_ha_01, chk_log_05]

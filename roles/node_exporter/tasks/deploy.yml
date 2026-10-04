@@ -1,0 +1,89 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create node_exporter directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ node_exporter_data_dir }}", group: "{{ node_exporter_container_uid }}", mode: "0750" }
+    - { path: "{{ node_exporter_textfile_dir | dirname }}", mode: "0755" }
+    # Writers are root services; node_exporter only reads.
+    - { path: "{{ node_exporter_textfile_dir }}", mode: "0755" }
+  tags: [chk_log_05]
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: node_exporter
+    tls_cert_dir: "{{ node_exporter_data_dir }}/tls"
+    tls_cert_owner: "{{ node_exporter_container_uid }}"
+    tls_cert_common_name: "{{ inventory_hostname }}"
+    tls_cert_src_cert: "{{ node_exporter_tls_cert_file }}"
+    tls_cert_src_key: "{{ node_exporter_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart node_exporter when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; node_exporter restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart node_exporter
+
+- name: Write the web configuration (TLS and basic auth)
+  ansible.builtin.include_role:
+    name: prometheus_web_config
+  vars:
+    prometheus_web_config_path: "{{ node_exporter_data_dir }}/web.yml"
+    prometheus_web_config_container_tls_dir: /etc/node_exporter/tls
+    prometheus_web_config_owner: "{{ node_exporter_container_uid }}"
+    prometheus_web_config_group: "{{ node_exporter_container_uid }}"
+    prometheus_web_config_users: "{{ {node_exporter_web_user: node_exporter_web_password} }}"
+  tags: [chk_sec_03, chk_iam_01]
+
+- name: Check for the D-Bus system socket (systemd unit states)
+  ansible.builtin.stat:
+    path: /run/dbus/system_bus_socket
+  register: node_exporter_dbus
+
+- name: Run the node_exporter container
+  community.docker.docker_container:
+    name: "{{ node_exporter_container_name }}"
+    image: "{{ node_exporter_image }}"
+    command: "{{ node_exporter_args + node_exporter_extra_args }}"
+    # Host PID and network namespaces so process, network and timex metrics describe the host.
+    network_mode: host
+    pid_mode: host
+    user: "{{ node_exporter_container_uid }}:{{ node_exporter_container_uid }}"
+    volumes: "{{ node_exporter_volumes + (node_exporter_dbus_volume if node_exporter_dbus.stat.exists else []) }}"
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ node_exporter_memory_limit }}"
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: node_exporter
+    state: started
+  vars:
+    node_exporter_args:
+      - --path.rootfs=/host
+      - --web.listen-address=:{{ node_exporter_port }}
+      - --web.config.file=/etc/node_exporter/web.yml
+      - --collector.textfile.directory=/host{{ node_exporter_textfile_dir }}
+      - --collector.systemd
+      - --collector.systemd.unit-include=^({{ node_exporter_systemd_units | map('regex_escape') | join('|') }})$
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|run/credentials/.+|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)
+    node_exporter_volumes:
+      - "/:/host:ro{{ ',' ~ node_exporter_rootfs_propagation if node_exporter_rootfs_propagation | length > 0 else '' }}"
+      - "{{ node_exporter_data_dir }}:/etc/node_exporter:ro"
+    node_exporter_dbus_volume:
+      - /run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
+  register: node_exporter_container
+  tags: [chk_hrd_02, chk_log_05]

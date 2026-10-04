@@ -1,0 +1,61 @@
+---
+alertmanager_image: "{{ versions_images.alertmanager }}"
+alertmanager_container_name: alertmanager
+alertmanager_data_dir: /opt/alertmanager
+alertmanager_container_uid: 65534
+alertmanager_memory_limit: 256m
+
+# High availability (HA-01): a gossip cluster of at least 3 nodes. Every Prometheus replica sends
+# every alert to every member; the cluster deduplicates notifications and shares silences.
+alertmanager_min_nodes: 3
+alertmanager_allow_single_node: "{{ monitoring_allow_single_node | default(false) }}"
+alertmanager_cluster_hosts: "{{ ansible_play_hosts_all }}"
+alertmanager_port: 9093
+alertmanager_cluster_port: 9094
+alertmanager_cluster_label: compliant-infra
+# Address the other members dial; must be in this node's certificate (added as an IP SAN).
+alertmanager_cluster_advertise_address: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+# Gossip runs over mutual TLS. With the internal PKI, peers verify each other against its CA.
+# Without it (labs, before the PKI exists) traffic is still encrypted but peers are not verified.
+alertmanager_cluster_ca_file: >-
+  {{ '/usr/local/share/ca-certificates/compliant-infra-ca.crt' if (pki_openbao_addr | default('')) | length > 0 else '' }}
+
+alertmanager_external_url: "https://{{ inventory_hostname }}:{{ alertmanager_port }}"
+
+# API and UI access: TLS plus basic auth. Prometheus pushes alerts with the scrape account.
+alertmanager_web_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+alertmanager_web_password: "{{ monitoring_scrape_password | default('') }}"
+alertmanager_web_users_extra: {}       # user -> password (e.g. an on-call account for silences)
+
+alertmanager_tls_cert_file: ""
+alertmanager_tls_key_file: ""
+
+# ---------------------------------------------------------------- notifications
+# Email (STARTTLS required). The password comes from Ansible Vault or OpenBao.
+alertmanager_smtp_smarthost: ""        # host:port
+alertmanager_smtp_from: ""
+alertmanager_smtp_hello: "{{ inventory_hostname }}"
+alertmanager_smtp_auth_username: ""
+alertmanager_smtp_auth_password: ""
+alertmanager_smtp_require_tls: true
+alertmanager_email_to: []              # default route
+alertmanager_critical_email_to: "{{ alertmanager_email_to }}"
+
+# Generic webhook (chat bridge, incident tool). Optional bearer token.
+alertmanager_webhook_url: ""
+alertmanager_critical_webhook_url: "{{ alertmanager_webhook_url }}"
+alertmanager_webhook_bearer_token: ""
+# Dead man's switch: the always-firing Watchdog alert goes here (e.g. a heartbeat service).
+alertmanager_heartbeat_webhook_url: ""
+
+# Alerting that notifies nobody is a gap; only labs may run without a receiver.
+alertmanager_allow_no_receivers: false
+
+alertmanager_group_by: [alertname, instance]
+alertmanager_group_wait: 30s
+alertmanager_group_interval: 5m
+alertmanager_repeat_interval: 4h
+alertmanager_critical_repeat_interval: 1h
+alertmanager_routes_extra: []          # added before the critical route
+alertmanager_receivers_extra: []
+alertmanager_inhibit_rules_extra: []

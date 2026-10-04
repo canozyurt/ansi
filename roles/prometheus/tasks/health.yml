@@ -1,0 +1,30 @@
+---
+- name: Wait until Prometheus is ready
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ prometheus_port }}/-/ready"
+    url_username: "{{ prometheus_scrape_user }}"
+    url_password: "{{ prometheus_scrape_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: prometheus_ready
+  until: prometheus_ready.status == 200
+  retries: 60
+  delay: 5
+  no_log: true
+  tags: [chk_log_05]
+
+- name: Check that the configuration and rules loaded
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ prometheus_port }}/metrics"
+    url_username: "{{ prometheus_scrape_user }}"
+    url_password: "{{ prometheus_scrape_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
+  register: prometheus_self_metrics
+  until: "'prometheus_config_last_reload_successful 1' in prometheus_self_metrics.content | default('')"
+  retries: 12
+  delay: 5
+  no_log: true
+  tags: [chk_log_05]
