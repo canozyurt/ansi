@@ -1,0 +1,18 @@
+---
+# Host login accounts for SSH CA certificate principals (IAM-06, IAM-09). Principals are the default
+# role names that the OpenBao SSH CA signs (ssh-client-signer/sign/<role>); a certificate with principal
+# "operator" may log in as the operator account. People are told apart by the certificate key ID,
+# logged by sshd, and by the audit session ID (roles/session_audit).
+admin_login_accounts:
+  - name: platform-admin
+    principals: [platform-admin]
+    groups: [adm, systemd-journal]
+    sudo: true          # full sudo; every sudo session is logged with input/output (os_hardening)
+  - name: operator
+    principals: [operator]
+    groups: [adm, systemd-journal]  # read logs and journals, no sudo
+    sudo: false
+# Group required by ssh_hardening_allow_groups.
+admin_login_group: ssh-users
+# Remove accounts this role created earlier that are no longer listed.
+admin_login_removed_accounts: []

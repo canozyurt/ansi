@@ -1,0 +1,5 @@
+---
+- name: Reload sshd for the bastion
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded

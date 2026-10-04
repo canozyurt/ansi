@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write Unbound metrics every {{ dns_resolver_metrics_interval }}
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ dns_resolver_metrics_interval }}
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,444 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify the VPN gateway
+  hosts: vpn
+  become: true
+  gather_facts: false
+  vars:
+    verify_active_key: qPWBdqbZ0LGIM7U/x6lzuRDGOEepqQbeO0Ek+q/llkA=
+    verify_expired_key: AG0FKs+wQ3jTGV1C42s5VP2QDYPYPbazQLl/jlDySn8=
+  tasks:
+    - name: Read the running interface
+      ansible.builtin.command: wg show wg0
+      register: verify_wg
+      changed_when: false
+      tags: [chk_net_02, chk_iam_04]
+
+    - name: The tunnel is up on UDP 51820 with the active peer only
+      ansible.builtin.assert:
+        that:
+          - "'listening port: 51820' in verify_wg.stdout"
+          - verify_active_key in verify_wg.stdout
+          - verify_expired_key not in verify_wg.stdout
+      tags: [chk_net_02, chk_iam_04]
+
+    - name: Check the generated configuration
+      ansible.builtin.command: wg-quick strip wg0
+      register: verify_wg_strip
+      changed_when: false
+      tags: [chk_iam_04, chk_sec_02]
+
+    - name: The configuration is valid, holds no private key and leaves out the expired peer
+      ansible.builtin.assert:
+        that:
+          - verify_active_key in verify_wg_strip.stdout
+          - verify_expired_key not in verify_wg_strip.stdout
+          - "'PrivateKey' not in verify_wg_strip.stdout"
+      tags: [chk_iam_04, chk_sec_02]
+
+    - name: Read the private key file
+      ansible.builtin.stat:
+        path: /etc/wireguard/wg0.key
+      register: verify_wg_key
+      tags: [chk_sec_02]
+
+    - name: The private key was generated on the host and is readable by root only
+      ansible.builtin.assert:
+        that:
+          - verify_wg_key.stat.exists
+          - verify_wg_key.stat.mode == '0600'
+          - verify_wg_key.stat.pw_name == 'root'
+      tags: [chk_sec_02]
+
+    - name: Re-add the expired peer behind Ansible's back
+      ansible.builtin.command: wg set wg0 peer {{ verify_expired_key }} allowed-ips 10.99.0.11/32
+      changed_when: true
+      tags: [chk_iam_04]
+
+    - name: Run the expiry check
+      ansible.builtin.systemd_service:
+        name: wireguard-gateway-check.service
+        state: started
+      tags: [chk_iam_04]
+
+    - name: Read the peers after the check
+      ansible.builtin.command: wg show wg0 peers
+      register: verify_wg_peers
+      changed_when: false
+      tags: [chk_iam_04]
+
+    - name: The expiry check removed the expired peer from the running interface
+      ansible.builtin.assert:
+        that:
+          - verify_expired_key not in verify_wg_peers.stdout
+          - verify_active_key in verify_wg_peers.stdout
+      tags: [chk_iam_04]
+
+    - name: Read the WireGuard metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/wireguard_wg0.prom
+      register: verify_wg_metrics
+      tags: [chk_log_05]
+
+    - name: Per-peer handshake metrics are written for node_exporter
+      vars:
+        verify_text: "{{ verify_wg_metrics.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'wireguard_gateway_up{interface=\"wg0\"} 1' in verify_text"
+          - "'wireguard_peer_latest_handshake_seconds{interface=\"wg0\",peer=\"alice-laptop\",owner=\"alice@example.com\"} 0' in verify_text"
+          - "'wireguard_peer_expiry_timestamp_seconds{interface=\"wg0\",peer=\"alice-laptop\"' in verify_text"
+          - "'PrivateKey' not in verify_text"
+      tags: [chk_log_05]
+
+    - name: Read the forwarding rules
+      ansible.builtin.command: nft list table inet wireguard_gateway_wg0
+      register: verify_wg_nft
+      changed_when: false
+      tags: [chk_net_02, chk_net_03]
+
+    - name: Tunnel traffic may reach the mgmt zone only and is masqueraded
+      ansible.builtin.assert:
+        that:
+          - "'10.10.0.0/24' in verify_wg_nft.stdout"
+          - "'10.20.0.0/24' not in verify_wg_nft.stdout"
+          - verify_wg_nft.stdout is search('iifname "wg0" drop')
+          - "'masquerade' in verify_wg_nft.stdout"
+      tags: [chk_net_02, chk_net_03]
+
+    - name: Read the host firewall
+      ansible.builtin.command: nft list table inet compliance
+      register: verify_nft
+      changed_when: false
+      tags: [chk_net_01]
+
+    - name: WireGuard's UDP port is open
+      ansible.builtin.assert:
+        that: "'udp dport 51820 accept' in verify_nft.stdout"
+      tags: [chk_net_01]
+
+    - name: Find the client templates
+      ansible.builtin.find:
+        paths: /etc/wireguard/clients
+      register: verify_wg_clients
+
+    - name: Client templates exist for active peers only
+      ansible.builtin.assert:
+        that:
+          - verify_wg_clients.files | map(attribute='path') | map('basename') | list == ['alice-laptop-access-vpn.conf']
+
+- name: Verify the bastion
+  hosts: bastion
+  become: true
+  gather_facts: false
+  vars:
+    verify_ssh: >-
+      ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+      -o IdentitiesOnly=yes -o ConnectTimeout=10
+  tasks:
+    - name: Create test user keys
+      ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -f /root/verify_{{ item }}
+      args:
+        creates: /root/verify_{{ item }}
+      loop: [operator, plain, developer]
+
+    - name: Sign the operator key with principal operator, and another with principal developer
+      ansible.builtin.command: >-
+        ssh-keygen -q -s /root/test_user_ca -I {{ item.id }} -n {{ item.principal }} -V -5m:+30m /root/verify_{{ item.key }}.pub
+      loop:
+        - { key: operator, id: alice@example.com, principal: operator }
+        - { key: developer, id: dave@example.com, principal: developer }
+      changed_when: true
+      tags: [chk_iam_06]
+
+    - name: Create the jump account's .ssh directory
+      ansible.builtin.file:
+        path: /home/jump/.ssh
+        state: directory
+        owner: jump
+        mode: "0700"
+
+    - name: Put the plain key into the jump account's authorized_keys
+      ansible.builtin.copy:
+        src: /root/verify_plain.pub
+        remote_src: true
+        dest: /home/jump/.ssh/authorized_keys
+        owner: jump
+        mode: "0600"
+      tags: [chk_iam_06]
+
+    - name: Try a password login
+      ansible.builtin.command: >-
+        {{ verify_ssh }} -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no
+        jump@127.0.0.1 true
+      register: verify_password
+      changed_when: false
+      failed_when: verify_password.rc == 0
+      tags: [chk_iam_06]
+
+    - name: Try a plain key (no certificate)
+      ansible.builtin.command: >-
+        {{ verify_ssh }} -i /root/verify_plain -W 127.0.0.1:22 jump@127.0.0.1
+      register: verify_plain
+      changed_when: false
+      failed_when: verify_plain.rc == 0
+      tags: [chk_iam_06]
+
+    - name: Try a certificate with a principal that may not log in (developer)
+      ansible.builtin.command: >-
+        {{ verify_ssh }} -i /root/verify_developer -o CertificateFile=/root/verify_developer-cert.pub
+        -W 127.0.0.1:22 jump@127.0.0.1
+      register: verify_developer
+      changed_when: false
+      failed_when: verify_developer.rc == 0
+      tags: [chk_iam_06]
+
+    - name: Password, plain key and wrong principal are refused; only public key auth is offered
+      ansible.builtin.assert:
+        that:
+          - "'Permission denied (publickey)' in verify_password.stderr"
+          - "'Permission denied (publickey)' in verify_plain.stderr"
+          - "'Permission denied (publickey)' in verify_developer.stderr"
+          - "'SSH-2.0' not in verify_plain.stdout"
+      tags: [chk_iam_06]
+
+    - name: Jump through the bastion with the operator certificate
+      ansible.builtin.shell: >-
+        timeout 15 {{ verify_ssh }} -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub
+        -W 127.0.0.1:22 jump@127.0.0.1 < /dev/null
+      register: verify_jump
+      changed_when: false
+      failed_when: "'SSH-2.0-OpenSSH' not in verify_jump.stdout"
+      tags: [chk_iam_06, chk_net_02]
+
+    - name: Ask the bastion for a shell
+      ansible.builtin.command: >-
+        {{ verify_ssh }} -tt -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub
+        jump@127.0.0.1 id
+      register: verify_shell
+      changed_when: false
+      failed_when: false
+      tags: [chk_iam_06, chk_net_02]
+
+    - name: The bastion gives no shell, no command and no terminal
+      ansible.builtin.assert:
+        that:
+          - verify_shell.rc != 0
+          - "'uid=' not in verify_shell.stdout"
+          - "'not available' in verify_shell.stdout + verify_shell.stderr or 'PTY allocation request failed' in verify_shell.stderr"
+      tags: [chk_iam_06, chk_net_02]
+
+    - name: Read the effective settings of the jump account
+      ansible.builtin.command: /usr/sbin/sshd -T -C user=jump,host=client,addr=10.99.0.10
+      register: verify_sshd_jump
+      changed_when: false
+      tags: [chk_iam_06, chk_net_02]
+
+    - name: The jump account is forwarding-only and certificate-only
+      ansible.builtin.assert:
+        that:
+          - "'permittty no' in verify_sshd_jump.stdout_lines"
+          - "'allowtcpforwarding local' in verify_sshd_jump.stdout_lines"
+          - "'forcecommand /usr/sbin/nologin' in verify_sshd_jump.stdout_lines"
+          - "'authorizedkeysfile none' in verify_sshd_jump.stdout_lines"
+          - "'passwordauthentication no' in verify_sshd_jump.stdout_lines"
+          - "'permitopen *:22' in verify_sshd_jump.stdout_lines"
+      tags: [chk_iam_06, chk_net_02]
+
+    - name: Log in to a target as operator through the bastion (ssh -J)
+      ansible.builtin.command: >-
+        {{ verify_ssh }} -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub
+        -o ProxyCommand="ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        -o IdentitiesOnly=yes -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub -W %h:%p jump@127.0.0.1"
+        operator@access-dns id -un
+      register: verify_target
+      changed_when: false
+      tags: [chk_iam_06, chk_iam_09]
+
+    - name: The certificate principal maps to the operator account on the target
+      ansible.builtin.assert:
+        that: verify_target.stdout | trim == 'operator'
+      tags: [chk_iam_06, chk_iam_09]
+
+    - name: Read the sshd log
+      ansible.builtin.command: journalctl -t sshd -t sshd-session --since -10min --no-pager
+      register: verify_sshd_log
+      changed_when: false
+      tags: [chk_iam_07]
+
+    - name: The log names the person (certificate key ID) and the jump target
+      ansible.builtin.assert:
+        that:
+          - "'ID alice@example.com' in verify_sshd_log.stdout"
+          - verify_sshd_log.stdout is search('direct-tcpip.*access-dns|target access-dns port 22')
+      tags: [chk_iam_07]
+
+    - name: Read the bastion firewall
+      ansible.builtin.command: nft list table inet compliance
+      register: verify_bastion_nft
+      changed_when: false
+      tags: [chk_net_02]
+
+    - name: SSH is accepted from management networks only
+      ansible.builtin.assert:
+        that:
+          - "'policy drop' in verify_bastion_nft.stdout"
+          - "'ip saddr @mgmt_v4 tcp dport 22 accept' in verify_bastion_nft.stdout"
+          - verify_bastion_nft.stdout is not search('\\n\\s*tcp dport 22 accept')
+      tags: [chk_net_02]
+
+- name: Verify the DNS resolver
+  hosts: dns
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Resolve an inventory name, a service record and an unknown internal name
+      ansible.builtin.command: dig @127.0.0.1 +time=3 +tries=1 {{ item }}
+      loop:
+        - access-dns.example.internal
+        - access-vpn.example.internal
+        - sso.example.internal
+        - nothere.example.internal
+      register: verify_dig
+      changed_when: false
+
+    - name: Inventory hosts and records resolve; unknown internal names are not sent upstream
+      ansible.builtin.assert:
+        that:
+          - verify_dig.results[0].stdout is search('access-dns\\.example\\.internal\\.\\s+\\d+\\s+IN\\s+A\\s+10\\.10\\.0\\.53')
+          - verify_dig.results[1].stdout is search('IN\\s+A\\s+10\\.10\\.0\\.21')
+          - verify_dig.results[2].stdout is search('IN\\s+A\\s+10\\.10\\.0\\.11')
+          - "'status: NXDOMAIN' in verify_dig.results[3].stdout"
+
+    - name: Query from an address outside the allowed networks
+      ansible.builtin.command: dig @192.0.2.10 -b 192.0.2.10 +time=3 +tries=1 access-dns.example.internal
+      register: verify_refused
+      changed_when: false
+      tags: [chk_net_01]
+
+    - name: The resolver refuses clients outside the allowed networks
+      ansible.builtin.assert:
+        that: "'status: REFUSED' in verify_refused.stdout"
+      tags: [chk_net_01]
+
+    - name: Read the Unbound configuration
+      ansible.builtin.slurp:
+        src: /etc/unbound/unbound.conf
+      register: verify_unbound_conf
+
+    - name: DNSSEC validation is on with an automatic trust anchor, and query logging is off
+      vars:
+        verify_text: "{{ verify_unbound_conf.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'auto-trust-anchor-file: \"/var/lib/unbound/root.key\"' in verify_text"
+          - "'module-config: \"validator iterator\"' in verify_text"
+          - "'log-queries: no' in verify_text"
+          - "'access-control: 0.0.0.0/0 refuse' in verify_text"
+
+    - name: Check whether upstream DNS is reachable
+      ansible.builtin.command: dig @127.0.0.1 +time=5 +tries=2 +dnssec example.com A
+      register: verify_upstream
+      changed_when: false
+      failed_when: false
+
+    - name: Resolve a domain with a broken signature
+      ansible.builtin.command: dig @127.0.0.1 +time=5 +tries=2 dnssec-failed.org A
+      register: verify_bogus
+      changed_when: false
+      failed_when: false
+      when: "'status: NOERROR' in verify_upstream.stdout"
+
+    - name: Signed answers are validated and a bad signature fails (when there is network)
+      ansible.builtin.assert:
+        that:
+          - verify_upstream.stdout is search('flags:[^;]* ad[ ;]')
+          - "'status: SERVFAIL' in verify_bogus.stdout"
+      when: "'status: NOERROR' in verify_upstream.stdout"
+
+    - name: Report when DNSSEC could not be tested against the internet
+      ansible.builtin.debug:
+        msg: "No upstream DNS in this environment; DNSSEC checked through the configuration only."
+      when: "'status: NOERROR' not in verify_upstream.stdout"
+
+    - name: Try TLS 1.1 on the DNS-over-TLS port
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:853 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Query over DNS-over-TLS
+      ansible.builtin.command: dig @127.0.0.1 -p 853 +tls +time=3 +tries=1 access-dns.example.internal
+      register: verify_dot
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: DNS-over-TLS answers with TLS 1.2+ only
+      ansible.builtin.assert:
+        that: verify_dot.stdout is search('IN\\s+A\\s+10\\.10\\.0\\.53')
+      tags: [chk_sec_03]
+
+    - name: Write the metrics now
+      ansible.builtin.systemd_service:
+        name: unbound-textfile-metrics.service
+        state: started
+      tags: [chk_log_05]
+
+    - name: Read the Unbound metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/unbound.prom
+      register: verify_unbound_metrics
+      tags: [chk_log_05]
+
+    - name: Unbound metrics are written for node_exporter
+      ansible.builtin.assert:
+        that:
+          - "'unbound_up 1' in (verify_unbound_metrics.content | b64decode)"
+          - "'unbound_total_num_queries ' in (verify_unbound_metrics.content | b64decode)"
+      tags: [chk_log_05]
+
+- name: Verify the DNS client settings
+  hosts: vpn:bastion:dns
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the systemd-resolved drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/resolved.conf.d/50-compliance.conf
+      register: verify_resolved
+
+    - name: Hosts use the internal resolvers with no public fallback
+      ansible.builtin.assert:
+        that:
+          - "'DNS=10.10.0.53' in (verify_resolved.content | b64decode)"
+          - "'FallbackDNS=\n' in (verify_resolved.content | b64decode)"
+
+- name: Verify session recording
+  hosts: audit_probe
+  become: true
+  gather_facts: false
+  tasks:
+    - name: List the loaded audit rules
+      ansible.builtin.command: auditctl -l
+      register: verify_auditctl
+      changed_when: false
+      tags: [chk_iam_07]
+
+    - name: Commands of logged-in people are audited (64- and 32-bit)
+      ansible.builtin.assert:
+        that:
+          - verify_auditctl.stdout is search('-a always,exit -F arch=b64 -S execve,execveat -F auid>=1000 -F auid!=(-1|unset) -F key=session_cmd')
+          - verify_auditctl.stdout is search('-a always,exit -F arch=b32 -S execve,execveat -F auid>=1000 -F auid!=(-1|unset) -F key=session_cmd')
+      tags: [chk_iam_07]
+
+    - name: Read the sudo PAM stack
+      ansible.builtin.slurp:
+        src: /etc/pam.d/sudo
+      register: verify_pam_sudo
+      tags: [chk_iam_07]
+
+    - name: Keystrokes of sessions escalated to root are recorded
+      ansible.builtin.assert:
+        that: "'pam_tty_audit.so disable=* enable=root' in (verify_pam_sudo.content | b64decode)"
+      tags: [chk_iam_07]

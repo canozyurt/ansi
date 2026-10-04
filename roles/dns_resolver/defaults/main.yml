@@ -1,0 +1,47 @@
+---
+# Internal DNS resolvers: Unbound from the distribution archive (Debian 12: 1.17, Ubuntu 22.04: 1.13,
+# Ubuntu 24.04: 1.19), security-patched by unattended-upgrades. See docs for why not a container.
+dns_resolver_group: dns
+dns_resolver_min_nodes: 2
+dns_resolver_allow_single_node: false
+
+# Addresses to listen on (127.0.0.1 is always added). ip-freebind lets Unbound start before they exist.
+dns_resolver_listen_addresses: ["{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"]
+dns_resolver_port: 53
+# Clients that may query: the zone networks and the VPN (everything else gets REFUSED).
+dns_resolver_allowed_cidrs: >-
+  {{ ((network_zones | default({})).values() | list) + ([access_vpn_cidr] if access_vpn_cidr is defined else []) }}
+
+# DNS-over-TLS for clients on port 853 (SEC-03), certificate from roles/tls_cert.
+dns_resolver_dot_enabled: true
+dns_resolver_dot_port: 853
+dns_resolver_tls_dir: /etc/unbound/tls
+dns_resolver_tls_common_name: "{{ inventory_hostname }}"
+
+# Upstream: DNS-over-TLS forwarding with certificate name checks. Empty list = full recursion from the
+# root servers instead of forwarding.
+dns_resolver_forward_tls: true
+dns_resolver_forwarders:
+  - 9.9.9.9@853#dns.quad9.net
+  - 149.112.112.112@853#dns.quad9.net
+  - 1.1.1.1@853#cloudflare-dns.com
+  - 1.0.0.1@853#cloudflare-dns.com
+
+# Local data from the inventory: every host's name -> its address (dns_resolver_host_address if set on
+# the host, else ansible_host when it is an IP address). Short names get dns_resolver_domain appended.
+dns_resolver_domain: example.internal
+# static: names under the domain that are not defined here get NXDOMAIN and are never sent upstream.
+dns_resolver_local_zone_type: static
+dns_resolver_inventory_records: true
+# Extra records, e.g. service names: [{name: sso.example.internal, type: A, value: 10.10.0.11}]
+dns_resolver_records: []
+dns_resolver_record_ttl: 300
+
+# Query logging is off by default (privacy). Turning it on logs every query and reply to the journal.
+dns_resolver_query_log: false
+
+dns_resolver_threads: "{{ [ansible_facts['processor_vcpus'] | default(1) | int, 4] | min }}"
+dns_resolver_cache_mb: 64
+
+dns_resolver_metrics_dir: /var/lib/node_exporter/textfile_collector
+dns_resolver_metrics_interval: 60s

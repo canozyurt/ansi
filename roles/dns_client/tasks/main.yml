@@ -1,0 +1,63 @@
+---
+- name: Collect the resolver addresses from the inventory
+  ansible.builtin.set_fact:
+    dns_client_found: >-
+      {{ dns_client_found | default([])
+         + [hostvars[item]['dns_resolver_host_address'] | default(hostvars[item]['ansible_host'] | default(''))] }}
+  loop: "{{ groups.get(dns_client_resolver_group, []) }}"
+  when: dns_client_servers | length == 0
+
+- name: Work out the resolver addresses
+  ansible.builtin.set_fact:
+    dns_client_resolvers: >-
+      {{ dns_client_servers if dns_client_servers | length > 0
+         else dns_client_found | default([]) | map('string') | select('match', '^[0-9a-fA-F.:]+$') | unique | list }}
+
+- name: Require resolvers
+  ansible.builtin.assert:
+    that: dns_client_resolvers | length >= 1
+    fail_msg: >-
+      No resolver addresses: set dns_client_servers, or ansible_host / dns_resolver_host_address (IP addresses)
+      on the hosts of group {{ dns_client_resolver_group }}.
+    quiet: true
+
+- name: Warn when only one resolver is configured
+  ansible.builtin.debug:
+    msg: Only one DNS resolver is configured; name resolution has no failover (HA-01).
+  when: dns_client_resolvers | length < 2
+
+- name: Check for systemd-resolved
+  ansible.builtin.stat:
+    path: /usr/lib/systemd/systemd-resolved
+  register: dns_client_resolved
+
+- name: Install systemd-resolved
+  ansible.builtin.apt:
+    name: systemd-resolved
+    state: present
+  when:
+    - not dns_client_resolved.stat.exists
+    - dns_client_install_resolved | bool
+
+- name: Create the systemd-resolved drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Point the host at the internal resolvers
+  ansible.builtin.template:
+    src: resolved.conf.j2
+    dest: /etc/systemd/resolved.conf.d/50-compliance.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart systemd-resolved
+
+- name: Enable systemd-resolved
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    enabled: true
+    state: started

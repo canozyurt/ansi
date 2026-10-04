@@ -1,0 +1,14 @@
+---
+# Points every host at the internal resolvers through a systemd-resolved drop-in.
+dns_client_resolver_group: dns
+# Resolver addresses. Empty: dns_resolver_host_address, else ansible_host (when an IP address), of each
+# host in the dns group.
+dns_client_servers: []
+# Search domain.
+dns_client_domain: "{{ dns_resolver_domain | default('example.internal') }}"
+# DNS-over-TLS to the internal resolvers (they serve it on 853): "no", "opportunistic" or "yes".
+# "yes" needs certificates the host trusts (internal PKI CA in the system store, see roles/tls_cert);
+# keep "no" while resolvers use self-signed lab certificates.
+dns_client_dns_over_tls: "no"
+# Install systemd-resolved where it is a separate package and missing (Debian 12, Ubuntu 24.04 minimal).
+dns_client_install_resolved: true

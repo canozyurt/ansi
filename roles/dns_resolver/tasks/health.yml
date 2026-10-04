@@ -1,0 +1,9 @@
+---
+- name: Wait until Unbound answers
+  ansible.builtin.command: unbound-control -c /etc/unbound/unbound.conf status
+  register: dns_resolver_health
+  until: dns_resolver_health.rc == 0
+  retries: 20
+  delay: 3
+  changed_when: false
+  tags: [chk_log_05]

@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# name	public_key	expires (UTC date; access ends at 00:00 that day)	owner
+{% for peer in wireguard_gateway_peers %}
+{{ peer.name }}	{{ peer.public_key }}	{{ peer.expires }}	{{ peer.owner }}
+{% endfor %}

@@ -1,0 +1,52 @@
+---
+# WireGuard admin VPN gateway (NET-02). Two nodes, active/standby. WireGuard is in the distribution
+# kernel (5.6+); wireguard-tools comes from the distribution archive (host-level role, no container).
+wireguard_gateway_group: vpn
+wireguard_gateway_min_nodes: 2
+wireguard_gateway_allow_single_node: false
+
+wireguard_gateway_interface: wg0
+wireguard_gateway_port: 51820
+# Tunnel network and the gateway's address in it. Both gateways use the same address: only one is in
+# use by a client at any time, and traffic into the mgmt zone is masqueraded (see wireguard_gateway_nat).
+wireguard_gateway_vpn_cidr: "{{ access_vpn_cidr | default('10.99.0.0/24') }}"
+wireguard_gateway_address: "{{ wireguard_gateway_vpn_cidr | regex_replace('\\.0/', '.1/') }}"
+
+# Destinations reachable through the tunnel: the mgmt zone only. Everything else is dropped.
+wireguard_gateway_destinations: "{{ [network_zones.mgmt] if (network_zones | default({})).mgmt is defined else firewall_mgmt_cidrs }}"
+
+# true: masquerade tunnel traffic to the gateway's mgmt address, so no return route is needed and either
+# gateway works without a shared IP. false: route the tunnel network (needs a route to the active gateway,
+# e.g. a keepalived VIP); targets then see the peer's own tunnel address.
+wireguard_gateway_nat: true
+# Log every new connection from the tunnel (peer tunnel address, destination) to the journal for attribution.
+wireguard_gateway_log_connections: true
+
+# Admin peers (IAM-04 spirit). Every peer needs an owner and an expiry date (YYYY-MM-DD, UTC). Peers whose
+# date has been reached are left out of the config and removed from the running interface by the check
+# timer, so access ends without an Ansible run.
+#   - name: alice-laptop
+#     public_key: "base64 public key from `wg pubkey`"
+#     allowed_ip: 10.99.0.10/32
+#     owner: alice@example.com
+#     expires: "2027-03-31"
+wireguard_gateway_peers: "{{ wireguard_peers | default([]) }}"
+wireguard_gateway_peer_max_days: 366
+
+# Failover. When set (a DNS name or address that always points at the active gateway, e.g. a keepalived
+# VIP), clients get one endpoint and both gateways share one key pair, copied from the first gateway by
+# Ansible (never stored in git). When empty, each gateway has its own key and clients get one config per
+# gateway (primary and standby) and switch by bringing up the other tunnel.
+wireguard_gateway_floating_endpoint: ""
+# Public endpoint of each gateway (host or address, without port); set per host if it differs.
+wireguard_gateway_public_endpoint: "{{ inventory_hostname }}"  # read through hostvars, so set it as a host var
+wireguard_gateway_client_keepalive: 25
+# DNS servers pushed in the client templates (the internal resolvers).
+wireguard_gateway_client_dns: "{{ dns_client_servers | default([]) }}"
+
+wireguard_gateway_metrics_dir: /var/lib/node_exporter/textfile_collector
+wireguard_gateway_check_interval: 60s
+
+# Start the interface. Tests without the kernel module and without wireguard-go set false.
+wireguard_gateway_manage_service: true
+wireguard_gateway_sysctl_apply: true

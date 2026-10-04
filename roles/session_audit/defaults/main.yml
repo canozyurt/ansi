@@ -1,0 +1,16 @@
+---
+# Session recording on every host (IAM-07). Jump hosts give no shell, so commands are recorded where
+# they run: auditd logs every execve by a logged-in person (login uid >= session_audit_min_auid), also
+# after sudo or su because the login uid survives privilege changes, and pam_tty_audit records the
+# keystrokes of sessions escalated to root. Events go to /var/log/audit/audit.log, which the SIEM
+# agent ships; sudo input/output logs come from roles/os_hardening.
+session_audit_min_auid: 1000
+session_audit_key: session_cmd
+# PAM services whose sessions become root; pam_tty_audit is enabled for root in each file that exists.
+# Passwords typed at prompts are not recorded (no log_passwd).
+session_audit_tty_pam_services: [sudo, sudo-i, su, su-l]
+session_audit_rules_file: /etc/audit/rules.d/55-session-audit.rules
+# Load the rules into the kernel. augenrules merges all rule files; with "-e 2" (roles/common) the
+# loaded rules are immutable and new rules apply at the next boot.
+session_audit_load_rules: true
+session_audit_load_command: augenrules --load

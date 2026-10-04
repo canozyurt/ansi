@@ -1,0 +1,113 @@
+---
+- name: Require two resolvers (HA-01)
+  ansible.builtin.assert:
+    that: groups[dns_resolver_group] | default([]) | length >= dns_resolver_min_nodes or dns_resolver_allow_single_node | bool
+    fail_msg: >-
+      DNS needs {{ dns_resolver_min_nodes }} resolvers in group {{ dns_resolver_group }}.
+      Set dns_resolver_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Require a client allow list
+  ansible.builtin.assert:
+    that:
+      - dns_resolver_allowed_cidrs | length > 0
+      - "'0.0.0.0/0' not in dns_resolver_allowed_cidrs"
+      - "'::/0' not in dns_resolver_allowed_cidrs"
+    fail_msg: Set dns_resolver_allowed_cidrs to the internal networks; the resolver is not an open resolver.
+    quiet: true
+  tags: [chk_net_01]
+
+- name: Install Unbound (distribution package) and the root trust anchor
+  ansible.builtin.apt:
+    name: [unbound, dns-root-data, ca-certificates]
+    state: present
+
+- name: Seed the DNSSEC root trust anchor (Unbound keeps it updated, RFC 5011)
+  ansible.builtin.copy:
+    src: /usr/share/dns/root.key
+    dest: /var/lib/unbound/root.key
+    remote_src: true
+    force: false
+    owner: unbound
+    group: unbound
+    mode: "0644"
+
+- name: Get the DNS-over-TLS certificate
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: unbound
+    tls_cert_dir: "{{ dns_resolver_tls_dir }}"
+    tls_cert_owner: root
+    tls_cert_group: unbound
+    tls_cert_common_name: "{{ dns_resolver_tls_common_name }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1'] + dns_resolver_listen_addresses }}"
+  when: dns_resolver_dot_enabled | bool
+  tags: [chk_sec_03]
+
+- name: Restart Unbound when the certificate changed
+  ansible.builtin.debug:
+    msg: The DNS-over-TLS certificate changed; Unbound restarts to load it.
+  changed_when: dns_resolver_dot_enabled | bool and tls_cert_changed | default(false) | bool
+  notify: Restart unbound
+
+- name: Write the Unbound configuration
+  ansible.builtin.template:
+    src: unbound.conf.j2
+    dest: /etc/unbound/unbound.conf
+    owner: root
+    group: unbound
+    mode: "0640"
+    validate: unbound-checkconf %s
+  notify: Restart unbound
+  tags: [chk_net_01, chk_sec_03]
+
+- name: Install the metrics script
+  ansible.builtin.copy:
+    src: unbound-textfile-metrics
+    dest: /usr/local/sbin/unbound-textfile-metrics
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [chk_log_05]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ dns_resolver_metrics_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the metrics service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - unbound-textfile-metrics.service
+    - unbound-textfile-metrics.timer
+  tags: [chk_log_05]
+
+- name: Start Unbound
+  ansible.builtin.systemd_service:
+    name: unbound
+    enabled: true
+    state: started
+
+- name: Start the metrics timer
+  ansible.builtin.systemd_service:
+    name: unbound-textfile-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_log_05]
+
+- name: Flush handlers so health checks see the final state
+  ansible.builtin.meta: flush_handlers
+
+- name: Check Unbound
+  ansible.builtin.import_tasks: health.yml

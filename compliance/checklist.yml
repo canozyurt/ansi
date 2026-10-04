@@ -59,7 +59,8 @@ requirements:
       iso27001: ["5.18"]
       iso27017: []
     check: "Integration test: disable a test user, assert every service denies it"
-    status: not_started
+    status: designed
+    progress: "VPN peers carry owner + expiry and are removed at expiry even without an Ansible run (tested); SSH certificates last 8 h and need an SSO login; admin_login_removed_accounts removes principal mappings. Remaining: VPN peers are not tied to the IdP (a disabled user keeps the tunnel until expiry); end-to-end disable test."
   - id: IAM-05
     requirement: "Access review report (users, groups, admins) produced every quarter"
     controls:
@@ -76,7 +77,7 @@ requirements:
       iso27017: []
     check: "CIS benchmark scan; sshd config test"
     status: implemented
-    progress: "Done: no passwords, no root, key/cert only, modern crypto (roles/ssh_hardening); OpenBao SSH user CA signs 8-hour certificates, host-login principals only for platform-admin and operator (molecule/openbao). Remaining: set ssh_hardening_trusted_user_ca_keys to the published CA key in each inventory."
+    progress: "No passwords, no root, key/cert only (ssh_hardening); OpenBao SSH CA (8 h certs) trusted; principals platform-admin/operator mapped to accounts (roles/admin_login, roles/bastion); bastion refuses passwords, plain keys and other principals (tested). Remaining: ssh_hardening_allow_authorized_keys: false fleet-wide once the CA is rolled out (break-glass only)."
   - id: IAM-07
     requirement: "Privileged sessions are recorded and logged centrally"
     controls:
@@ -84,7 +85,8 @@ requirements:
       iso27001: ["8.2", "8.15"]
       iso27017: ["CLD.12.1.5"]
     check: "Test: an admin session appears in the SIEM"
-    status: not_started
+    status: implemented
+    progress: "auditd execve rules for auid>=1000 (key session_cmd), pam_tty_audit for root sessions, sudo I/O logs, sshd logs the cert key ID and the jump target (roles/session_audit, roles/bastion; rules loaded and checked with auditctl -l in Molecule). Remaining: test that a session reaches the SIEM (depends on the SIEM agent shipping audit.log)."
   - id: IAM-08
     requirement: "Services use short-lived or rotated credentials from the secrets manager; no shared static passwords"
     controls:
@@ -128,7 +130,7 @@ requirements:
       iso27017: []
     check: "TLS scanner (e.g. testssl.sh) against every endpoint weekly"
     status: designed
-    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested)."
+    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
     controls:
@@ -277,7 +279,7 @@ requirements:
       iso27017: ["CLD.13.1.4"]
     check: "Port scan from the internet finds no management ports"
     status: designed
-    progress: "Done: SSH only from firewall_mgmt_cidrs. Remaining: admin UIs and databases as services are added. Edge: non-public services (Grafana, OpenBao) and Keycloak admin paths answer only edge_admin_cidrs (tested)."
+    progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Remaining: admin UIs and databases of each service restricted to the same sources (several still allow the whole mgmt zone). Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested)."
   - id: NET-03
     requirement: "Management, application and data networks are separated; traffic between them is allowed by explicit rule"
     controls:

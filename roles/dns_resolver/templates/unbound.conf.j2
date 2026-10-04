@@ -1,0 +1,105 @@
+# {{ ansible_managed }}
+# Complete configuration (the distribution's unbound.conf.d snippets are not included).
+{% set ip_re = '^([0-9]{1,3}\\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+:[0-9a-fA-F:]*$' %}
+{% set listen = (['127.0.0.1'] + dns_resolver_listen_addresses) | unique %}
+server:
+	username: "unbound"
+	directory: "/etc/unbound"
+	chroot: ""
+	use-syslog: yes
+	verbosity: 1
+	num-threads: {{ dns_resolver_threads }}
+	msg-cache-size: {{ (dns_resolver_cache_mb | int // 2) }}m
+	rrset-cache-size: {{ dns_resolver_cache_mb }}m
+
+	port: {{ dns_resolver_port }}
+	ip-freebind: yes
+{% for address in listen %}
+	interface: {{ address }}
+{% endfor %}
+{% if dns_resolver_dot_enabled %}
+	# DNS-over-TLS for clients (SEC-03).
+	tls-port: {{ dns_resolver_dot_port }}
+	tls-service-key: "{{ dns_resolver_tls_dir }}/tls.key"
+	tls-service-pem: "{{ dns_resolver_tls_dir }}/tls.crt"
+{% for address in listen %}
+	interface: {{ address }}@{{ dns_resolver_dot_port }}
+{% endfor %}
+{% endif %}
+
+	# Only internal clients (no open resolver).
+	access-control: 0.0.0.0/0 refuse
+	access-control: ::0/0 refuse
+	access-control: 127.0.0.0/8 allow
+	access-control: ::1/128 allow
+{% for cidr in dns_resolver_allowed_cidrs %}
+	access-control: {{ cidr }} allow
+{% endfor %}
+
+	# DNSSEC validation with an automatically updated root trust anchor (RFC 5011).
+	module-config: "validator iterator"
+	auto-trust-anchor-file: "/var/lib/unbound/root.key"
+	harden-dnssec-stripped: yes
+	harden-algo-downgrade: yes
+	val-clean-additional: yes
+	aggressive-nsec: yes
+
+	# Hardening and privacy.
+	hide-identity: yes
+	hide-version: yes
+	harden-glue: yes
+	harden-below-nxdomain: yes
+	harden-short-bufsize: yes
+	harden-large-queries: yes
+	qname-minimisation: yes
+	minimal-responses: yes
+	unwanted-reply-threshold: 10000
+	tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"
+	# DNS rebinding protection: public names may not resolve to private addresses.
+	private-address: 10.0.0.0/8
+	private-address: 172.16.0.0/12
+	private-address: 192.168.0.0/16
+	private-address: 169.254.0.0/16
+	private-address: fd00::/8
+	private-address: fe80::/10
+	private-domain: "{{ dns_resolver_domain }}"
+
+	# Query logging (off by default for privacy).
+	log-queries: {{ 'yes' if dns_resolver_query_log else 'no' }}
+	log-replies: {{ 'yes' if dns_resolver_query_log else 'no' }}
+	log-servfail: {{ 'yes' if dns_resolver_query_log else 'no' }}
+	log-local-actions: no
+
+	statistics-interval: 0
+	statistics-cumulative: yes
+	extended-statistics: yes
+
+	# Local data from the inventory.
+	local-zone: "{{ dns_resolver_domain }}." {{ dns_resolver_local_zone_type }}
+{% if dns_resolver_inventory_records %}
+{%   for host in groups['all'] | sort %}
+{%     set address = hostvars[host]['dns_resolver_host_address'] | default(hostvars[host]['ansible_host'] | default('')) | string %}
+{%     if address is match(ip_re) %}
+{%       set fqdn = host if '.' in host else host ~ '.' ~ dns_resolver_domain %}
+	local-data: "{{ fqdn }}. {{ dns_resolver_record_ttl }} IN {{ 'AAAA' if ':' in address else 'A' }} {{ address }}"
+	local-data-ptr: "{{ address }} {{ dns_resolver_record_ttl }} {{ fqdn }}."
+{%     endif %}
+{%   endfor %}
+{% endif %}
+{% for record in dns_resolver_records %}
+	local-data: "{{ record.name | regex_replace('\\.$', '') }}. {{ record.ttl | default(dns_resolver_record_ttl) }} IN {{ record.type | default('A') }} {{ record.value }}"
+{% endfor %}
+
+remote-control:
+	control-enable: yes
+	control-interface: /run/unbound.ctl
+	control-use-cert: no
+{% if dns_resolver_forwarders | length > 0 %}
+
+forward-zone:
+	name: "."
+	forward-tls-upstream: {{ 'yes' if dns_resolver_forward_tls else 'no' }}
+{%   for forwarder in dns_resolver_forwarders %}
+	forward-addr: {{ forwarder }}
+{%   endfor %}
+{% endif %}

@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Remove expired WireGuard peers and write handshake metrics
+After=wg-quick@{{ wireguard_gateway_interface }}.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/wireguard-gateway-check {{ wireguard_gateway_interface }}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ wireguard_gateway_metrics_dir }}
+CapabilityBoundingSet=CAP_NET_ADMIN

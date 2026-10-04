@@ -1,0 +1,126 @@
+---
+# Admin access on Ubuntu 24.04 systemd containers: one VPN gateway, one bastion, one DNS resolver
+# (lab mode, single node each) plus an audit probe.
+# - The test kernel has no WireGuard module: the gateway runs wg-quick with the wireguard-go userspace
+#   fallback (installed in prepare.yml), so the interface, peers, NAT rules and metrics are real.
+# - Kernel audit rules can only be loaded from the initial PID namespace, so the audit probe shares the
+#   host PID namespace (no systemd) and loads only this role's rules (no "-e 2"); cleanup.yml removes them.
+driver:
+  name: docker
+platforms:
+  - name: access-vpn
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: ""
+    networks:
+      - name: molecule-access
+    groups: [vpn]
+  - name: access-bastion
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: ""
+    networks:
+      - name: molecule-access
+    groups: [bastion]
+  - name: access-dns
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: ""
+    networks:
+      - name: molecule-access
+    groups: [dns]
+  - name: access-audit
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    pid_mode: host
+    command: sleep infinity
+    networks:
+      - name: molecule-access
+    groups: [audit_probe]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  inventory:
+    group_vars:
+      all:
+        network_zones:
+          mgmt: 10.10.0.0/24
+          app: 10.20.0.0/24
+          data: 10.30.0.0/24
+        access_vpn_cidr: 10.99.0.0/24
+        # The test network (Docker bridge) stands in for the bastion addresses.
+        firewall_mgmt_cidrs: [10.10.0.0/24, 10.99.0.0/24, 172.16.0.0/12, 192.168.0.0/16]
+        ssh_hardening_allow_groups: [ssh-users]
+        dns_resolver_domain: example.internal
+        # Containers share the host kernel: write these settings but do not apply them.
+        common_chrony_daemon_opts: "-x"
+        common_auditd_manage_service: false
+        session_audit_load_rules: false
+        wireguard_gateway_allow_single_node: true
+        bastion_allow_single_node: true
+        dns_resolver_allow_single_node: true
+      vpn:
+        firewall_rules_wireguard_gateway:
+          - { name: wireguard, port: 51820, proto: udp, sources: [any] }
+        wireguard_peers:
+          - name: alice-laptop
+            public_key: qPWBdqbZ0LGIM7U/x6lzuRDGOEepqQbeO0Ek+q/llkA=
+            allowed_ip: 10.99.0.10/32
+            owner: alice@example.com
+            expires: "{{ '%Y-%m-%d' | strftime(now(utc=true).timestamp() | int + 30 * 86400) }}"
+          - name: bob-old-laptop
+            public_key: AG0FKs+wQ3jTGV1C42s5VP2QDYPYPbazQLl/jlDySn8=
+            allowed_ip: 10.99.0.11/32
+            owner: bob@example.com
+            expires: "2025-01-31"
+      bastion:
+        admin_login_accounts: []
+      dns:
+        firewall_rules_dns_resolver:
+          - { name: dns, port: 53, proto: udp, sources: [10.10.0.0/24, 10.99.0.0/24] }
+          - { name: dns-over-tls, port: 853, proto: tcp, sources: [10.10.0.0/24, 10.99.0.0/24] }
+        dns_resolver_listen_addresses: [192.0.2.10]
+        # The test sandbox blocks outbound DNS-over-TLS (853): forward in plain DNS to a resolver that
+        # does not validate (Quad9 unsecured), so validation is Unbound's own.
+        dns_resolver_forward_tls: false
+        dns_resolver_forwarders: [9.9.9.10, 149.112.112.10]
+        dns_resolver_records:
+          - { name: sso.example.internal, type: A, value: 10.10.0.11 }
+      audit_probe:
+        session_audit_load_rules: true
+        # Load only this role's rules into the shared test kernel (augenrules would add "-D" and "-e 2").
+        session_audit_load_command: auditctl -R /etc/audit/rules.d/55-session-audit.rules
+    host_vars:
+      access-vpn:
+        dns_resolver_host_address: 10.10.0.21
+      access-bastion:
+        dns_resolver_host_address: 10.10.0.31
+      access-dns:
+        dns_resolver_host_address: 10.10.0.53
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy

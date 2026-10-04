@@ -1,0 +1,20 @@
+---
+# SSH jump hosts (NET-02, IAM-06). sshd is the distribution's OpenSSH, configured by roles/ssh_hardening;
+# this role adds the jump-only account. Certificates come from the OpenBao SSH CA (ssh-client-signer)
+# whose public key is in ssh_hardening_trusted_user_ca_keys.
+bastion_group: bastion
+bastion_min_nodes: 2
+bastion_allow_single_node: false
+
+# Shared jump account. People are told apart by the certificate key ID and serial, which sshd logs
+# (LogLevel VERBOSE) together with the session ID that auditd records on the target.
+bastion_jump_user: jump
+# Certificate principals allowed to use the jump account: the default roles that may log in to hosts.
+bastion_login_principals: [platform-admin, operator]
+# Where the jump account may forward to. Default: SSH on any host (the firewall of every target
+# accepts SSH only from bastion and VPN addresses).
+bastion_permit_open: ["*:22"]
+# Group required by ssh_hardening_allow_groups.
+bastion_login_group: ssh-users
+# Log the forwarding target of every jump (debug1 is needed for "direct-tcpip" lines; jump account only).
+bastion_log_forwarding: true

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check WireGuard peers every {{ wireguard_gateway_check_interval }}
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ wireguard_gateway_check_interval }}
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -91,6 +91,32 @@ or backups inside their retention period, and no approving one's own change.
 - Upgrades go through `playbooks/upgrade.yml` only: Raft snapshot first, standbys before the active
   node, one node at a time, each unsealed and healthy before the next.
 
+## Admin access (VPN, bastion, session recording, DNS)
+
+- WireGuard on the `vpn` group (2 gateways, wireguard-tools from the distribution, module in-kernel). Peers
+  come from `wireguard_peers` with owner and expiry; expired peers are left out of the config and removed
+  from the running interface by a minutely timer. Gateway private keys are generated on the host (0600)
+  and loaded from a file, not from the config.
+- Tunnel traffic reaches the mgmt zone only (own nftables table, masqueraded to the gateway address); no
+  peer-to-peer traffic, and every new connection is logged with the peer's tunnel address.
+- Failover: one client template per gateway, or one floating endpoint with a shared key pair (keepalived VIP).
+- The VPN is reachability only: admin UIs still need Keycloak SSO with MFA, and SSH needs an 8-hour
+  certificate from the OpenBao SSH CA.
+- SSH jump hosts on the `bastion` group (2+): a `jump` account that accepts only CA certificates with the
+  principals platform-admin or operator. No shell, TTY or command; local forwarding to port 22 only.
+  It is reachable from the VPN only.
+- On every host, `admin_login` maps the principals to the `platform-admin` (sudo) and `operator` (logs,
+  no sudo) accounts. SSH on every host is accepted only from the bastion, VPN and automation addresses (NET-02).
+- Session recording on the targets (`session_audit`): auditd execve for auid>=1000, pam_tty_audit for root
+  sessions, sudo I/O logs and the certificate key ID in the sshd log. Logs go to audit.log and the journal,
+  which the SIEM agent ships.
+- Unbound (distribution package) on the `dns` group (2 nodes): DNSSEC validation, DoT upstream, a static
+  local zone generated from the inventory, REFUSED for clients outside the internal networks, DoT for
+  clients on 853, and query logging off by default. Metrics go through the node_exporter textfile collector.
+  `dns_client` points every host at both resolvers through systemd-resolved, with no public fallback.
+
+Operator workflow: [docs/access.md](access.md).
+
 ## Identity provider (Keycloak)
 
 - Runs as a container with host networking on the `keycloak` group, 3 nodes minimum; nodes discover each

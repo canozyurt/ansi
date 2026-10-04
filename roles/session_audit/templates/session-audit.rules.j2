@@ -1,0 +1,5 @@
+## {{ ansible_managed }}
+## Commands run by people in interactive sessions (IAM-07). auid is the login uid set by pam_loginuid
+## at SSH login; it stays the same after sudo and su, so escalated commands are attributed too.
+-a always,exit -F arch=b64 -S execve,execveat -F auid>={{ session_audit_min_auid }} -F auid!=unset -k {{ session_audit_key }}
+-a always,exit -F arch=b32 -S execve,execveat -F auid>={{ session_audit_min_auid }} -F auid!=unset -k {{ session_audit_key }}

@@ -1,0 +1,34 @@
+---
+# Admin network access: VPN gateways, SSH jump hosts, session recording and internal DNS.
+# Run after baseline.yml (ssh_hardening and firewall must be in place).
+- name: Record admin sessions and map SSH certificate principals on every host
+  hosts: all
+  become: true
+  roles:
+    - role: session_audit
+    - role: admin_login
+
+- name: Deploy the WireGuard VPN gateways
+  hosts: vpn
+  become: true
+  roles:
+    - role: wireguard_gateway
+
+- name: Deploy the SSH jump hosts
+  hosts: bastion
+  become: true
+  roles:
+    - role: bastion
+
+- name: Deploy the internal DNS resolvers
+  hosts: dns
+  become: true
+  serial: 1  # one resolver at a time keeps DNS available
+  roles:
+    - role: dns_resolver
+
+- name: Point every host at the internal resolvers
+  hosts: all
+  become: true
+  roles:
+    - role: dns_client

@@ -1,0 +1,37 @@
+---
+# Admin access alert rules for Prometheus (collected from prometheus_rules_* variables).
+prometheus_rules_access:
+  - name: access
+    rules:
+      - alert: WireGuardGatewayDown
+        expr: wireguard_gateway_up == 0
+        for: 5m
+        labels: {severity: warning}
+      - alert: WireGuardAllGatewaysDown
+        expr: sum(wireguard_gateway_up) == 0 or absent(wireguard_gateway_up)
+        for: 5m
+        labels: {severity: critical}
+      - alert: WireGuardCheckStale
+        expr: time() - wireguard_gateway_check_timestamp_seconds > 300
+        for: 5m
+        labels: {severity: warning}
+      - alert: WireGuardPeerExpiresSoon
+        expr: wireguard_peer_expiry_timestamp_seconds - time() < 7 * 86400
+        labels: {severity: info}
+        annotations: {summary: "A VPN peer (see the peer and owner labels) expires within 7 days"}
+      - alert: UnboundDown
+        expr: unbound_up == 0
+        for: 2m
+        labels: {severity: warning}
+      - alert: UnboundAllResolversDown
+        expr: sum(unbound_up) == 0 or absent(unbound_up)
+        for: 2m
+        labels: {severity: critical}
+      - alert: UnboundMetricsStale
+        expr: time() - unbound_metrics_timestamp_seconds > 300
+        for: 5m
+        labels: {severity: warning}
+      - alert: UnboundServfailRatioHigh
+        expr: rate(unbound_num_answer_rcode_SERVFAIL[10m]) / clamp_min(rate(unbound_total_num_queries[10m]), 1) > 0.05
+        for: 15m
+        labels: {severity: warning}

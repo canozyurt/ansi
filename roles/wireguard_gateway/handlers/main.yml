@@ -1,0 +1,27 @@
+---
+- name: Apply WireGuard sysctl
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/95-wireguard-gateway.conf
+  changed_when: true
+  when: wireguard_gateway_sysctl_apply | bool
+
+- name: Reload WireGuard peers
+  # wg-quick@.service reloads with `wg syncconf`: peers change without dropping other sessions.
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ wireguard_gateway_interface }}"
+    state: reloaded
+  when:
+    - wireguard_gateway_manage_service | bool
+    - not (wireguard_gateway_started.changed | default(false))
+
+- name: Load WireGuard forwarding rules
+  ansible.builtin.command: nft -f /etc/wireguard/{{ wireguard_gateway_interface }}-nft.conf
+  changed_when: true
+  when:
+    - wireguard_gateway_manage_service | bool
+    - not (wireguard_gateway_started.changed | default(false))
+
+- name: Run the WireGuard check
+  ansible.builtin.systemd_service:
+    name: wireguard-gateway-check.service
+    state: started
+  when: wireguard_gateway_manage_service | bool

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Resolve]
+DNS={{ dns_client_resolvers | join(' ') }}
+# Send every query to the internal resolvers; no fallback to public resolvers.
+Domains=~. {{ dns_client_domain }}
+FallbackDNS=
+# DNSSEC is validated by the internal resolvers (Unbound).
+DNSSEC=no
+DNSOverTLS={{ dns_client_dns_over_tls }}
+LLMNR=no
+MulticastDNS=no

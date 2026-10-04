@@ -1,0 +1,100 @@
+---
+- name: Require two gateways (HA-01)
+  ansible.builtin.assert:
+    that: groups[wireguard_gateway_group] | default([]) | length >= wireguard_gateway_min_nodes or wireguard_gateway_allow_single_node | bool
+    fail_msg: >-
+      The VPN needs {{ wireguard_gateway_min_nodes }} gateways in group {{ wireguard_gateway_group }}.
+      Set wireguard_gateway_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Work out today's date (UTC)
+  ansible.builtin.set_fact:
+    wireguard_gateway_today: "{{ now(utc=true).strftime('%Y-%m-%d') }}"
+
+- name: Validate the admin peers
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and item.name is match('^[a-z0-9][a-z0-9._-]{0,62}$')
+      - item.public_key is defined and item.public_key is match('^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$')
+      - item.allowed_ip is defined and item.allowed_ip is match('^([0-9.]+/32|[0-9a-fA-F:]+/128)$')
+      - item.owner is defined and item.owner | length > 0
+      - item.expires is defined and item.expires is string and item.expires is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+      - >-
+        ((item.expires | to_datetime('%Y-%m-%d')) - (wireguard_gateway_today | to_datetime('%Y-%m-%d'))).days
+        <= wireguard_gateway_peer_max_days | int
+    fail_msg: >-
+      Invalid WireGuard peer {{ item.name | default(item) }}: needs name, public_key, a single-address allowed_ip,
+      owner and a quoted expires date (YYYY-MM-DD) at most {{ wireguard_gateway_peer_max_days }} days ahead.
+    quiet: true
+  loop: "{{ wireguard_gateway_peers }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  tags: [chk_iam_04]
+
+- name: Require unique peer names, keys and addresses
+  ansible.builtin.assert:
+    that:
+      - wireguard_gateway_peers | map(attribute='name') | unique | length == wireguard_gateway_peers | length
+      - wireguard_gateway_peers | map(attribute='public_key') | unique | length == wireguard_gateway_peers | length
+      - wireguard_gateway_peers | map(attribute='allowed_ip') | unique | length == wireguard_gateway_peers | length
+    fail_msg: Two WireGuard peers share a name, public key or allowed_ip.
+    quiet: true
+
+- name: Select the peers that have not expired
+  ansible.builtin.set_fact:
+    wireguard_gateway_active_peers: "{{ wireguard_gateway_peers | selectattr('expires', '>', wireguard_gateway_today) | list }}"
+    wireguard_gateway_expired_peers: "{{ wireguard_gateway_peers | rejectattr('expires', '>', wireguard_gateway_today) | map(attribute='name') | list }}"
+  tags: [chk_iam_04]
+
+- name: Report expired peers still listed in the inventory
+  ansible.builtin.debug:
+    msg: "Expired WireGuard peers left out (remove them from wireguard_peers): {{ wireguard_gateway_expired_peers | join(', ') }}"
+  when: wireguard_gateway_expired_peers | length > 0
+
+- name: Install WireGuard tools (distribution package; the module is in the distribution kernel)
+  ansible.builtin.apt:
+    name: [wireguard-tools, nftables, iproute2]
+    state: present
+
+- name: Enable packet forwarding for the tunnel
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (wireguard_gateway). Overrides the baseline's no-forwarding default on VPN gateways.
+      net.ipv4.ip_forward = 1
+    dest: /etc/sysctl.d/95-wireguard-gateway.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply WireGuard sysctl
+
+- name: Import key tasks
+  ansible.builtin.import_tasks: keys.yml
+
+- name: Import configuration tasks
+  ansible.builtin.import_tasks: config.yml
+
+- name: Start the tunnel
+  ansible.builtin.systemd_service:
+    name: "wg-quick@{{ wireguard_gateway_interface }}"
+    enabled: true
+    state: started
+  register: wireguard_gateway_started
+  when: wireguard_gateway_manage_service | bool
+  tags: [chk_net_02]
+
+- name: Start the peer expiry and metrics timer
+  ansible.builtin.systemd_service:
+    name: wireguard-gateway-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: wireguard_gateway_manage_service | bool
+  tags: [chk_iam_04, chk_log_05]
+
+- name: Flush handlers so health checks see the final state
+  ansible.builtin.meta: flush_handlers
+
+- name: Check the tunnel
+  ansible.builtin.import_tasks: health.yml
+  when: wireguard_gateway_manage_service | bool

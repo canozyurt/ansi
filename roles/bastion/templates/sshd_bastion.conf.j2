@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# Jump-only account (NET-02, IAM-06). Global settings come from 00-compliance.conf (roles/ssh_hardening):
+# no passwords, no root, certificates trusted from the SSH CA. Other accounts (Ansible) are unaffected.
+Match User {{ bastion_jump_user }}
+	# Certificates only: plain public keys in authorized_keys are ignored.
+	AuthorizedKeysFile none
+	AuthenticationMethods publickey
+	# No shell, no command, no terminal: only ProxyJump (ssh -J / -W) to SSH ports.
+	PermitTTY no
+	ForceCommand /usr/sbin/nologin
+	AllowTcpForwarding local
+	PermitOpen {{ bastion_permit_open | join(' ') }}
+	AllowStreamLocalForwarding no
+	AllowAgentForwarding no
+	X11Forwarding no
+	PermitTunnel no
+	GatewayPorts no
+	PermitListen none
+{% if bastion_log_forwarding %}
+	# Records the target of every forwarded connection (IAM-07).
+	LogLevel DEBUG1
+{% endif %}

@@ -1,0 +1,8 @@
+---
+- name: Wait until sshd accepts connections
+  ansible.builtin.wait_for:
+    port: "{{ ssh_hardening_port | default(22) }}"
+    host: 127.0.0.1
+    search_regex: OpenSSH
+    timeout: 30
+  tags: [chk_log_05]

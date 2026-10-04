@@ -1,0 +1,22 @@
+---
+# Admin access networks (NET-02). Used by roles/wireguard_gateway, roles/bastion, roles/dns_resolver,
+# roles/dns_client and by firewall_mgmt_cidrs in main.yml.
+access_vpn_cidr: 10.99.0.0/24
+# Mgmt-side addresses of the VPN gateways: with wireguard_gateway_nat (default) tunnel traffic reaches
+# targets from these addresses.
+access_vpn_gateway_cidrs: [10.10.0.21/32, 10.10.0.22/32]
+access_bastion_cidrs: [10.10.0.31/32, 10.10.0.32/32]
+# Where Ansible runs (CI runner); it needs SSH to every host. Empty if it connects through the VPN.
+access_automation_cidrs: []
+
+# Internal resolvers (roles/dns_client) and the internal domain (roles/dns_resolver).
+dns_client_servers: [10.10.0.53, 10.10.0.54]
+dns_resolver_domain: example.internal
+
+# Admin peers of the VPN (roles/wireguard_gateway). Every peer has an owner and an expiry date.
+wireguard_peers: []
+#  - name: alice-laptop
+#    public_key: "<output of wg pubkey on the device>"
+#    allowed_ip: 10.99.0.10/32
+#    owner: alice@example.com
+#    expires: "2027-03-31"

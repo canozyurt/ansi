@@ -1,0 +1,24 @@
+#!/bin/bash
+# Managed by Ansible (dns_resolver). Converts `unbound-control stats_noreset` into Prometheus metrics
+# for the node_exporter textfile collector (written atomically).
+set -euo pipefail
+out_dir="${1:-/var/lib/node_exporter/textfile_collector}"
+out="${out_dir}/unbound.prom"
+tmp="$(mktemp "${out_dir}/.unbound.prom.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+{
+  if stats="$(unbound-control -c /etc/unbound/unbound.conf stats_noreset 2>/dev/null)"; then
+    echo "unbound_up 1"
+    # total.num.queries=12 -> unbound_total_num_queries 12; per-thread lines are left out.
+    printf '%s\n' "$stats" | awk -F= '
+      $1 !~ /^thread[0-9]+\./ && $2 ~ /^-?[0-9.]+$/ {
+        name = $1; gsub(/[^a-zA-Z0-9_]/, "_", name); print "unbound_" name " " $2
+      }'
+  else
+    echo "unbound_up 0"
+  fi
+  echo "unbound_metrics_timestamp_seconds $(date +%s)"
+} > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out"
+trap - EXIT

@@ -1,0 +1,10 @@
+---
+# DNS for internal networks and the VPN only (NET-01).
+firewall_rules_dns_resolver:
+  - { name: dns, port: 53, proto: udp, sources: "{{ network_zones.values() | list + [access_vpn_cidr] }}" }
+  - { name: dns-tcp, port: 53, proto: tcp, sources: "{{ network_zones.values() | list + [access_vpn_cidr] }}" }
+  - { name: dns-over-tls, port: 853, proto: tcp, sources: "{{ network_zones.values() | list + [access_vpn_cidr] }}" }
+
+# Service names that are not inventory hosts.
+dns_resolver_records: []
+#  - { name: sso.example.internal, type: A, value: 10.10.0.11 }

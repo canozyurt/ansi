@@ -12,6 +12,9 @@
 - name: Deploy secrets management, the internal PKI and the SSH CA
   ansible.builtin.import_playbook: secrets.yml
 
+- name: Set up admin access (VPN, bastion, session recording, DNS; needs the SSH CA from secrets.yml)
+  ansible.builtin.import_playbook: access.yml
+
 - name: Deploy the identity provider
   ansible.builtin.import_playbook: identity.yml
 

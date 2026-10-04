@@ -1,0 +1,86 @@
+---
+- name: Check the account list
+  ansible.builtin.assert:
+    that:
+      - item.name is match('^[a-z][a-z0-9-]{0,31}$')
+      - item.principals | default([]) | length > 0
+    fail_msg: "Invalid admin_login account {{ item }}: needs a name and at least one principal."
+    quiet: true
+  loop: "{{ admin_login_accounts }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Create the login group
+  ansible.builtin.group:
+    name: "{{ admin_login_group }}"
+    system: true
+
+- name: Create the principal accounts (no password; certificate login only)
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: /bin/bash
+    groups: "{{ [admin_login_group] + (item.groups | default([])) }}"
+    append: true
+    password: "!"
+    password_lock: true
+    create_home: true
+  loop: "{{ admin_login_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [chk_iam_06, chk_iam_09]
+
+- name: Create the authorized principals directory
+  ansible.builtin.file:
+    path: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Map certificate principals to accounts
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (admin_login).
+      {% for principal in item.principals %}
+      {{ principal }}
+      {% endfor %}
+    dest: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ admin_login_accounts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [chk_iam_06, chk_iam_09]
+
+- name: Grant sudo to accounts that need it
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (admin_login). The account has no password; access needs a short-lived SSH certificate.
+      {{ item.name }} ALL=(ALL:ALL) NOPASSWD: ALL
+    dest: /etc/sudoers.d/50-admin-login-{{ item.name }}
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+  loop: "{{ admin_login_accounts | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [chk_iam_09]
+
+- name: Remove sudo from accounts that no longer need it
+  ansible.builtin.file:
+    path: /etc/sudoers.d/50-admin-login-{{ item }}
+    state: absent
+  loop: >-
+    {{ (admin_login_accounts | rejectattr('sudo', 'defined') | map(attribute='name') | list)
+       + (admin_login_accounts | selectattr('sudo', 'defined') | rejectattr('sudo') | map(attribute='name') | list)
+       + admin_login_removed_accounts }}
+  tags: [chk_iam_09]
+
+- name: Remove principal mappings of retired accounts (ends certificate login)
+  ansible.builtin.file:
+    path: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}/{{ item }}"
+    state: absent
+  loop: "{{ admin_login_removed_accounts }}"
+  tags: [chk_iam_04]

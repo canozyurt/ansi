@@ -1,0 +1,7 @@
+---
+# SSH to the jump hosts only from the VPN (NET-02). With wireguard_gateway_nat, VPN traffic arrives
+# from the gateways' mgmt addresses, so both are listed. Overrides the all-hosts value in all/main.yml.
+firewall_mgmt_cidrs: "{{ [access_vpn_cidr] + access_vpn_gateway_cidrs + access_automation_cidrs }}"
+
+# No shells for people on the jump hosts: only the jump account (roles/bastion) and Ansible's account.
+admin_login_accounts: []

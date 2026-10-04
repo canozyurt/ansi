@@ -1,0 +1,11 @@
+---
+- name: Remove the test audit rules from the shared kernel
+  hosts: audit_probe
+  become: true
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Delete the session_cmd rules
+      ansible.builtin.command: auditctl -D -k session_cmd
+      changed_when: true
+      failed_when: false

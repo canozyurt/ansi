@@ -1,0 +1,71 @@
+---
+- name: Require two or more jump hosts (HA-01)
+  ansible.builtin.assert:
+    that: groups[bastion_group] | default([]) | length >= bastion_min_nodes or bastion_allow_single_node | bool
+    fail_msg: >-
+      The bastion needs {{ bastion_min_nodes }} hosts in group {{ bastion_group }}.
+      Set bastion_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Require the SSH user CA (IAM-06)
+  ansible.builtin.assert:
+    that:
+      - ssh_hardening_trusted_user_ca_keys | default([]) | length > 0
+      - bastion_login_principals | length > 0
+    fail_msg: >-
+      The bastion accepts only SSH CA certificates: set ssh_hardening_trusted_user_ca_keys to the public key of
+      the OpenBao SSH CA (bao read -field=public_key ssh-client-signer/config/ca) and apply roles/ssh_hardening first.
+    quiet: true
+  tags: [chk_iam_06]
+
+- name: Create the login group
+  ansible.builtin.group:
+    name: "{{ bastion_login_group }}"
+    system: true
+
+- name: Create the jump account (no password, no shell)
+  ansible.builtin.user:
+    name: "{{ bastion_jump_user }}"
+    shell: /usr/sbin/nologin
+    groups: ["{{ bastion_login_group }}"]
+    append: true
+    password: "!"
+    password_lock: true
+    create_home: true
+    home: /home/{{ bastion_jump_user }}
+    system: false
+  tags: [chk_iam_06]
+
+- name: Map certificate principals to the jump account
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (bastion). Certificate principals allowed to use the jump account.
+      {% for principal in bastion_login_principals %}
+      {{ principal }}
+      {% endfor %}
+    dest: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}/{{ bastion_jump_user }}"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_iam_06]
+
+- name: Configure the jump-only account in sshd
+  ansible.builtin.template:
+    src: sshd_bastion.conf.j2
+    dest: /etc/ssh/sshd_config.d/90-bastion.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload sshd for the bastion
+  tags: [chk_iam_06, chk_iam_07, chk_net_02]
+
+- name: Check the complete sshd configuration
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Flush handlers so health checks see the final state
+  ansible.builtin.meta: flush_handlers
+
+- name: Check sshd
+  ansible.builtin.import_tasks: health.yml

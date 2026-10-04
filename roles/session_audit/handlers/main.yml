@@ -1,0 +1,9 @@
+---
+- name: Load session audit rules
+  ansible.builtin.command: "{{ session_audit_load_command }}"
+  register: session_audit_load
+  changed_when: true
+  failed_when:
+    - session_audit_load.rc != 0
+    - "'immutable' not in (session_audit_load.stdout + session_audit_load.stderr)"
+  when: session_audit_load_rules | bool

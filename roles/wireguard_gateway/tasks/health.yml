@@ -1,0 +1,9 @@
+---
+- name: Wait until the tunnel interface is up
+  ansible.builtin.command: wg show {{ wireguard_gateway_interface }} listen-port
+  register: wireguard_gateway_health
+  until: wireguard_gateway_health.rc == 0 and (wireguard_gateway_health.stdout | trim) == (wireguard_gateway_port | string)
+  retries: 10
+  delay: 3
+  changed_when: false
+  tags: [chk_log_05]

@@ -1,0 +1,60 @@
+---
+- name: Prepare the test hosts
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Prepare the VPN gateway
+  hosts: vpn
+  become: true
+  tasks:
+    - name: Install the userspace WireGuard fallback (the test kernel has no WireGuard module)
+      ansible.builtin.apt:
+        name: wireguard-go
+        state: present
+        update_cache: true
+
+    - name: Create the wg-quick drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/wg-quick@.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Allow wireguard-go on Linux
+      ansible.builtin.copy:
+        content: |
+          [Service]
+          Environment=WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1
+        dest: /etc/systemd/system/wg-quick@.service.d/userspace.conf
+        mode: "0644"
+
+- name: Prepare the bastion
+  hosts: bastion
+  become: true
+  tasks:
+    - name: Install the SSH client
+      ansible.builtin.apt:
+        name: openssh-client
+        state: present
+        update_cache: true
+
+    - name: Generate a throwaway SSH user CA
+      ansible.builtin.command: ssh-keygen -q -t ed25519 -N "" -C molecule-test-ca -f /root/test_user_ca
+      args:
+        creates: /root/test_user_ca
+
+- name: Prepare the DNS resolver
+  hosts: dns
+  become: true
+  tasks:
+    - name: Install dig and iproute2
+      ansible.builtin.apt:
+        name: [bind9-dnsutils, iproute2, openssl]
+        state: present
+        update_cache: true
+
+    - name: Add an address outside the allowed client networks (no dummy module in the test kernel)
+      ansible.builtin.shell: |
+        set -o pipefail
+        ip addr show dev lo | grep -q 192.0.2.10 || ip addr add 192.0.2.10/32 dev lo
+      args:
+        executable: /bin/bash
+      changed_when: true

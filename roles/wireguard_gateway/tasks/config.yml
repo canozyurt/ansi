@@ -1,0 +1,104 @@
+---
+- name: Write the interface configuration (no private key inside; it is loaded from the key file)
+  ansible.builtin.template:
+    src: wg.conf.j2
+    dest: /etc/wireguard/{{ wireguard_gateway_interface }}.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload WireGuard peers
+  tags: [chk_iam_04, chk_net_02]
+
+- name: Write the peer register used by the expiry check and metrics
+  ansible.builtin.template:
+    src: peers.tsv.j2
+    dest: /etc/wireguard/{{ wireguard_gateway_interface }}-peers.tsv
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Run the WireGuard check
+  tags: [chk_iam_04]
+
+- name: Write the forwarding rules (mgmt zone only)
+  ansible.builtin.template:
+    src: wg-nft.conf.j2
+    dest: /etc/wireguard/{{ wireguard_gateway_interface }}-nft.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: nft -c -f %s
+  notify: Load WireGuard forwarding rules
+  tags: [chk_net_02, chk_net_03]
+
+- name: Install the expiry and metrics script
+  ansible.builtin.template:
+    src: wireguard-gateway-check.sh.j2
+    dest: /usr/local/sbin/wireguard-gateway-check
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [chk_iam_04, chk_log_05]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ wireguard_gateway_metrics_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the check service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - wireguard-gateway-check.service
+    - wireguard-gateway-check.timer
+  tags: [chk_iam_04, chk_log_05]
+
+- name: Create the client template directory
+  ansible.builtin.file:
+    path: /etc/wireguard/clients
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Work out the client templates (one per gateway, or one for the floating endpoint)
+  ansible.builtin.set_fact:
+    wireguard_gateway_client_targets: >-
+      {{ [inventory_hostname] if wireguard_gateway_floating_endpoint | length > 0 else
+         ansible_play_hosts_all | intersect(groups[wireguard_gateway_group] | default([inventory_hostname])) }}
+
+- name: Write client templates (the client fills in its own private key)
+  ansible.builtin.template:
+    src: client.conf.j2
+    dest: >-
+      /etc/wireguard/clients/{{ item.0.name }}{{ '' if wireguard_gateway_floating_endpoint | length > 0
+      else '-' ~ (item.1 | regex_replace('[.].*$', '')) }}.conf
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ wireguard_gateway_active_peers | product(wireguard_gateway_client_targets) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} via {{ item.1 }}"
+  register: wireguard_gateway_clients
+
+- name: Find client templates of removed peers
+  ansible.builtin.find:
+    paths: /etc/wireguard/clients
+    patterns: "*.conf"
+  register: wireguard_gateway_existing_clients
+
+- name: Remove client templates of removed or expired peers
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ wireguard_gateway_existing_clients.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: item.path not in (wireguard_gateway_clients.results | map(attribute='dest') | list)
+  tags: [chk_iam_04]

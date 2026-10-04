@@ -1,0 +1,71 @@
+---
+- name: Install auditd and the PAM modules
+  ansible.builtin.apt:
+    name: [auditd, libpam-modules]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [chk_iam_07]
+
+- name: Record every command of interactive sessions
+  ansible.builtin.template:
+    src: session-audit.rules.j2
+    dest: "{{ session_audit_rules_file }}"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load session audit rules
+  tags: [chk_iam_07]
+
+- name: Check for the sshd PAM stack
+  ansible.builtin.stat:
+    path: /etc/pam.d/sshd
+  register: session_audit_pam_sshd
+
+- name: Make sure sshd sets the login uid
+  when: session_audit_pam_sshd.stat.exists
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sshd
+    regexp: '^session\s+required\s+pam_loginuid\.so'
+    line: "session    required     pam_loginuid.so"
+    insertbefore: '^@include common-session'
+  tags: [chk_iam_07]
+
+- name: Find PAM services that escalate to root
+  ansible.builtin.stat:
+    path: /etc/pam.d/{{ item }}
+  loop: "{{ session_audit_tty_pam_services }}"
+  register: session_audit_pam_files
+
+- name: Record keystrokes of root sessions (pam_tty_audit)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/{{ item.item }}
+    regexp: '^session\s+\S+\s+pam_tty_audit\.so'
+    line: "session    required     pam_tty_audit.so disable=* enable=root"
+    insertafter: EOF
+  loop: "{{ session_audit_pam_files.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [chk_iam_07]
+
+- name: Load the rules now if the file changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the loaded audit rules
+  ansible.builtin.command: auditctl -l
+  register: session_audit_loaded
+  changed_when: false
+  failed_when: false
+  when: session_audit_load_rules | bool
+
+- name: Load the rules if they are missing from the kernel (e.g. after an interrupted run)
+  ansible.builtin.command: "{{ session_audit_load_command }}"
+  register: session_audit_reload
+  changed_when: "'immutable' not in (session_audit_reload.stdout + session_audit_reload.stderr)"
+  failed_when:
+    - session_audit_reload.rc != 0
+    - "'immutable' not in (session_audit_reload.stdout + session_audit_reload.stderr)"
+  when:
+    - session_audit_load_rules | bool
+    - ('key=' ~ session_audit_key) not in session_audit_loaded.stdout
+  tags: [chk_iam_07]

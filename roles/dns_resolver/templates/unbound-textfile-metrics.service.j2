@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write Unbound metrics for node_exporter
+After=unbound.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/unbound-textfile-metrics {{ dns_resolver_metrics_dir }}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ dns_resolver_metrics_dir }}

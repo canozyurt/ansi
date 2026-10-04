@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+# WireGuard client template for {{ item.0.name }} (owner {{ item.0.owner }}), valid until {{ item.0.expires }}.
+{% if wireguard_gateway_floating_endpoint | length > 0 %}
+# Endpoint: the floating address shared by both gateways.
+{% else %}
+# Gateway {{ item.1 }}. If it is unreachable, bring this tunnel down and the other gateway's tunnel up.
+{% endif %}
+# Replace the PrivateKey placeholder with the key generated on the device (`wg genkey`); it never leaves it.
+# The VPN only gives network reachability: admin UIs still require Keycloak SSO with MFA, and SSH
+# requires a short-lived certificate from the OpenBao SSH CA.
+[Interface]
+PrivateKey = <device private key>
+Address = {{ item.0.allowed_ip }}
+{% if wireguard_gateway_client_dns | length > 0 %}
+DNS = {{ wireguard_gateway_client_dns | join(', ') }}
+{% endif %}
+
+[Peer]
+PublicKey = {{ hostvars[item.1].wireguard_gateway_public_key }}
+Endpoint = {{ wireguard_gateway_floating_endpoint if wireguard_gateway_floating_endpoint | length > 0 else hostvars[item.1].wireguard_gateway_public_endpoint | default(item.1) }}:{{ wireguard_gateway_port }}
+AllowedIPs = {{ ([wireguard_gateway_vpn_cidr] + wireguard_gateway_destinations) | unique | join(', ') }}
+PersistentKeepalive = {{ wireguard_gateway_client_keepalive }}

@@ -1,0 +1,71 @@
+---
+# Gateway private keys are generated on the gateway (0600) and never leave it, except that with a
+# floating endpoint the first gateway's key is copied to the standby through Ansible (no_log).
+- name: Create the WireGuard directory
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Generate the gateway private key
+  ansible.builtin.shell: |
+    set -o pipefail
+    umask 077
+    wg genkey > /etc/wireguard/{{ wireguard_gateway_interface }}.key
+  args:
+    executable: /bin/bash
+    creates: /etc/wireguard/{{ wireguard_gateway_interface }}.key
+  when: >-
+    wireguard_gateway_floating_endpoint | length == 0
+    or inventory_hostname == wireguard_gateway_key_source
+  vars:
+    wireguard_gateway_key_source: "{{ (groups[wireguard_gateway_group] | default([inventory_hostname]))[0] }}"
+  tags: [chk_sec_02]
+
+- name: Share the key pair behind the floating endpoint
+  when: wireguard_gateway_floating_endpoint | length > 0
+  vars:
+    wireguard_gateway_key_source: "{{ (groups[wireguard_gateway_group] | default([inventory_hostname]))[0] }}"
+  tags: [chk_sec_02]
+  block:
+    - name: Read the first gateway's key
+      ansible.builtin.slurp:
+        src: /etc/wireguard/{{ wireguard_gateway_interface }}.key
+      delegate_to: "{{ wireguard_gateway_key_source }}"
+      run_once: true
+      register: wireguard_gateway_shared_key
+      no_log: true
+
+    - name: Install the shared key on the standby
+      ansible.builtin.copy:
+        content: "{{ wireguard_gateway_shared_key.content | b64decode }}"
+        dest: /etc/wireguard/{{ wireguard_gateway_interface }}.key
+        owner: root
+        group: root
+        mode: "0600"
+      when: inventory_hostname != wireguard_gateway_key_source
+      no_log: true
+      notify: Reload WireGuard peers
+
+- name: Keep the private key readable by root only
+  ansible.builtin.file:
+    path: /etc/wireguard/{{ wireguard_gateway_interface }}.key
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [chk_sec_02]
+
+- name: Derive the gateway public key
+  ansible.builtin.shell: |
+    set -o pipefail
+    wg pubkey < /etc/wireguard/{{ wireguard_gateway_interface }}.key
+  args:
+    executable: /bin/bash
+  register: wireguard_gateway_pubkey
+  changed_when: false
+
+- name: Publish the gateway public key to the other hosts in the play
+  ansible.builtin.set_fact:
+    wireguard_gateway_public_key: "{{ wireguard_gateway_pubkey.stdout | trim }}"

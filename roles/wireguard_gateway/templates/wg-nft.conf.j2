@@ -1,0 +1,47 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Tunnel traffic may reach the mgmt zone only (NET-02, NET-03). Runs next to roles/firewall's
+# table inet compliance; a drop in either table is final.
+{% set iface = wireguard_gateway_interface %}
+{% set v4 = wireguard_gateway_destinations | select('search', '^[0-9.]+(/[0-9]+)?$') | list %}
+{% set v6 = wireguard_gateway_destinations | select('search', ':') | list %}
+table inet wireguard_gateway_{{ iface }}
+delete table inet wireguard_gateway_{{ iface }}
+
+table inet wireguard_gateway_{{ iface }} {
+	set destinations_v4 {
+		type ipv4_addr
+		flags interval
+{% if v4 %}
+		elements = { {{ v4 | join(', ') }} }
+{% endif %}
+	}
+
+	set destinations_v6 {
+		type ipv6_addr
+		flags interval
+{% if v6 %}
+		elements = { {{ v6 | join(', ') }} }
+{% endif %}
+	}
+
+	chain forward {
+		type filter hook forward priority filter - 2; policy accept;
+
+		iifname "{{ iface }}" oifname "{{ iface }}" drop comment "no traffic between VPN peers"
+		iifname "{{ iface }}" ct state established,related accept
+		iifname "{{ iface }}" ct state new ip daddr @destinations_v4 {% if wireguard_gateway_log_connections %}log prefix "wireguard-new: " level info {% endif %}accept
+		iifname "{{ iface }}" ct state new ip6 daddr @destinations_v6 {% if wireguard_gateway_log_connections %}log prefix "wireguard-new: " level info {% endif %}accept
+		iifname "{{ iface }}" limit rate 10/minute log prefix "wireguard-drop: " level info
+		iifname "{{ iface }}" drop comment "only the mgmt zone is reachable through the VPN"
+		oifname "{{ iface }}" ct state established,related accept
+		oifname "{{ iface }}" drop comment "no new connections into the tunnel"
+	}
+{% if wireguard_gateway_nat %}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		iifname "{{ iface }}" oifname != "{{ iface }}" masquerade
+	}
+{% endif %}
+}

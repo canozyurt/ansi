@@ -1,9 +1,9 @@
 ---
 ansible_user: deploy
 
-# Networks allowed to reach management ports: VPN and bastion ranges (NET-02).
-firewall_mgmt_cidrs:
-  - 10.10.0.0/24
+# Networks allowed to reach management ports: VPN and bastion ranges (NET-02). See all/access.yml;
+# the bastion group narrows this to the VPN only.
+firewall_mgmt_cidrs: "{{ access_bastion_cidrs + [access_vpn_cidr] + access_vpn_gateway_cidrs + access_automation_cidrs }}"
 
 # Zone networks (NET-03); service roles use these to restrict east-west traffic.
 network_zones:

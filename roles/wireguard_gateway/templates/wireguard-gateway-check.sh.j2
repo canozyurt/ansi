@@ -1,0 +1,71 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# 1. Removes peers whose expiry date has been reached from the running interface (IAM-04), so access
+#    ends without waiting for the next Ansible run (which also drops them from the config).
+# 2. Writes per-peer Prometheus metrics for the node_exporter textfile collector.
+set -euo pipefail
+
+iface="${1:-{{ wireguard_gateway_interface }}}"
+peers="/etc/wireguard/${iface}-peers.tsv"
+out_dir="{{ wireguard_gateway_metrics_dir }}"
+out="${out_dir}/wireguard_${iface}.prom"
+today="$(date -u +%F)"
+
+declare -A peer_name peer_owner peer_expires
+if [[ -r "$peers" ]]; then
+  while IFS=$'\t' read -r name key expires owner; do
+    [[ -z "${name}" || "${name}" == \#* ]] && continue
+    peer_name["$key"]="$name"
+    peer_owner["$key"]="$owner"
+    peer_expires["$key"]="$expires"
+  done < "$peers"
+fi
+
+up=0
+if wg show "$iface" >/dev/null 2>&1; then
+  up=1
+  for key in $(wg show "$iface" peers); do
+    expires="${peer_expires[$key]:-}"
+    if [[ -z "$expires" ]]; then
+      wg set "$iface" peer "$key" remove
+      logger -t wireguard-gateway "removed unregistered peer ${key}"
+    elif [[ ! "$today" < "$expires" ]]; then
+      wg set "$iface" peer "$key" remove
+      logger -t wireguard-gateway "removed expired peer ${peer_name[$key]} (owner ${peer_owner[$key]}, expired ${expires})"
+    fi
+  done
+fi
+
+tmp="$(mktemp "${out_dir}/.wireguard_${iface}.prom.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+{
+  echo "# HELP wireguard_gateway_up Whether the WireGuard interface exists."
+  echo "# TYPE wireguard_gateway_up gauge"
+  echo "wireguard_gateway_up{interface=\"${iface}\"} ${up}"
+  echo "# HELP wireguard_peer_expiry_timestamp_seconds When the peer's access ends (Unix time)."
+  echo "# TYPE wireguard_peer_expiry_timestamp_seconds gauge"
+  for key in "${!peer_expires[@]}"; do
+    echo "wireguard_peer_expiry_timestamp_seconds{interface=\"${iface}\",peer=\"${peer_name[$key]}\",owner=\"${peer_owner[$key]}\"} $(date -u -d "${peer_expires[$key]}" +%s)"
+  done
+  if [[ "$up" == 1 ]]; then
+    echo "# HELP wireguard_peer_latest_handshake_seconds Unix time of the peer's latest handshake (0 = never)."
+    echo "# TYPE wireguard_peer_latest_handshake_seconds gauge"
+    echo "# HELP wireguard_peer_receive_bytes_total Bytes received from the peer."
+    echo "# TYPE wireguard_peer_receive_bytes_total counter"
+    echo "# HELP wireguard_peer_transmit_bytes_total Bytes sent to the peer."
+    echo "# TYPE wireguard_peer_transmit_bytes_total counter"
+    # The first line of the dump is the interface itself (it holds the private key) and is skipped.
+    wg show "$iface" dump | tail -n +2 | while IFS=$'\t' read -r key _psk _endpoint _ips handshake rx tx _keepalive; do
+      labels="interface=\"${iface}\",peer=\"${peer_name[$key]:-unknown}\",owner=\"${peer_owner[$key]:-unknown}\""
+      echo "wireguard_peer_latest_handshake_seconds{${labels}} ${handshake}"
+      echo "wireguard_peer_receive_bytes_total{${labels}} ${rx}"
+      echo "wireguard_peer_transmit_bytes_total{${labels}} ${tx}"
+    done
+  fi
+  echo "# HELP wireguard_gateway_check_timestamp_seconds When this file was written."
+  echo "# TYPE wireguard_gateway_check_timestamp_seconds gauge"
+  echo "wireguard_gateway_check_timestamp_seconds $(date +%s)"
+} > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out"
+trap - EXIT

@@ -1,0 +1,13 @@
+---
+# VPN gateways forward tunnel traffic into the mgmt zone.
+os_hardening_ip_forward: true
+
+# Clients may connect from anywhere; everything else stays management-only (NET-01, NET-02).
+firewall_rules_wireguard_gateway:
+  - { name: wireguard, port: 51820, proto: udp, sources: [any] }
+
+# Failover: no shared address by default, so each client gets one template per gateway (primary and
+# standby). Set a DNS name or keepalived VIP here to use one endpoint and one shared key pair.
+wireguard_gateway_floating_endpoint: ""
+# Public address of each gateway, if it differs from the inventory name (set in host_vars):
+# wireguard_gateway_public_endpoint: vpn-1.example.com
