@@ -26,3 +26,12 @@
   max_fail_percentage: 0
   roles:
     - role: keycloak
+
+- name: Upgrade the edge one node at a time (the VIP moves to the other node meanwhile)
+  hosts: edge
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: edge
+    - role: keepalived

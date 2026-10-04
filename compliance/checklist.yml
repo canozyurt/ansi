@@ -126,7 +126,7 @@ requirements:
       iso27017: []
     check: "TLS scanner (e.g. testssl.sh) against every endpoint weekly"
     status: designed
-    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint."
+    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested)."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
     controls:
@@ -160,7 +160,7 @@ requirements:
       iso27017: ["CLD.12.4.5"]
     check: "Molecule test of the agent; SIEM shows a recent event per host"
     status: designed
-    progress: "Done: persistent journald, auditd rules, Docker audit rules, Keycloak login and admin events as JSON logs. Remaining: log shipping to central logging."
+    progress: "Done: persistent journald, auditd rules, Docker audit rules, Keycloak login and admin events as JSON logs. Remaining: log shipping to central logging. Edge access and WAF logs are JSON in journald."
   - id: LOG-02
     requirement: "Logs are tamper-evident, access-restricted and kept 12 months (at least 90 days searchable)"
     controls:
@@ -273,7 +273,7 @@ requirements:
       iso27017: ["CLD.13.1.4"]
     check: "Port scan from the internet finds no management ports"
     status: designed
-    progress: "Done: SSH only from firewall_mgmt_cidrs. Remaining: admin UIs and databases as services are added."
+    progress: "Done: SSH only from firewall_mgmt_cidrs. Remaining: admin UIs and databases as services are added. Edge: non-public services (Grafana, OpenBao) and Keycloak admin paths answer only edge_admin_cidrs (tested)."
   - id: NET-03
     requirement: "Management, application and data networks are separated; traffic between them is allowed by explicit rule"
     controls:
@@ -290,7 +290,8 @@ requirements:
       iso27001: ["8.20"]
       iso27017: []
     check: "Header and WAF test against each public URL"
-    status: not_started
+    status: implemented
+    progress: "Edge HAProxy (roles/edge): HTTPS only with redirect, HSTS and security headers with per-service CSP, per-IP and per-service rate limits (429), Coraza WAF with OWASP CRS 4.25 blocking at PL1 with per-service exclusions; asserted in molecule/edge. Remaining: weekly external header/WAF scan of each real public URL."
   - id: BCK-01
     requirement: "Every stateful service has an automated, encrypted backup with an off-site copy"
     controls:
@@ -331,7 +332,7 @@ requirements:
       iso27017: []
     check: "CI test kills a node and asserts the service keeps working"
     status: designed
-    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI."
+    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI. Edge: 2+ nodes, keepalived VRRP moves the VIP when HAProxy or the WAF fails; failover tested. Monitoring: 2+ Prometheus, 3 Alertmanager."
   - id: HA-02
     requirement: "Each service has a DR runbook, and a DR drill runs every year"
     controls:

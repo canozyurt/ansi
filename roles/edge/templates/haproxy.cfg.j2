@@ -1,0 +1,212 @@
+# {{ ansible_managed }}
+{% macro binds(port, extra='') -%}
+{%   for addr in edge_bind_addresses %}
+    bind {{ addr }}:{{ port }}{{ ' v6only' if ':' in addr else '' }}{{ (' ' ~ extra) if extra | length > 0 else '' }}
+{%   endfor %}
+{%- endmacro %}
+{% set waf = edge_waf_enabled | bool %}
+{% set waf_services = edge_services | rejectattr('waf', 'defined') | list
+   + edge_services | selectattr('waf', 'defined') | selectattr('waf') | list %}
+{% set waf_off = edge_services | map(attribute='name') | difference(waf_services | map(attribute='name')) | list %}
+global
+    # Access logs as JSON on stdout; Docker sends them to journald (LOG-01).
+    log stdout format raw local0 info
+    maxconn {{ edge_maxconn }}
+    tune.bufsize {{ edge_bufsize }}
+    stats socket /run/haproxy/admin.sock mode 600 level admin
+    # TLS 1.2+ with forward-secret AEAD ciphers only (SEC-03).
+    ssl-default-bind-ciphers {{ edge_tls_ciphers }}
+    ssl-default-bind-ciphersuites {{ edge_tls_ciphersuites }}
+    ssl-default-bind-options prefer-client-ciphers ssl-min-ver {{ edge_tls_min_version }} no-tls-tickets
+    ssl-default-server-ciphers {{ edge_tls_ciphers }}
+    ssl-default-server-ciphersuites {{ edge_tls_ciphersuites }}
+    ssl-default-server-options ssl-min-ver {{ edge_tls_min_version }} no-tls-tickets
+
+crt-store edge
+    crt-base {{ edge_tls_mount }}
+    key-base {{ edge_tls_mount }}
+{% for cert in edge_certificates %}
+    load crt "{{ cert.name }}/tls.crt" key "{{ cert.name }}/tls.key" alias "{{ cert.name }}"
+{% endfor %}
+
+defaults
+    mode http
+    log global
+    option dontlognull
+    timeout connect {{ edge_timeout_connect }}
+    timeout client {{ edge_timeout_client }}
+    timeout server {{ edge_timeout_server }}
+    timeout http-request {{ edge_timeout_http_request }}
+    timeout http-keep-alive {{ edge_timeout_http_keep_alive }}
+    timeout tunnel {{ edge_timeout_tunnel }}
+    unique-id-format %[uuid()]
+    # Unresolvable backend names start in maintenance instead of failing the whole proxy.
+    default-server init-addr last,libc,none inter 5s fall 3 rise 2
+    log-format "%{+json}o %(timestamp)[accept_date(ms),ms_utime(%Y-%m-%dT%H:%M:%S.%3NZ)] %(request_id)ID %(client_ip)ci %(client_port)cp %(frontend)ft %(backend)b %(server)s %(service)[var(txn.svc)] %(host)[var(txn.host)] %(method)HM %(path)HPO %(http_version)HV %(status)ST %(bytes_sent)B %(request_bytes)U %(time_total_ms)Ta %(time_response_ms)Tr %(termination_state)ts %(tls_version)sslv %(tls_cipher)sslc %(user_agent)[capture.req.hdr(0)] %(waf_action)[var(txn.coraza.action)] %(waf_score)[var(txn.coraza.anomaly_score)] %(waf_rules)[var(txn.coraza.rule_ids)] %(waf_error)[var(txn.coraza.error)]"
+
+# ---------------------------------------------------------------- rate limit tables (NET-04)
+backend st_src
+    stick-table type ipv6 size {{ edge_rate_limit_table_size }} expire 120s store conn_cur,http_req_rate({{ edge_rate_limit_period }})
+{% for svc in edge_services %}
+
+backend st_svc_{{ svc.name }}
+    stick-table type ipv6 size {{ edge_rate_limit_table_size }} expire 120s store http_req_rate({{ edge_rate_limit_period }})
+{% endfor %}
+
+# ---------------------------------------------------------------- HTTP: redirect only
+frontend fe_http
+{{ binds(edge_http_port) }}
+    http-request redirect scheme https code 301
+
+# ---------------------------------------------------------------- HTTPS
+frontend fe_https
+{{ binds(edge_https_port, 'ssl ' ~ (edge_certificates | map(attribute='name') | map('regex_replace', '^(.*)$', 'crt "@edge/\\1"') | join(' ')) ~ ' alpn h2,http/1.1') }}
+    option http-buffer-request
+    option forwardfor
+
+    acl admin_src src {{ edge_admin_cidrs | join(' ') }}
+{% if edge_rate_limit_exempt_cidrs | length > 0 %}
+    acl rl_exempt src {{ edge_rate_limit_exempt_cidrs | join(' ') }}
+{% else %}
+    acl rl_exempt always_false
+{% endif %}
+
+    # Per source IP: concurrent connections and request rate across all services.
+    tcp-request connection track-sc0 src table st_src unless rl_exempt
+    tcp-request connection reject if { sc0_conn_cur gt {{ edge_max_connections_per_ip }} }
+    http-request capture req.hdr(user-agent) len 256
+    http-request deny deny_status 429 if { sc0_http_req_rate gt {{ edge_rate_limit_per_ip }} }
+
+    # Clients may not set the headers the proxy vouches for.
+    http-request del-header ^X-Forwarded-.* -m reg
+    http-request del-header Forwarded
+    http-request del-header X-Real-IP
+
+    # Route by Host (HTTP/2 :authority included).
+    http-request set-var(txn.host) req.hdr(host),host_only,lower
+{% for svc in edge_services %}
+    http-request set-var(txn.svc) str({{ svc.name }}) if { var(txn.host) -m str {{ svc.hostnames | map('lower') | join(' ') }} }
+{% endfor %}
+    http-request deny deny_status 404 unless { var(txn.svc) -m found }
+
+    # Per source IP and service.
+{% for svc in edge_services %}
+    http-request track-sc1 src table st_svc_{{ svc.name }} if { var(txn.svc) -m str {{ svc.name }} } !rl_exempt
+    http-request deny deny_status 429 if { var(txn.svc) -m str {{ svc.name }} } { sc1_http_req_rate gt {{ svc.rate_limit | default(edge_rate_limit_per_service) }} }
+{% endfor %}
+
+    # Admin-only services and admin paths: VPN and bastion networks only (NET-02).
+{% for svc in edge_services %}
+{%   if not (svc.public | default(true) | bool) %}
+    http-request deny deny_status 403 if { var(txn.svc) -m str {{ svc.name }} } !admin_src{% if svc.allowed_cidrs | default([]) | length > 0 %} !{ src {{ svc.allowed_cidrs | join(' ') }} }{% endif %}
+
+{%   endif %}
+{%   if svc.admin_paths | default([]) | length > 0 %}
+    http-request deny deny_status 403 if { var(txn.svc) -m str {{ svc.name }} } { path_beg {{ svc.admin_paths | join(' ') }} } !admin_src
+{%   endif %}
+{% endfor %}
+{% if waf %}
+
+    # WAF: Coraza with the OWASP Core Rule Set (NET-04).
+    filter spoe engine coraza config /usr/local/etc/haproxy/coraza.cfg
+    http-request set-var(txn.coraza.app) var(txn.svc)
+{%   if waf_off | length > 0 %}
+    http-request send-spoe-group coraza coraza-req unless { var(txn.svc) -m str {{ waf_off | join(' ') }} }
+{%   else %}
+    http-request send-spoe-group coraza coraza-req
+{%   endif %}
+    http-request redirect code 302 location %[var(txn.coraza.data)] if { var(txn.coraza.action) -m str redirect }
+    http-request deny deny_status 403 if { var(txn.coraza.action) -m str deny }
+    http-request silent-drop if { var(txn.coraza.action) -m str drop }
+{%   if not (edge_waf_fail_open | bool) %}
+    # Fail closed when the WAF agent cannot be reached.
+    http-request deny deny_status 503 if { var(txn.coraza.error) -m int gt 0 }
+{%   endif %}
+{% endif %}
+
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-Host %[req.hdr(host)]
+    http-request set-header X-Forwarded-Port %[dst_port]
+    http-request set-header X-Request-ID %[unique-id]
+    use_backend be_%[var(txn.svc)]
+
+    # Security headers on every response, including the proxy's own (NET-04).
+    http-after-response set-header Strict-Transport-Security "max-age={{ edge_hsts_max_age }}{{ '; includeSubDomains' if edge_hsts_include_subdomains else '' }}{{ '; preload' if edge_hsts_preload else '' }}"
+    http-after-response set-header X-Content-Type-Options nosniff
+    http-after-response set-header Referrer-Policy "{{ edge_referrer_policy }}"
+    http-after-response set-header Permissions-Policy "{{ edge_permissions_policy }}"
+{% for header in edge_strip_response_headers %}
+    http-after-response del-header {{ header }}
+{% endfor %}
+{% for svc in edge_services %}
+{%   set frame = svc.frame_options if svc.frame_options is defined else edge_frame_options %}
+{%   if frame | length > 0 %}
+    http-after-response set-header X-Frame-Options {{ frame }} if { var(txn.svc) -m str {{ svc.name }} }
+{%   endif %}
+{%   if svc.csp is defined %}
+{%     if svc.csp | length > 0 %}
+    http-after-response set-header Content-Security-Policy "{{ svc.csp | regex_replace('\\s+', ' ') | trim }}" if { var(txn.svc) -m str {{ svc.name }} }
+{%     endif %}
+{%   else %}
+    http-after-response set-header Content-Security-Policy "{{ edge_default_csp | regex_replace('\\s+', ' ') | trim }}" if { var(txn.svc) -m str {{ svc.name }} } !{ res.hdr(content-security-policy) -m found }
+{%   endif %}
+{% endfor %}
+    # Proxy-generated responses (unknown host, 403, 429) get the default policy.
+    http-after-response set-header X-Frame-Options {{ edge_frame_options | default('DENY', true) }} unless { var(txn.svc) -m found }
+    http-after-response set-header Content-Security-Policy "{{ edge_default_csp | regex_replace('\\s+', ' ') | trim }}" unless { var(txn.svc) -m found }
+
+# ---------------------------------------------------------------- services
+{% for svc in edge_services %}
+{%   set hosts = svc.backend_hosts | default(groups[svc.backend_group] | default([])) %}
+{%   set tls = svc.backend_tls | default(true) | bool %}
+backend be_{{ svc.name }}
+    balance leastconn
+    option httpchk
+    http-check send meth GET uri {{ svc.health_path | default('/') }} ver HTTP/1.1 hdr Host {{ svc.hostnames | first }}
+    http-check expect status 200-399
+{%   for host in hosts %}
+{%     set address = hostvars[host].edge_backend_address | default(hostvars[host].ansible_host | default(host)) %}
+{%     if tls and edge_backend_verify_effective == 'required' %}
+    server {{ host }} {{ address }}:{{ svc.backend_port }} check ssl verify required ca-file /usr/local/etc/haproxy/backend-ca.crt verifyhost {{ host }} sni str({{ host }}) check-sni {{ host }}
+{%     elif tls %}
+    # No internal CA available: encrypted but unverified (labs only).
+    server {{ host }} {{ address }}:{{ svc.backend_port }} check ssl verify none
+{%     else %}
+    server {{ host }} {{ address }}:{{ svc.backend_port }} check
+{%     endif %}
+{%   else %}
+    # No hosts in group "{{ svc.backend_group | default('') }}": requests get 503.
+{%   endfor %}
+
+{% endfor %}
+{% if waf %}
+backend be_coraza_spoa
+    mode spop
+    timeout connect 2s
+    timeout server 3m
+    server waf 127.0.0.1:{{ edge_waf_port }} check
+
+backend be_waf_metrics
+    http-request set-path /metrics
+    server waf 127.0.0.1:{{ edge_waf_metrics_port }}
+
+{% endif %}
+# ---------------------------------------------------------------- metrics (LOG-05), monitoring only
+frontend fe_metrics
+{{ binds(edge_metrics_port, 'ssl crt "@edge/default" alpn http/1.1') }}
+    http-request set-log-level silent
+    http-request deny deny_status 403 unless { src {{ (edge_metrics_allowed_cidrs + ['127.0.0.1', '::1']) | join(' ') }} }
+    http-request use-service prometheus-exporter if { path /metrics }
+    http-request deny deny_status 404 unless { path /waf-metrics }
+{% if waf %}
+    use_backend be_waf_metrics
+{% endif %}
+
+# ---------------------------------------------------------------- local health check (keepalived)
+frontend fe_health
+    bind 127.0.0.1:{{ edge_health_port }}
+    monitor-uri {{ edge_health_path }}
+{% if waf and not (edge_waf_fail_open | bool) %}
+    monitor fail if { nbsrv(be_coraza_spoa) lt 1 }
+{% endif %}
+    http-request set-log-level silent

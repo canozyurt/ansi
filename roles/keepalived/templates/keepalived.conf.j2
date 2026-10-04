@@ -1,0 +1,53 @@
+# {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname_short }}
+    enable_script_security
+    script_user {{ keepalived_script_user }}
+    # Refresh the neighbours' ARP caches while holding the VIP.
+    vrrp_garp_master_refresh 60
+}
+
+vrrp_script chk_edge {
+    script "/usr/local/libexec/keepalived/check_edge"
+    interval {{ keepalived_check_interval }}
+    timeout 3
+    fall {{ keepalived_check_fall }}
+    rise {{ keepalived_check_rise }}
+}
+{% for inst in keepalived_instances %}
+{%   set order = [inst.preferred] + (keepalived_peers | reject('equalto', inst.preferred) | list) %}
+
+vrrp_instance {{ inst.name }} {
+    state BACKUP
+    interface {{ inst.interface | default(keepalived_interface) }}
+    virtual_router_id {{ inst.virtual_router_id }}
+    priority {{ 200 - 10 * order.index(inventory_hostname) }}
+    advert_int {{ keepalived_advert_int }}
+    preempt_delay {{ keepalived_preempt_delay }}
+    unicast_src_ip {{ keepalived_address }}
+    unicast_peer {
+{%   for peer in keepalived_peers | reject('equalto', inventory_hostname) | list %}
+{%     set pv = hostvars[peer] %}
+{%     set piface = pv.keepalived_interface | default(pv.ansible_facts.default_ipv4.interface | default('eth0')) %}
+        {{ pv.keepalived_address | default(pv.ansible_facts[piface].ipv4.address | default(pv.ansible_facts.default_ipv4.address)) }}
+{%   endfor %}
+    }
+    # Accept adverts only from the peers listed above.
+    check_unicast_src
+{%   if keepalived_auth_pass | length > 0 %}
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_auth_pass[:8] }}
+    }
+{%   endif %}
+    virtual_ipaddress {
+{%   for vip in inst.vips %}
+        {{ vip }} dev {{ inst.interface | default(keepalived_interface) }}
+{%   endfor %}
+    }
+    track_script {
+        chk_edge
+    }
+    notify "/usr/local/libexec/keepalived/notify_state" root
+}
+{% endfor %}

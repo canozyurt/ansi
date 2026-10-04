@@ -1,0 +1,13 @@
+---
+# Derived values; set the variables in defaults/main.yml instead.
+edge_waf_uid: 65532
+edge_tls_mount: /etc/haproxy-tls
+# One certificate per service (its hostnames) plus the default certificate.
+edge_certificates: >-
+  {{ [{'name': 'default', 'hostnames': [edge_default_hostname],
+       'tls_cert_file': edge_default_tls_cert_file, 'tls_key_file': edge_default_tls_key_file}]
+     + edge_services }}
+edge_backend_verify_effective: >-
+  {{ 'required' if edge_backend_verify == 'required'
+     or (edge_backend_verify == 'auto' and edge_backend_ca_file | length > 0) else 'none' }}
+edge_waf_effective_image: "{{ edge_waf_build_image if edge_waf_build | bool else edge_waf_image }}"

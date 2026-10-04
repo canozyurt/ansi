@@ -1,0 +1,7 @@
+---
+- name: Deploy the edge proxy, WAF and VIP failover
+  hosts: edge
+  become: true
+  roles:
+    - role: edge
+    - role: keepalived

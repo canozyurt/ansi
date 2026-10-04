@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: edge
+  author: compliant-infra-ansible contributors
+  description: HAProxy edge proxy with TLS, security headers, rate limits and the Coraza WAF (OWASP CRS)
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

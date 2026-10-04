@@ -1,0 +1,18 @@
+---
+# One certificate per service, covering all of its hostnames (SEC-03).
+- name: Get the certificate for {{ edge_cert.name }}
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "edge-{{ edge_cert.name }}"
+    tls_cert_dir: "{{ edge_data_dir }}/tls/{{ edge_cert.name }}"
+    tls_cert_owner: "{{ edge_haproxy_uid }}"
+    tls_cert_common_name: "{{ edge_cert.hostnames | first }}"
+    tls_cert_alt_names: "{{ edge_cert.hostnames[1:] }}"
+    tls_cert_src_cert: "{{ edge_cert.tls_cert_file | default('') }}"
+    tls_cert_src_key: "{{ edge_cert.tls_key_file | default('') }}"
+  tags: [chk_sec_03]
+
+- name: Remember that a certificate changed
+  ansible.builtin.set_fact:
+    edge_tls_changed: "{{ (edge_tls_changed | default(false) | bool) or (tls_cert_changed | bool) }}"

@@ -61,16 +61,17 @@ table inet compliance {
 		# Declared service ports (NET-01)
 {% for rule in firewall_all_rules %}
 {%   set proto = rule.proto | default('tcp') %}
+{%   set match = (proto ~ ' dport ' ~ rule.port) if proto in ['tcp', 'udp'] else ('meta l4proto ' ~ {'vrrp': 112}[proto]) %}
 {%   if 'any' in rule.sources %}
-		{{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+		{{ match }} accept comment "{{ rule.name }}"
 {%   else %}
 {%     set r4 = rule.sources | select('search', '^[0-9.]+(/[0-9]+)?$') | list %}
 {%     set r6 = rule.sources | select('search', ':') | list %}
 {%     if r4 %}
-		ip saddr { {{ r4 | join(', ') }} } {{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+		ip saddr { {{ r4 | join(', ') }} } {{ match }} accept comment "{{ rule.name }}"
 {%     endif %}
 {%     if r6 %}
-		ip6 saddr { {{ r6 | join(', ') }} } {{ proto }} dport {{ rule.port }} accept comment "{{ rule.name }}"
+		ip6 saddr { {{ r6 | join(', ') }} } {{ match }} accept comment "{{ rule.name }}"
 {%     endif %}
 {%   endif %}
 {% endfor %}

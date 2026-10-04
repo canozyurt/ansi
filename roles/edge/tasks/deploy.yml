@@ -1,0 +1,160 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Let the non-root proxy bind the edge ports without capabilities
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_unprivileged_port_start
+    value: "{{ edge_unprivileged_port_start }}"
+    sysctl_file: /etc/sysctl.d/60-edge-ports.conf
+    sysctl_set: true
+    state: present
+  when: edge_manage_unprivileged_port_start | bool
+  tags: [chk_hrd_02]
+
+- name: Create the edge directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ edge_data_dir }}", mode: "0755" }
+    - { path: "{{ edge_data_dir }}/haproxy", group: "{{ edge_haproxy_uid }}", mode: "0750" }
+    - { path: "{{ edge_data_dir }}/tls", mode: "0755" }
+    - { path: "{{ edge_data_dir }}/waf", group: "{{ edge_waf_uid }}", mode: "0750" }
+    - { path: "{{ edge_data_dir }}/build", mode: "0700" }
+
+- name: Get the TLS certificates (supplied files, internal PKI, or temporary self-signed)
+  ansible.builtin.include_tasks: cert.yml
+  loop: "{{ edge_certificates }}"
+  loop_control:
+    loop_var: edge_cert
+    label: "{{ edge_cert.name }}"
+
+- name: Note whether a certificate changed
+  ansible.builtin.debug:
+    msg: A TLS certificate changed; HAProxy reloads to load it.
+  changed_when: edge_tls_changed | default(false) | bool
+  notify: Reload haproxy
+
+- name: Require the internal CA when backend verification is required
+  ansible.builtin.assert:
+    that: edge_backend_verify != 'required' or edge_backend_ca_file | length > 0
+    fail_msg: edge_backend_verify is required but edge_backend_ca_file is empty.
+    quiet: true
+  tags: [chk_sec_03]
+
+- name: Install the CA that signs backend certificates
+  ansible.builtin.copy:
+    src: "{{ edge_backend_ca_file }}"
+    dest: "{{ edge_data_dir }}/haproxy/backend-ca.crt"
+    remote_src: true
+    owner: root
+    group: "{{ edge_haproxy_uid }}"
+    mode: "0640"
+  when: edge_backend_verify_effective == 'required'
+  notify: Reload haproxy
+  tags: [chk_sec_03]
+
+- name: Get the WAF agent image
+  ansible.builtin.import_tasks: waf_image.yml
+  when: edge_waf_enabled | bool
+
+- name: Write the WAF configuration (rule set, mode and per-service exclusions)
+  ansible.builtin.template:
+    src: coraza-spoa.yaml.j2
+    dest: "{{ edge_data_dir }}/waf/coraza-spoa.yaml"
+    owner: root
+    group: "{{ edge_waf_uid }}"
+    mode: "0640"
+  notify: Restart edge waf
+  tags: [chk_net_04]
+
+- name: Write the HAProxy SPOE configuration for the WAF
+  ansible.builtin.template:
+    src: coraza.cfg.j2
+    dest: "{{ edge_data_dir }}/haproxy/coraza.cfg"
+    owner: root
+    group: "{{ edge_haproxy_uid }}"
+    mode: "0640"
+  notify: Reload haproxy
+  tags: [chk_net_04]
+
+- name: Write the HAProxy configuration (TLS, routing, headers, rate limits, access rules)
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ edge_data_dir }}/haproxy/haproxy.cfg"
+    owner: root
+    group: "{{ edge_haproxy_uid }}"
+    mode: "0640"
+    validate: >-
+      docker run --rm --network none --user 0
+      --volume {{ edge_data_dir }}/haproxy:/usr/local/etc/haproxy:ro
+      --volume {{ edge_data_dir }}/tls:{{ edge_tls_mount }}:ro
+      --volume %s:/check/haproxy.cfg:ro
+      {{ edge_haproxy_image }} haproxy -c -q -f /check/haproxy.cfg
+  notify: Reload haproxy
+  tags: [chk_net_04, chk_net_02, chk_sec_03, chk_log_01]
+
+- name: Run the WAF agent
+  community.docker.docker_container:
+    name: "{{ edge_waf_container_name }}"
+    image: "{{ edge_waf_effective_image }}"
+    entrypoint: [/coraza-spoa]
+    command:
+      - -config=/etc/coraza-spoa/coraza-spoa.yaml
+      - -metrics-addr=127.0.0.1:{{ edge_waf_metrics_port }}
+    user: "{{ edge_waf_uid }}:{{ edge_waf_uid }}"
+    network_mode: host
+    volumes:
+      - "{{ edge_data_dir }}/waf:/etc/coraza-spoa:ro"
+    # Coraza checks that it can write temporary files at start.
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid={{ edge_waf_uid }}
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ edge_waf_memory_limit }}"
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: edge
+    state: started
+  register: edge_waf_container
+  when: edge_waf_enabled | bool
+  tags: [chk_hrd_02, chk_net_04]
+
+- name: Remove the WAF agent when the WAF is disabled
+  community.docker.docker_container:
+    name: "{{ edge_waf_container_name }}"
+    state: absent
+  when: not edge_waf_enabled | bool
+
+- name: Run HAProxy
+  community.docker.docker_container:
+    name: "{{ edge_haproxy_container_name }}"
+    image: "{{ edge_haproxy_image }}"
+    user: "{{ edge_haproxy_uid }}:{{ edge_haproxy_uid }}"
+    network_mode: host
+    volumes:
+      - "{{ edge_data_dir }}/haproxy:/usr/local/etc/haproxy:ro"
+      - "{{ edge_data_dir }}/tls:{{ edge_tls_mount }}:ro"
+    # Runtime API socket for operators (docker exec); never exposed on the network.
+    tmpfs:
+      - /run/haproxy:size=1m,mode=0700,uid={{ edge_haproxy_uid }}
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ edge_memory_limit }}"
+    pids_limit: 1024
+    ulimits: "{{ ['nofile:' ~ edge_ulimit_nofile ~ ':' ~ edge_ulimit_nofile] if edge_ulimit_nofile | int > 0 else omit }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: edge
+    state: started
+  register: edge_haproxy_container
+  tags: [chk_hrd_02, chk_net_04, chk_log_01]

@@ -5,8 +5,8 @@ firewall_ssh_port: 22
 
 # Declared inbound ports (NET-01). Each rule:
 #   name:    free text, shown in the generated config
-#   port:    number or "start-end"
-#   proto:   tcp | udp (default tcp)
+#   port:    number or "start-end" (tcp and udp only)
+#   proto:   tcp | udp | vrrp (default tcp; vrrp is IP protocol 112 and takes no port)
 #   sources: list of CIDRs, or ["any"] for public services
 # Roles add their own rules through variables named firewall_rules_<role> (collected automatically).
 firewall_rules: []

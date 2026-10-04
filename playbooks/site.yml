@@ -14,3 +14,6 @@
 
 - name: Deploy monitoring and alerting
   ansible.builtin.import_playbook: monitoring.yml
+
+- name: Deploy the edge proxy, WAF and VIP failover
+  ansible.builtin.import_playbook: edge.yml

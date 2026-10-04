@@ -1,0 +1,35 @@
+{# Coraza SPOA configuration: one application per service so modes and exclusions stay per service. #}
+{% macro directives(svc) -%}
+Include @coraza.conf-recommended
+Include @crs-setup.conf.example
+SecAction "id:900000,phase:1,pass,t:none,nolog,setvar:tx.blocking_paranoia_level={{ svc.waf_paranoia_level | default(edge_waf_paranoia_level) }}"
+SecAction "id:900110,phase:1,pass,t:none,nolog,setvar:tx.inbound_anomaly_score_threshold={{ edge_waf_inbound_anomaly_threshold }},setvar:tx.outbound_anomaly_score_threshold={{ edge_waf_outbound_anomaly_threshold }}"
+{% for line in edge_waf_extra_directives + svc.waf_exclusions | default([]) %}
+{{ line | regex_replace('\s*\n\s*', ' ') | trim }}
+{% endfor %}
+Include @owasp_crs/*.conf
+{% for rule_id in svc.waf_remove_rule_ids | default([]) %}
+SecRuleRemoveById {{ rule_id }}
+{% endfor %}
+SecRuleEngine {{ 'On' if svc.waf_mode | default(edge_waf_mode) == 'blocking' else 'DetectionOnly' }}
+{%- endmacro %}
+{% set apps = [] %}
+{% for svc in [{'name': 'default'}] + edge_services %}
+{%   if svc.waf | default(true) | bool %}
+{%     set _ = apps.append({
+         'name': svc.name,
+         'directives': directives(svc) ~ '\n',
+         'response_check': false,
+         'transaction_ttl_ms': 60000,
+         'log_level': 'info',
+         'log_file': '/dev/stdout',
+         'log_format': 'json'}) %}
+{%   endif %}
+{% endfor %}
+# {{ ansible_managed }}
+{{ {'bind': '127.0.0.1:' ~ edge_waf_port,
+    'log_level': 'info',
+    'log_file': '/dev/stdout',
+    'log_format': 'json',
+    'default_application': 'default',
+    'applications': apps} | to_nice_yaml(indent=2, width=4096) }}

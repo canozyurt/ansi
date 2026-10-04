@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# HAProxy SPOE configuration: sends each request to the Coraza agent (NET-04).
+[coraza]
+spoe-agent coraza-agent
+    groups      coraza-req
+    option      var-prefix      coraza
+    option      set-on-error    error
+    timeout     hello           2s
+    timeout     idle            2m
+    timeout     processing      {{ edge_waf_processing_timeout }}
+    use-backend be_coraza_spoa
+    log         global
+
+spoe-message coraza-req
+    # Argument order is fixed by coraza-spoa.
+    args app=var(txn.coraza.app) src-ip=src src-port=src_port dst-ip=dst dst-port=dst_port method=method path=path query=query version=req.ver headers=req.hdrs body=req.body exportRuleIDs=bool(true)
+
+spoe-group coraza-req
+    messages coraza-req

@@ -20,6 +20,12 @@ versions_images:
   alertmanager: docker.io/prom/alertmanager:v0.34.1
   blackbox_exporter: docker.io/prom/blackbox-exporter:v0.28.0
   grafana: docker.io/grafana/grafana:13.2.3
+  # Edge proxy (roles/edge): HAProxy LTS branch.
+  haproxy: docker.io/library/haproxy:3.4.6-alpine
+  # WAF agent: Coraza SPOA with the embedded OWASP CRS (0.9.0 ships CRS 4.25.0). Upstream image.
+  coraza_spoa: ghcr.io/corazawaf/coraza-spoa:0.9.0
+  # Toolchain for edge_waf_build (builds the same coraza-spoa version from the Go module proxy).
+  coraza_spoa_builder: docker.io/library/golang:1.26.8-alpine
 
 # What the previous release of this repository deployed. CI installs these first
 # and upgrades to versions_images, so every release proves its upgrade path.

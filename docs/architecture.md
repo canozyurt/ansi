@@ -99,6 +99,30 @@ or backups inside their retention period, and no approving one's own change.
   Prometheus TSDB and Alertmanager silences are not backed up (replicated across replicas/members; metrics
   older than retention are not evidence).
 
+## Edge proxy and WAF (HAProxy, Coraza)
+
+- HAProxy 3.4 LTS runs as a container with host networking on the `edge` group (2 nodes minimum);
+  keepalived (distribution package) moves one or more VIPs between them over unicast VRRP and
+  tracks HAProxy's local health endpoint, which also fails when the WAF agent is down.
+- The container runs as uid 99 with no capabilities and a read-only root; the role lowers
+  `net.ipv4.ip_unprivileged_port_start` to 80 on edge hosts instead of granting CAP_NET_BIND_SERVICE.
+- TLS 1.2+ (Mozilla intermediate ciphers) with one certificate per service from `tls_cert`
+  (organisation-supplied files, the internal PKI, or self-signed in labs); HTTP only redirects.
+  Backends are re-encrypted and verified against the internal CA when one is configured.
+- Services come from `edge_services` (`name, hostnames, backend_group, backend_port, backend_tls,
+  health_path, public`); servers are generated from the inventory group. Keycloak (sso) is public
+  with its admin console and master realm limited to `edge_admin_cidrs`; Grafana and OpenBao are
+  admin-only.
+- Every response gets HSTS, nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy and a
+  conservative CSP when the backend sends none (services may override or keep their own).
+- Stick tables limit connections and requests per source IP and per source IP per service (429).
+- Coraza SPOA (Apache-2.0) with the OWASP CRS embedded in the pinned release inspects each request
+  through SPOE; blocking at paranoia level 1 by default, detection-only per service or globally,
+  per-service exclusions in SecLang. If the agent is unreachable requests fail closed (503).
+- Access logs are JSON on stdout (journald) with request ID, service, status, TLS version and the
+  WAF verdict and rule IDs; Coraza logs every rule match as JSON. Metrics: HAProxy and Coraza on
+  8405 over TLS, monitoring networks only; VRRP state through the node_exporter textfile collector.
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

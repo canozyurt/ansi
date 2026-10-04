@@ -19,9 +19,9 @@
   ansible.builtin.assert:
     that:
       - item.name is defined
-      - item.port is defined
+      - item.port is defined or item.proto | default('tcp') not in ['tcp', 'udp']
       - item.sources is defined and item.sources | length > 0
-      - item.proto | default('tcp') in ['tcp', 'udp']
+      - item.proto | default('tcp') in ['tcp', 'udp', 'vrrp']
     fail_msg: "Invalid firewall rule: {{ item }}"
     quiet: true
   loop: "{{ firewall_all_rules }}"

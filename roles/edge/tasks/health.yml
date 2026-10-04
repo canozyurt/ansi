@@ -1,0 +1,10 @@
+---
+- name: Wait until HAProxy reports healthy (WAF agent reachable when enabled)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ edge_health_port }}{{ edge_health_path }}"
+    status_code: 200
+  register: edge_ready
+  until: edge_ready.status == 200
+  retries: 30
+  delay: 2
+  tags: [chk_log_05, chk_ha_01]

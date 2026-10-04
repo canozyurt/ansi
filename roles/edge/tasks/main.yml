@@ -1,0 +1,57 @@
+---
+- name: Require a highly available edge (HA-01)
+  ansible.builtin.assert:
+    that: edge_cluster_hosts | length >= edge_min_nodes or edge_allow_single_node | bool
+    fail_msg: >-
+      The edge needs at least {{ edge_min_nodes }} nodes sharing a VIP (found {{ edge_cluster_hosts | length }}).
+      Set edge_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Require admin networks for admin-only services (NET-02)
+  ansible.builtin.assert:
+    that:
+      - edge_admin_cidrs | length > 0
+      - "'0.0.0.0/0' not in edge_admin_cidrs"
+      - "'::/0' not in edge_admin_cidrs"
+      - edge_metrics_allowed_cidrs | length > 0
+    fail_msg: >-
+      Set edge_admin_cidrs (VPN/bastion ranges, defaults to firewall_mgmt_cidrs) and
+      edge_metrics_allowed_cidrs; neither may be open to everyone.
+    quiet: true
+  tags: [chk_net_02]
+
+- name: Check the service definitions
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and item.name is match('^[a-z0-9_-]+$')
+      - item.hostnames is defined and item.hostnames | length > 0
+      - item.backend_port is defined
+      - item.backend_group is defined or item.backend_hosts is defined
+      - item.waf_mode | default(edge_waf_mode) in ['blocking', 'detection']
+    fail_msg: "Invalid edge service: {{ item }}"
+    quiet: true
+  loop: "{{ edge_services }}"
+  loop_control:
+    label: "{{ item.name | default(item) }}"
+
+- name: Check the service names are unique
+  ansible.builtin.assert:
+    that: edge_services | map(attribute='name') | unique | length == edge_services | length
+    fail_msg: Service names in edge_services must be unique.
+    quiet: true
+
+- name: Check the WAF settings
+  ansible.builtin.assert:
+    that:
+      - edge_waf_mode in ['blocking', 'detection']
+      - edge_waf_paranoia_level | int in [1, 2, 3, 4]
+      - edge_backend_verify in ['auto', 'required', 'none']
+    fail_msg: edge_waf_mode must be blocking or detection, paranoia 1-4, edge_backend_verify auto/required/none.
+    quiet: true
+
+- name: Deploy the edge proxy and WAF
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

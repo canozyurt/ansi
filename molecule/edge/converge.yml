@@ -1,0 +1,171 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,172.31.250.0/24"
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    converge_ca_dir: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/test-ca"
+  pre_tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+              Environment="NO_PROXY=127.0.0.1,localhost"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+    # Building the WAF image needs ~1.5 GB per node on the vfs storage driver. When
+    # MOLECULE_EDGE_WAF_IMAGE_TAR points at a saved image (built from roles/edge/files/
+    # coraza-spoa.Dockerfile on the host), load it so the role finds the image and skips the build.
+    - name: Preload a prebuilt WAF agent image
+      when: converge_waf_tar | length > 0
+      vars:
+        converge_waf_tar: "{{ lookup('ansible.builtin.env', 'MOLECULE_EDGE_WAF_IMAGE_TAR') }}"
+      block:
+        - name: Copy the saved image
+          ansible.builtin.copy:
+            src: "{{ converge_waf_tar }}"
+            dest: /root/coraza-spoa.tar
+            mode: "0600"
+
+        - name: Check whether the image is loaded
+          community.docker.docker_image_info:
+            name: "localhost/coraza-spoa:{{ versions_images.coraza_spoa.split(':') | last }}"
+          register: converge_waf_image
+
+        - name: Load the saved image
+          community.docker.docker_image_load:
+            path: /root/coraza-spoa.tar
+          when: converge_waf_image.images | length == 0
+
+    - name: Apply the firewall (declared edge, VRRP and test backend rules)
+      ansible.builtin.include_role:
+        name: firewall
+
+    # A throwaway CA stands in for the internal PKI so backend TLS is verified.
+    - name: Create the test CA on the controller
+      delegate_to: localhost
+      become: false
+      run_once: true
+      block:
+        - name: Create the CA directory
+          ansible.builtin.file:
+            path: "{{ converge_ca_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Generate the CA key
+          community.crypto.openssl_privatekey:
+            path: "{{ converge_ca_dir }}/ca.key"
+            type: ECC
+            curve: secp256r1
+
+        - name: Generate the CA signing request
+          community.crypto.openssl_csr_pipe:
+            privatekey_path: "{{ converge_ca_dir }}/ca.key"
+            common_name: Molecule test CA
+            basic_constraints: ["CA:TRUE"]
+            basic_constraints_critical: true
+            key_usage: [keyCertSign, cRLSign]
+            key_usage_critical: true
+          register: converge_ca_csr
+          changed_when: false
+
+        - name: Self-sign the CA
+          community.crypto.x509_certificate:
+            path: "{{ converge_ca_dir }}/ca.crt"
+            csr_content: "{{ converge_ca_csr.csr }}"
+            privatekey_path: "{{ converge_ca_dir }}/ca.key"
+            provider: selfsigned
+
+    - name: Generate the backend key on the controller
+      community.crypto.openssl_privatekey:
+        path: "{{ converge_ca_dir }}/{{ inventory_hostname }}.key"
+        type: ECC
+        curve: secp256r1
+      delegate_to: localhost
+      become: false
+
+    - name: Generate the backend signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ converge_ca_dir }}/{{ inventory_hostname }}.key"
+        common_name: "{{ inventory_hostname }}"
+        subject_alt_name: ["DNS:{{ inventory_hostname }}"]
+      register: converge_backend_csr
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Sign the backend certificate with the test CA
+      community.crypto.x509_certificate:
+        path: "{{ converge_ca_dir }}/{{ inventory_hostname }}.crt"
+        csr_content: "{{ converge_backend_csr.csr }}"
+        provider: ownca
+        ownca_path: "{{ converge_ca_dir }}/ca.crt"
+        ownca_privatekey_path: "{{ converge_ca_dir }}/ca.key"
+      delegate_to: localhost
+      become: false
+
+    - name: Create the backend certificate directory
+      ansible.builtin.file:
+        path: /etc/molecule-ca
+        state: directory
+        mode: "0755"
+
+    - name: Copy the CA and the backend certificate
+      ansible.builtin.copy:
+        src: "{{ converge_ca_dir }}/{{ item.src }}"
+        dest: "/etc/molecule-ca/{{ item.dest }}"
+        owner: "65532"
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: ca.crt, dest: ca.crt, mode: "0644" }
+        - { src: "{{ inventory_hostname }}.crt", dest: backend.crt, mode: "0644" }
+        - { src: "{{ inventory_hostname }}.key", dest: backend.key, mode: "0600" }
+
+    - name: Run the test backends (whoami over TLS on 8443 and plain HTTP on 8080)
+      community.docker.docker_container:
+        name: "whoami-{{ item.port }}"
+        image: docker.io/traefik/whoami:v1.12.0
+        command: "{{ ['--port', item.port | string, '--name', inventory_hostname] + item.args }}"
+        network_mode: host
+        user: "65532:65532"
+        volumes: ["/etc/molecule-ca:/certs:ro"]
+        read_only: true
+        cap_drop: [ALL]
+        security_opts: [no-new-privileges:true]
+        state: started
+      loop:
+        - { port: 8443, args: [--cert, /certs/backend.crt, --key, /certs/backend.key] }
+        - { port: 8080, args: [] }
+      loop_control:
+        label: "{{ item.port }}"
+
+  roles:
+    - role: edge
+    - role: keepalived

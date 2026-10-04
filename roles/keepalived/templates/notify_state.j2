@@ -1,0 +1,22 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# keepalived notify script: records the VRRP state for node_exporter (keepalived_vrrp_state).
+# Arguments: TYPE NAME STATE PRIORITY
+set -eu
+name="$2"
+state="$3"
+dir={{ keepalived_textfile_dir | quote }}
+file="$dir/keepalived_${name}.prom"
+tmp="$(mktemp "$dir/.keepalived_${name}.XXXXXX")"
+{
+  echo "# HELP keepalived_vrrp_state VRRP state of this node per instance (1 = current state)."
+  echo "# TYPE keepalived_vrrp_state gauge"
+  for s in MASTER BACKUP FAULT STOP; do
+    v=0
+    [ "$s" = "$state" ] && v=1
+    echo "keepalived_vrrp_state{instance=\"$name\",state=\"$s\"} $v"
+  done
+} > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$file"
+logger -t keepalived-notify "instance $name is now $state"

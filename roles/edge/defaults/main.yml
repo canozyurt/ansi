@@ -1,0 +1,184 @@
+---
+# Edge reverse proxy: HAProxy (TLS termination, routing, security headers, rate limits) with the
+# Coraza WAF (OWASP Core Rule Set) as an SPOE agent. Pair it with roles/keepalived for the VIP.
+edge_haproxy_image: "{{ versions_images.haproxy }}"
+edge_haproxy_container_name: edge-haproxy
+edge_waf_container_name: edge-waf
+
+# High availability (HA-01): at least two edge nodes share the VIP through keepalived (VRRP).
+# A single node is allowed only for labs and tests.
+edge_min_nodes: 2
+edge_allow_single_node: false
+edge_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+edge_data_dir: /opt/edge
+# The official image runs as the haproxy user (uid/gid 99); TLS keys are owned by it.
+edge_haproxy_uid: 99
+edge_memory_limit: 1g
+edge_waf_memory_limit: 1g
+
+# Listeners. The container runs as a non-root user with no capabilities, so the role lowers
+# net.ipv4.ip_unprivileged_port_start on edge hosts to the lowest edge port instead of granting
+# CAP_NET_BIND_SERVICE (non-root containers cannot use added capabilities without ambient caps).
+edge_bind_addresses: ["0.0.0.0", "::"]
+edge_http_port: 80
+edge_https_port: 443
+edge_manage_unprivileged_port_start: true
+edge_unprivileged_port_start: "{{ [edge_http_port, edge_https_port] | min }}"
+
+# --------------------------------------------------------------------------- TLS (SEC-03)
+# Every service gets a certificate from roles/tls_cert covering its hostnames: organisation-supplied
+# files (set tls_cert_file / tls_key_file on the service, e.g. a public certificate), otherwise the
+# internal PKI (pki_openbao_addr), otherwise a temporary self-signed certificate (labs only).
+# The default certificate answers clients without SNI and serves the metrics listener.
+edge_default_hostname: "{{ inventory_hostname }}"
+edge_default_tls_cert_file: ""
+edge_default_tls_key_file: ""
+# Mozilla "intermediate" profile: TLS 1.2 with forward-secret AEAD suites, and TLS 1.3.
+edge_tls_min_version: TLSv1.2
+edge_tls_ciphers: >-
+  ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+edge_tls_ciphersuites: TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+
+# TLS to backends: verify against the internal CA when one is available (auto), always (required),
+# or never (none; labs only). The CA file is copied from the host.
+edge_backend_verify: auto
+edge_backend_ca_file: >-
+  {{ (pki_openbao_ca_file | default('', true))
+     or ('/usr/local/share/ca-certificates/compliant-infra-ca.crt' if (pki_openbao_addr | default('')) | length > 0 else '') }}
+
+# --------------------------------------------------------------------------- headers (NET-04)
+edge_hsts_max_age: 31536000
+edge_hsts_include_subdomains: true
+edge_hsts_preload: false
+edge_referrer_policy: strict-origin-when-cross-origin
+edge_frame_options: DENY
+# Applied when the backend sends no Content-Security-Policy; a service's "csp" always replaces it.
+edge_default_csp: >-
+  default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+edge_permissions_policy: "camera=(), microphone=(), geolocation=(), payment=()"
+# Response headers that reveal software versions.
+edge_strip_response_headers: [Server, X-Powered-By, X-AspNet-Version]
+
+# --------------------------------------------------------------------------- rate limits (NET-04)
+# Requests per source IP over edge_rate_limit_period across all services, and per source IP per
+# service (a service's "rate_limit" overrides the per-service default). Excess requests get 429.
+edge_rate_limit_period: 10s
+edge_rate_limit_per_ip: 200
+edge_rate_limit_per_service: 100
+edge_rate_limit_table_size: 1m
+# Never rate limited (e.g. synthetic monitoring); empty by default.
+edge_rate_limit_exempt_cidrs: []
+edge_max_connections_per_ip: 100
+
+# --------------------------------------------------------------------------- access (NET-02)
+# Services with public: false, and every service's admin_paths, are reachable only from these
+# networks (VPN and bastion ranges).
+edge_admin_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+
+# --------------------------------------------------------------------------- routing
+# One entry per service:
+#   name:           short identifier [a-z0-9_-]
+#   hostnames:      list of host names routed to the service (first one is the certificate CN)
+#   backend_group:  inventory group whose hosts serve it
+#   backend_port:   port on those hosts
+#   backend_tls:    true (default) re-encrypts to the backend, verified per edge_backend_verify
+#   health_path:    HTTP health check path (default /)
+#   public:         false limits the whole service to edge_admin_cidrs
+# Optional: admin_paths (path prefixes limited to edge_admin_cidrs), allowed_cidrs (extra sources for
+# a non-public service), csp (replaces any CSP; "" keeps the backend's), frame_options, rate_limit,
+# waf (false skips the WAF), waf_mode (blocking | detection), waf_exclusions (SecLang lines, rule IDs
+# 100000-189999), tls_cert_file / tls_key_file (organisation-supplied certificate on the host),
+# backend_hosts (explicit host list instead of the group).
+edge_services: "{{ edge_default_services + edge_extra_services }}"
+edge_extra_services: []
+edge_default_services:
+  - name: sso
+    hostnames: ["{{ (keycloak_hostname | default('https://sso.example.internal')) | urlsplit('hostname') }}"]
+    backend_group: keycloak
+    backend_port: "{{ keycloak_https_port | default(8443) }}"
+    backend_tls: true
+    health_path: /realms/master
+    public: true
+    # The master realm and the admin console are for administrators only.
+    admin_paths: [/admin, /realms/master]
+    # Keycloak sends its own CSP and X-Frame-Options (set in the realm); keep them.
+    csp: ""
+    frame_options: ""
+    waf_exclusions:
+      # Passwords legitimately contain characters the SQLi/XSS rules match.
+      - >-
+        SecRule REQUEST_FILENAME "@rx /login-actions/(authenticate|required-action|reset-credentials)$"
+        "id:100100,phase:1,pass,nolog,ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:password,ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:password-new,ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:password-confirm"
+  - name: grafana
+    hostnames: [grafana.example.internal]
+    backend_group: monitoring
+    backend_port: 3000
+    backend_tls: true
+    health_path: /api/health
+    public: false
+    # Grafana's front end needs inline styles and eval.
+    csp: >-
+      default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+      img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none';
+      base-uri 'self'; frame-ancestors 'none'
+  - name: openbao
+    hostnames: ["{{ openbao_hostname | default('bao.example.internal') }}"]
+    backend_group: openbao
+    backend_port: "{{ openbao_api_port | default(8200) }}"
+    backend_tls: true
+    # Unsealed active and standby nodes answer 200; sealed or uninitialised nodes are taken out.
+    health_path: /v1/sys/health?standbyok=true
+    public: false
+    # The API carries PEM blocks and policy paths that trip CRS rules; it is admin-only and
+    # authenticated, so the WAF logs instead of blocking. Tune exclusions, then switch to blocking.
+    waf_mode: detection
+
+# --------------------------------------------------------------------------- WAF (NET-04)
+# Coraza SPOA with the OWASP Core Rule Set embedded in the pinned release.
+edge_waf_enabled: true
+edge_waf_image: "{{ versions_images.coraza_spoa }}"
+# blocking: CRS anomaly scoring denies with 403. detection: rules match and log only.
+edge_waf_mode: blocking
+edge_waf_paranoia_level: 1
+edge_waf_inbound_anomaly_threshold: 5
+edge_waf_outbound_anomaly_threshold: 4
+# Directives added to every service (after CRS setup, before the rules); exclusions go per service.
+edge_waf_extra_directives: []
+# When the WAF agent is unreachable: false denies with 503 (fail closed), true lets traffic through.
+edge_waf_fail_open: false
+edge_waf_port: 9101
+edge_waf_metrics_port: 9102
+edge_waf_processing_timeout: 500ms
+# Request bodies are buffered and inspected up to HAProxy's buffer size (edge_bufsize, 16 kB);
+# larger bodies are inspected only in part.
+edge_bufsize: 16384
+edge_maxconn: 10000
+# Open file limit for HAProxy (2 per connection plus listeners); 0 keeps the daemon default.
+edge_ulimit_nofile: 65536
+# Build the agent image locally from the pinned Go module instead of pulling edge_waf_image
+# (for registries you cannot reach). The builder toolchain image is removed afterwards.
+edge_waf_build: false
+edge_waf_build_image: "localhost/coraza-spoa:{{ edge_waf_image.split(':') | last }}"
+edge_waf_builder_image: "{{ versions_images.coraza_spoa_builder }}"
+edge_waf_build_module_version: "v{{ edge_waf_image.split(':') | last }}"
+# Build arguments (e.g. HTTPS_PROXY) and an extra CA bundle for TLS-intercepting proxies.
+edge_waf_build_args: {}
+edge_waf_build_ca_file: ""
+edge_waf_build_cleanup: true
+
+# --------------------------------------------------------------------------- monitoring (LOG-05)
+# Prometheus metrics over TLS: HAProxy's exporter at /metrics, the WAF at /waf-metrics.
+edge_metrics_port: 8405
+edge_metrics_allowed_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+# Local health endpoint for keepalived's track script.
+edge_health_port: 8406
+edge_health_path: /healthz
+
+# --------------------------------------------------------------------------- timeouts
+edge_timeout_connect: 5s
+edge_timeout_client: 60s
+edge_timeout_server: 60s
+edge_timeout_http_request: 10s
+edge_timeout_http_keep_alive: 10s
+edge_timeout_tunnel: 1h

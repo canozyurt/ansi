@@ -1,0 +1,30 @@
+---
+# Edge proxy (roles/edge) and VIP failover (roles/keepalived).
+# Public names and the VIP clients resolve them to; DNS points every service hostname at the VIP.
+keepalived_vips:
+  - 10.20.0.100/24
+
+# Organisation-supplied public certificates per service (files on the edge hosts), e.g.:
+# edge_extra_services:
+#   - name: app
+#     hostnames: [app.example.com]
+#     backend_group: app
+#     backend_port: 8443
+#     health_path: /healthz
+#     public: true
+#     tls_cert_file: /etc/ssl/edge/app.example.com.crt
+#     tls_key_file: /etc/ssl/edge/app.example.com.key
+
+# Admin-only services (grafana, openbao) and admin paths: VPN and bastion ranges (NET-02).
+edge_admin_cidrs: "{{ firewall_mgmt_cidrs }}"
+# Prometheus scrapes 8405 from the monitoring hosts in the mgmt zone.
+edge_metrics_allowed_cidrs: ["{{ network_zones.mgmt }}"]
+
+# 80/443 open to everyone; metrics to monitoring only; VRRP only within the edge segment (NET-01, NET-03).
+# keepalived additionally accepts adverts only from its configured peers (check_unicast_src).
+firewall_rules_edge:
+  - { name: edge-http, port: 80, sources: [any] }
+  - { name: edge-https, port: 443, sources: [any] }
+  - { name: edge-metrics, port: 8405, sources: "{{ edge_metrics_allowed_cidrs }}" }
+firewall_rules_keepalived:
+  - { name: edge-vrrp, proto: vrrp, sources: ["{{ network_zones.app }}"] }

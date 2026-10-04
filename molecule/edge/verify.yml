@@ -1,0 +1,297 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+# Requests from edge-1 come from a non-admin address; edge-2 (172.31.250.12) is the admin network.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_vip: 172.31.250.100
+    verify_curl: curl --noproxy '*' --silent --show-error --insecure --max-time 10
+  tasks:
+    - name: Inspect the edge containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      register: verify_containers
+      loop: [edge-haproxy, edge-waf]
+      tags: [chk_hrd_02]
+
+    - name: The containers run as non-root, read-only, with no capabilities and no privilege escalation
+      ansible.builtin.assert:
+        that:
+          - item.container.State.Running
+          - item.container.Config.User is match('^[1-9][0-9]*:')
+          - "'ALL' in item.container.HostConfig.CapDrop"
+          - item.container.HostConfig.CapAdd is none or item.container.HostConfig.CapAdd | length == 0
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - item.container.HostConfig.ReadonlyRootfs
+          - not item.container.HostConfig.Privileged
+      loop: "{{ verify_containers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_hrd_02]
+
+    - name: Request plain HTTP
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code} %{redirect_url}'
+        --resolve app.test.internal:80:127.0.0.1 http://app.test.internal/some/path
+      register: verify_http
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: Plain HTTP redirects to HTTPS
+      ansible.builtin.assert:
+        that: verify_http.stdout == '301 https://app.test.internal/some/path'
+        fail_msg: "{{ verify_http.stdout }}"
+      tags: [chk_sec_03]
+
+    - name: Request the app over HTTPS
+      ansible.builtin.command: >-
+        {{ verify_curl }} --dump-header - --resolve app.test.internal:443:127.0.0.1
+        https://app.test.internal/
+      register: verify_https
+      changed_when: false
+      tags: [chk_sec_03, chk_net_04]
+
+    - name: HTTPS reaches the backend over verified TLS and carries the security headers
+      vars:
+        verify_headers: "{{ verify_https.stdout | lower }}"
+      ansible.builtin.assert:
+        that:
+          - verify_https.stdout_lines[0] is search(' 200')
+          - "'hostname: edge-' in verify_headers"
+          - "'x-forwarded-proto: https' in verify_headers"
+          - "'strict-transport-security: max-age=31536000; includesubdomains' in verify_headers"
+          - "'x-content-type-options: nosniff' in verify_headers"
+          - "'x-frame-options: deny' in verify_headers"
+          - "'referrer-policy: strict-origin-when-cross-origin' in verify_headers"
+          - "'content-security-policy: default-src ' in verify_headers"
+          - "\"frame-ancestors 'none'\" in verify_headers"
+          - "'permissions-policy: ' in verify_headers"
+        fail_msg: "{{ verify_https.stdout }}"
+      tags: [chk_sec_03, chk_net_04]
+
+    - name: Try TLS 1.1 (client allows it explicitly)
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:443 -servername app.test.internal -tls1_1 -cipher DEFAULT:@SECLEVEL=0
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Try a non-forward-secret TLS 1.2 cipher
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:443 -servername app.test.internal -tls1_2 -cipher AES128-SHA
+      register: verify_weak
+      changed_when: false
+      failed_when: verify_weak.rc == 0
+      tags: [chk_sec_03]
+
+    - name: TLS 1.2 with a modern cipher works
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:443 -servername app.test.internal -tls1_2
+      register: verify_tls12
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: Send attack payloads and a benign request to the app
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve app.test.internal:443:127.0.0.1 --get --data-urlencode {{ item.query | quote }}
+        https://app.test.internal/search
+      register: verify_waf
+      changed_when: false
+      loop:
+        - { name: xss, query: "q=<script>alert(1)</script>", expect: "403" }
+        - { name: sqli, query: "id=1' OR '1'='1", expect: "403" }
+        - { name: path traversal, query: "file=../../../../etc/passwd", expect: "403" }
+        - { name: benign, query: "q=hello world", expect: "200" }
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [chk_net_04]
+
+    - name: The WAF blocks attacks with 403 and lets normal requests through
+      ansible.builtin.assert:
+        that: item.stdout == item.item.expect
+        fail_msg: "{{ item.item.name }}: got {{ item.stdout }}, expected {{ item.item.expect }}"
+      loop: "{{ verify_waf.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      tags: [chk_net_04]
+
+    - name: Send the XSS payload where the service excludes the argument
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve app.test.internal:443:127.0.0.1
+        'https://app.test.internal/search?allowed=yes&q=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
+      register: verify_waf_excluded
+      changed_when: false
+      tags: [chk_net_04]
+
+    - name: Per-service WAF exclusions apply
+      ansible.builtin.assert:
+        that: verify_waf_excluded.stdout == '200'
+        fail_msg: "got {{ verify_waf_excluded.stdout }}"
+      tags: [chk_net_04]
+
+    - name: Send twelve quick requests to the rate-limited service (limit 5 per 10s)
+      ansible.builtin.shell: >-
+        for i in $(seq 1 12); do
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}\n'
+        --resolve limited.test.internal:443:127.0.0.1 https://limited.test.internal/; done
+      register: verify_rate
+      changed_when: false
+      tags: [chk_net_04]
+
+    - name: Requests over the limit get 429
+      ansible.builtin.assert:
+        that:
+          - verify_rate.stdout_lines[0] == '200'
+          - "'429' in verify_rate.stdout_lines"
+          - verify_rate.stdout_lines[-1] == '429'
+        fail_msg: "{{ verify_rate.stdout_lines }}"
+      tags: [chk_net_04]
+
+    - name: Request the admin-only service from each node's own address
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve admin.test.internal:443:172.31.250.11 https://admin.test.internal/
+      register: verify_admin
+      changed_when: false
+      tags: [chk_net_02]
+
+    - name: The admin-only service refuses non-admin sources and serves the admin network
+      ansible.builtin.assert:
+        that: verify_admin.stdout == ('200' if inventory_hostname == 'edge-2' else '403')
+        fail_msg: "{{ inventory_hostname }} got {{ verify_admin.stdout }}"
+      tags: [chk_net_02]
+
+    - name: Request an unknown host name
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve other.test.internal:443:127.0.0.1 https://other.test.internal/
+      register: verify_unknown
+      changed_when: false
+      tags: [chk_net_04]
+
+    - name: Unknown host names are not routed
+      ansible.builtin.assert:
+        that: verify_unknown.stdout == '404'
+      tags: [chk_net_04]
+
+    - name: Read the metrics endpoints
+      ansible.builtin.command: "{{ verify_curl }} --fail https://127.0.0.1:8405/{{ item }}"
+      register: verify_metrics
+      changed_when: false
+      loop: [metrics, waf-metrics]
+      tags: [chk_log_05]
+
+    - name: HAProxy and WAF metrics are served over TLS
+      ansible.builtin.assert:
+        that:
+          - "'haproxy_process_uptime_seconds' in verify_metrics.results[0].stdout"
+          - "'haproxy_backend_active_servers{proxy=\"be_app\"} 2' in verify_metrics.results[0].stdout"
+          - "'coraza_requests_total' in verify_metrics.results[1].stdout"
+      tags: [chk_log_05]
+
+    - name: Read the proxy and WAF logs
+      ansible.builtin.command: docker logs --since 30m {{ item }}
+      register: verify_logs
+      changed_when: false
+      loop: [edge-haproxy, edge-waf]
+      tags: [chk_log_01]
+
+    - name: Access logs are JSON with service, status and WAF verdict; the WAF logs matches as JSON
+      vars:
+        verify_access: >-
+          {{ verify_logs.results[0].stdout_lines | select('match', '^\{') | map('from_json')
+             | selectattr('service', 'equalto', 'app') | list }}
+      ansible.builtin.assert:
+        that:
+          - verify_access | length > 0
+          - verify_access | selectattr('waf_action', 'equalto', 'deny') | list | length > 0
+          - verify_access | selectattr('status', 'equalto', 403) | list | length > 0
+          - verify_logs.results[1].stdout_lines | select('search', '"rule_id":9') | list | length > 0
+      tags: [chk_log_01]
+
+    - name: Read the addresses of both nodes
+      ansible.builtin.command: ip -o -4 addr show dev eth0
+      register: verify_addr
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: Exactly one node, the preferred edge-1, holds the VIP
+      ansible.builtin.assert:
+        that:
+          - (verify_vip ~ '/') in hostvars['edge-1'].verify_addr.stdout
+          - (verify_vip ~ '/') not in hostvars['edge-2'].verify_addr.stdout
+      run_once: true
+      tags: [chk_ha_01]
+
+    - name: Request the app through the VIP
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve app.test.internal:443:{{ verify_vip }} https://app.test.internal/
+      register: verify_via_vip
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: The VIP serves traffic
+      ansible.builtin.assert:
+        that: verify_via_vip.stdout == '200'
+      tags: [chk_ha_01]
+
+    - name: Stop HAProxy on edge-1 (simulated failure)
+      ansible.builtin.command: docker stop edge-haproxy
+      changed_when: true
+      when: inventory_hostname == 'edge-1'
+      tags: [chk_ha_01]
+
+    - name: Wait for the VIP to move to edge-2
+      ansible.builtin.command: ip -o -4 addr show dev eth0
+      register: verify_failover
+      changed_when: false
+      until: (verify_vip ~ '/') in verify_failover.stdout
+      retries: 20
+      delay: 1
+      when: inventory_hostname == 'edge-2'
+      tags: [chk_ha_01]
+
+    - name: Request the app through the VIP during the failure
+      ansible.builtin.command: >-
+        {{ verify_curl }} --output /dev/null --write-out '%{http_code}'
+        --resolve app.test.internal:443:{{ verify_vip }} https://app.test.internal/
+      register: verify_failover_http
+      changed_when: false
+      when: inventory_hostname == 'edge-1'
+      tags: [chk_ha_01]
+
+    - name: The VIP keeps serving after the failover
+      ansible.builtin.assert:
+        that: verify_failover_http.stdout == '200'
+      when: inventory_hostname == 'edge-1'
+      tags: [chk_ha_01]
+
+    - name: Start HAProxy on edge-1 again
+      ansible.builtin.command: docker start edge-haproxy
+      changed_when: true
+      when: inventory_hostname == 'edge-1'
+      tags: [chk_ha_01]
+
+    - name: Wait for edge-1 to take the VIP back after the preempt delay
+      ansible.builtin.command: ip -o -4 addr show dev eth0
+      register: verify_failback
+      changed_when: false
+      until: (verify_vip ~ '/') in verify_failback.stdout
+      retries: 30
+      delay: 2
+      when: inventory_hostname == 'edge-1'
+      tags: [chk_ha_01]
+
+    - name: Wait for the VRRP state metric to report MASTER on edge-1 and BACKUP on edge-2
+      ansible.builtin.command: cat /var/lib/node_exporter/textfile_collector/keepalived_edge.prom
+      register: verify_vrrp_metric
+      changed_when: false
+      until: >-
+        ('keepalived_vrrp_state{instance="edge",state="' ~ ('MASTER' if inventory_hostname == 'edge-1' else 'BACKUP')
+        ~ '"} 1') in verify_vrrp_metric.stdout
+      retries: 10
+      delay: 2
+      tags: [chk_ha_01, chk_log_05]

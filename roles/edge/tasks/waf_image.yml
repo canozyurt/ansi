@@ -1,0 +1,71 @@
+---
+- name: Pull the WAF agent image
+  community.docker.docker_image:
+    name: "{{ edge_waf_image }}"
+    source: pull
+  when: not edge_waf_build | bool
+  tags: [chk_chg_05]
+
+- name: Build the WAF agent image from the pinned Go module
+  when: edge_waf_build | bool
+  tags: [chk_chg_05]
+  block:
+    - name: Check whether the image already exists
+      community.docker.docker_image_info:
+        name: "{{ edge_waf_build_image }}"
+      register: edge_waf_built
+
+    - name: Write the build recipe
+      ansible.builtin.copy:
+        src: coraza-spoa.Dockerfile
+        dest: "{{ edge_data_dir }}/build/Dockerfile"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Add the extra CA bundle for the build
+      ansible.builtin.copy:
+        src: "{{ edge_waf_build_ca_file }}"
+        dest: "{{ edge_data_dir }}/build/extra-ca.crt"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: edge_waf_build_ca_file | length > 0
+
+    - name: Leave the extra CA bundle empty
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ edge_data_dir }}/build/extra-ca.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      when: edge_waf_build_ca_file | length == 0
+
+    - name: Build the image (Go module checksums are verified against sum.golang.org)
+      community.docker.docker_image:
+        name: "{{ edge_waf_build_image.rsplit(':', 1) | first }}"
+        tag: "{{ edge_waf_build_image.rsplit(':', 1) | last }}"
+        source: build
+        build:
+          path: "{{ edge_data_dir }}/build"
+          network: host
+          pull: false
+          rm: true
+          args: "{{ edge_waf_build_args | combine({'BUILDER_IMAGE': edge_waf_builder_image,
+                    'CORAZA_SPOA_VERSION': edge_waf_build_module_version}) }}"
+      when: edge_waf_built.images | length == 0
+
+    - name: Remove the build toolchain from the edge host
+      community.docker.docker_image:
+        name: "{{ edge_waf_builder_image }}"
+        state: absent
+      when: edge_waf_build_cleanup | bool
+
+    - name: Remove dangling build stages
+      community.docker.docker_prune:
+        images: true
+        images_filters:
+          dangling: true
+          label: com.compliant-infra.build=coraza-spoa
+      when: edge_waf_build_cleanup | bool

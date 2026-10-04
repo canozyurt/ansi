@@ -1,0 +1,4 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# keepalived track script: healthy when HAProxy's local health endpoint answers 200.
+exec /usr/bin/curl --silent --fail --max-time 2 --noproxy '*' --output /dev/null {{ keepalived_check_url | quote }}

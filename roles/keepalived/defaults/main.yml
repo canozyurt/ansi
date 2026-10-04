@@ -1,0 +1,42 @@
+---
+# VRRP failover of the edge VIPs (HA-01). Installed from the distribution package: keepalived
+# manipulates host interfaces, and the distribution ships security updates through
+# unattended-upgrades (version follows the OS release).
+keepalived_package: keepalived
+
+# Nodes that share the VIPs; at least two.
+keepalived_min_nodes: 2
+keepalived_allow_single_node: false
+keepalived_peers: "{{ ansible_play_hosts_all }}"
+
+# Interface and address VRRP uses on each node (override per host when needed).
+keepalived_interface: "{{ ansible_facts.default_ipv4.interface | default('eth0') }}"
+keepalived_address: "{{ ansible_facts[keepalived_interface].ipv4.address | default(ansible_facts.default_ipv4.address) }}"
+
+# VIPs as CIDR strings ("10.20.0.100/24"). They form one VRRP instance unless
+# keepalived_instances is set.
+keepalived_vips: []
+keepalived_virtual_router_id: 51
+keepalived_instances:
+  - name: edge
+    virtual_router_id: "{{ keepalived_virtual_router_id }}"
+    vips: "{{ keepalived_vips }}"
+    # Preferred holder; the other nodes take over in inventory order.
+    preferred: "{{ keepalived_peers | first }}"
+
+keepalived_advert_int: 1
+# Seconds a recovered higher-priority node waits before taking the VIP back.
+keepalived_preempt_delay: 30
+# Optional VRRPv2 password (sent in clear; the real protection is unicast with check_unicast_src
+# and the firewall allowing VRRP only between edge nodes). Store it in the vault when used.
+keepalived_auth_pass: ""
+
+# Health check: the VIP moves away when HAProxy's local health endpoint fails (fall checks in a row).
+keepalived_check_url: "http://127.0.0.1:{{ edge_health_port | default(8406) }}{{ edge_health_path | default('/healthz') }}"
+keepalived_check_interval: 2
+keepalived_check_fall: 2
+keepalived_check_rise: 2
+keepalived_script_user: keepalived_script
+
+# State metric for node_exporter's textfile collector (LOG-05).
+keepalived_textfile_dir: /var/lib/node_exporter/textfile_collector

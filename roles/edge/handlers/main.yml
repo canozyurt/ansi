@@ -1,0 +1,35 @@
+---
+# HAProxy reloads gracefully (master-worker): existing connections finish on the old worker.
+- name: Reload haproxy
+  ansible.builtin.command: docker kill --signal USR2 {{ edge_haproxy_container_name }}
+  changed_when: true
+  when: not (edge_haproxy_container.changed | default(false))
+
+- name: Restart edge waf
+  community.docker.docker_container:
+    name: "{{ edge_waf_container_name }}"
+    state: started
+    restart: true
+    image: "{{ edge_waf_effective_image }}"
+    entrypoint: [/coraza-spoa]
+    command:
+      - -config=/etc/coraza-spoa/coraza-spoa.yaml
+      - -metrics-addr=127.0.0.1:{{ edge_waf_metrics_port }}
+    user: "{{ edge_waf_uid }}:{{ edge_waf_uid }}"
+    network_mode: host
+    volumes:
+      - "{{ edge_data_dir }}/waf:/etc/coraza-spoa:ro"
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid={{ edge_waf_uid }}
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ edge_waf_memory_limit }}"
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: edge
+  throttle: 1  # one node at a time keeps the VIP holder serving
+  when:
+    - edge_waf_enabled | bool
+    - not (edge_waf_container.changed | default(false))

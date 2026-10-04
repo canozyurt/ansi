@@ -1,0 +1,6 @@
+---
+- name: Reload keepalived
+  ansible.builtin.service:
+    name: keepalived
+    state: reloaded
+  throttle: 1  # one node at a time
