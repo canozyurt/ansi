@@ -1,0 +1,11 @@
+---
+- name: Wait until the status page is healthy
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ status_page_port }}/health"
+    validate_certs: false
+    status_code: 200
+  register: status_page_ready
+  until: status_page_ready.status == 200
+  retries: 30
+  delay: 2
+  tags: [chk_log_05]

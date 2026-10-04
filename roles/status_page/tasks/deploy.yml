@@ -1,0 +1,87 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create status page directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ status_page_container_uid }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ status_page_data_dir }}", mode: "0750" }
+    - { path: "{{ status_page_data_dir }}/config", mode: "0750" }
+    # Results history (SQLite); per node, not backed up.
+    - { path: "{{ status_page_data_dir }}/data", owner: "{{ status_page_container_uid }}", mode: "0750" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: status_page
+    tls_cert_dir: "{{ status_page_data_dir }}/tls"
+    tls_cert_owner: "{{ status_page_container_uid }}"
+    tls_cert_common_name: "{{ status_page_hostname | urlsplit('hostname') }}"
+    tls_cert_alt_names: ["{{ inventory_hostname }}"]
+    tls_cert_src_cert: "{{ status_page_tls_cert_file }}"
+    tls_cert_src_key: "{{ status_page_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart the status page when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Gatus restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart status page
+
+- name: Write the status page secrets (SMTP password, webhook token)
+  ansible.builtin.template:
+    src: status_page.env.j2
+    dest: "{{ status_page_data_dir }}/status_page.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart status page
+  tags: [chk_sec_02]
+
+- name: Write the Gatus configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ status_page_data_dir }}/config/config.yaml"
+    owner: root
+    group: "{{ status_page_container_uid }}"
+    mode: "0640"
+  notify: Restart status page
+  tags: [chk_log_05, chk_sec_05, chk_inc_01]
+
+- name: Run the status page container
+  community.docker.docker_container:
+    name: "{{ status_page_container_name }}"
+    image: "{{ status_page_image }}"
+    network_mode: host
+    user: "{{ status_page_container_uid }}:{{ status_page_container_uid }}"
+    env:
+      GATUS_CONFIG_PATH: /config/config.yaml
+      GATUS_LOG_LEVEL: INFO
+    env_file: "{{ status_page_data_dir }}/status_page.env"
+    volumes:
+      - "{{ status_page_data_dir }}/config:/config:ro"
+      - "{{ status_page_data_dir }}/tls:/tls:ro"
+      - "{{ status_page_data_dir }}/data:/data"
+      # The host trust store holds the internal CA, so checks verify internal certificates too.
+      # (Directory mount: update-ca-certificates replaces the bundle file.)
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ status_page_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: status_page
+    state: started
+  register: status_page_container
+  tags: [chk_hrd_02, chk_log_05]

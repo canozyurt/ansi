@@ -1,0 +1,11 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Consistent dump of the GRC database (pg_dump runs in one transaction), written atomically for the
+# backup (BCK-01). Credentials come from a 0600 env file, never from the command line.
+set -euo pipefail
+umask 077
+dir={{ grc_backup_dir | quote }}
+tmp="$dir/grc.dump.tmp"
+docker run --rm --network=host --env-file={{ (grc_data_dir ~ '/pg.env') | quote }} \
+  {{ grc_postgres_client_image | quote }} pg_dump --format=custom --no-owner --no-privileges > "$tmp"
+mv -f "$tmp" "$dir/grc.dump"

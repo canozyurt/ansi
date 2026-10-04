@@ -1,0 +1,6 @@
+---
+# A plain restart keeps the container's settings (configuration and certificate are mounted files).
+- name: Restart grc proxy
+  ansible.builtin.command: docker restart {{ grc_proxy_container_name }}
+  changed_when: true
+  when: not (grc_proxy_container.changed | default(false))

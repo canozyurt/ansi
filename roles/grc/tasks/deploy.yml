@@ -1,0 +1,108 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create GRC directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ grc_data_dir }}", mode: "0755" }
+    - { path: "{{ grc_data_dir }}/proxy", group: "{{ grc_proxy_uid }}", mode: "0750" }
+    # Attachments (evidence files), the task queue and the generated keys; backed up.
+    - { path: "{{ grc_data_dir }}/data", owner: "{{ grc_backend_uid }}", group: "{{ grc_backend_uid }}", mode: "0750" }
+    - { path: "{{ grc_backup_dir }}", mode: "0700" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: grc
+    tls_cert_dir: "{{ grc_data_dir }}/tls"
+    tls_cert_owner: "{{ grc_proxy_uid }}"
+    tls_cert_common_name: "{{ grc_hostname | urlsplit('hostname') }}"
+    tls_cert_alt_names: ["{{ inventory_hostname }}"]
+    tls_cert_src_cert: "{{ grc_tls_cert_file }}"
+    tls_cert_src_key: "{{ grc_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart the TLS terminator when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; the GRC proxy restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart grc proxy
+
+- name: Write the database client settings for dumps (contains secrets)
+  ansible.builtin.template:
+    src: pg.env.j2
+    dest: "{{ grc_data_dir }}/pg.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  tags: [chk_sec_02, chk_bck_01]
+
+- name: Install the database dump command
+  ansible.builtin.template:
+    src: grc-db-dump.j2
+    dest: /usr/local/sbin/grc-db-dump
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [chk_bck_01]
+
+- name: Declare the backup (database dump and attachments)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: grc
+    backup_register_paths: ["{{ grc_backup_dir }}", "{{ grc_data_dir }}/data"]
+    backup_register_pre_command: /usr/local/sbin/grc-db-dump
+    backup_register_verify_command: >-
+      docker run --rm --network=none --volume="$RESTORE_DIR{{ grc_backup_dir }}:/dump:ro"
+      {{ grc_postgres_client_image }} pg_restore --list /dump/grc.dump > /dev/null
+    backup_register_rpo_hours: "{{ grc_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ grc_backup_rto_hours }}"
+  tags: [chk_bck_01, chk_bck_04]
+
+- name: Write the TLS terminator configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ grc_data_dir }}/proxy/haproxy.cfg"
+    owner: root
+    group: "{{ grc_proxy_uid }}"
+    mode: "0640"
+    validate: >-
+      docker run --rm --network=none --user=0:0 --volume=%s:/haproxy.cfg:ro
+      --volume={{ grc_data_dir }}/tls:/tls:ro {{ grc_proxy_image }} haproxy -c -f /haproxy.cfg
+  notify: Restart grc proxy
+  tags: [chk_sec_03, chk_log_05]
+
+- name: Run the TLS terminator
+  community.docker.docker_container:
+    name: "{{ grc_proxy_container_name }}"
+    image: "{{ grc_proxy_image }}"
+    user: "{{ grc_proxy_uid }}:{{ grc_proxy_uid }}"
+    network_mode: host
+    volumes:
+      - "{{ grc_data_dir }}/proxy:/usr/local/etc/haproxy:ro"
+      - "{{ grc_data_dir }}/tls:/tls:ro"
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ grc_proxy_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: grc
+    state: started
+  register: grc_proxy_container
+  tags: [chk_hrd_02, chk_sec_03]
+
+- name: Deploy the application containers
+  ansible.builtin.import_tasks: app.yml

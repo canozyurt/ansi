@@ -1,0 +1,30 @@
+---
+# The edge proxy and the status page read the same catalog (edge_services). edge_services is a
+# default of roles/edge, so it is not visible here unless the inventory sets it; then the edge
+# role's defaults file is read into a private namespace (no precedence side effects).
+- name: Read the edge service catalog defaults
+  ansible.builtin.include_vars:
+    file: "{{ status_page_edge_defaults_file }}"
+    name: status_page_edge_role_defaults
+  when:
+    - edge_services is not defined
+    - status_page_edge_defaults_file is file
+
+- name: Select the public services of the catalog
+  ansible.builtin.set_fact:
+    status_page_catalog: >-
+      {{ status_page_catalog_services
+         | selectattr('public', 'defined') | selectattr('public')
+         | rejectattr('name', 'in', status_page_exclude_services) | list }}
+  vars:
+    status_page_catalog_services: >-
+      {{ edge_services if edge_services is defined
+         else ((status_page_edge_role_defaults | default({})).edge_default_services | default([]))
+              + (edge_extra_services | default([])) }}
+  tags: [chk_log_05]
+
+- name: Report the checked endpoints
+  ansible.builtin.debug:
+    msg: >-
+      catalog: {{ status_page_catalog | map(attribute='name') | list }},
+      extra: {{ status_page_extra_endpoints | map(attribute='name') | list }}

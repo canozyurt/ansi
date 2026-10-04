@@ -1,0 +1,122 @@
+---
+# Compliance evidence and GRC: CISO Assistant Community Edition (AGPL-3.0; images under
+# ghcr.io/intuitem/ciso-assistant-community/, which upstream licenses as AGPL-3.0). SSO (OIDC and
+# SAML), IdP group sync, MFA, audit log and the framework libraries are in the community code.
+grc_backend_image: "{{ versions_images.ciso_assistant_backend }}"
+grc_frontend_image: "{{ versions_images.ciso_assistant_frontend }}"
+# Node-local TLS terminator (the backend and frontend speak plain HTTP): the HAProxy image the edge uses.
+grc_proxy_image: "{{ versions_images.haproxy }}"
+grc_postgres_client_image: "{{ versions_images.postgres_client }}"
+
+grc_backend_container_name: grc-backend
+grc_worker_container_name: grc-worker
+grc_frontend_container_name: grc-frontend
+grc_proxy_container_name: grc-proxy
+
+# Public URL users reach (through the edge proxy, admin networks only).
+grc_hostname: "https://grc.example.internal"
+
+# Availability: documented exception to HA-01. CISO Assistant keeps attachments and its task queue
+# (Huey, SQLite) on local disk and runs database migrations and scheduled jobs at start on every
+# instance, so two instances cannot run active/active against one database. GRC is an internal tool
+# whose loss does not affect service availability (A1); it is restored from backup within
+# grc_backup_rto_hours. Exactly one node runs it.
+grc_min_nodes: 1
+grc_max_nodes: 1
+grc_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+grc_data_dir: /opt/grc
+# Upstream images: backend and worker run as 1001, the frontend as 1000, HAProxy as 99.
+grc_backend_uid: 1001
+grc_frontend_uid: 1000
+grc_proxy_uid: 99
+
+grc_https_port: 8443
+# Plain HTTP between the TLS terminator and the app on this host only. The frontend binds to
+# 127.0.0.1; the backend's gunicorn binds every address (fixed upstream), so the host firewall
+# (default deny, only grc_https_port declared) keeps it local.
+grc_backend_port: 8000
+grc_frontend_port: 3000
+# Networks that may reach grc_https_port: the edge proxy and management networks.
+grc_allowed_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+# Networks that may read /metrics/ through the TLS terminator (Prometheus).
+grc_metrics_allowed_cidrs: "{{ monitoring_source_cidrs | default(firewall_mgmt_cidrs | default([])) }}"
+
+grc_tls_cert_file: ""
+grc_tls_key_file: ""
+grc_tls_min_version: TLSv1.2
+grc_tls_ciphers: >-
+  ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+grc_tls_ciphersuites: TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+
+# PostgreSQL (data layer; one database and user for GRC, DAT-01). Password from Vault or OpenBao.
+grc_db_host: ""
+grc_db_port: 5432
+grc_db_name: grc
+grc_db_user: grc
+grc_db_password: ""
+grc_db_sslmode: require
+
+# Django secret key (50+ random characters) from Vault or OpenBao.
+grc_secret_key: ""
+# Break-glass superuser (local login kept when SSO is forced). Store the password sealed.
+grc_admin_email: ""
+grc_admin_password: ""
+
+# Audit log kept in the application for 12 months (EVD-02, LOG-02); also shipped via the container log.
+grc_auditlog_retention_days: 365
+grc_log_level: INFO
+grc_metrics_enabled: true
+grc_backend_workers: 3
+
+# Outgoing email (notifications, password resets for the break-glass account). Optional.
+grc_email_host: ""
+grc_email_port: 587
+grc_email_user: ""
+grc_email_password: ""
+grc_email_from: ""
+
+grc_backend_memory_limit: 2g
+grc_worker_memory_limit: 1g
+grc_frontend_memory_limit: 1g
+grc_proxy_memory_limit: 256m
+
+# ---------------------------------------------------------------- identity (IAM-01, IAM-09)
+# OIDC through Keycloak: users are created at first login (JIT) and their "roles" claim becomes IdP
+# groups, each granting CISO Assistant user groups below. Force SSO disables local passwords for
+# everyone except the break-glass superuser.
+grc_oidc_enabled: "{{ oidc_clients_enabled | default(true) }}"
+grc_oidc_client_id: grc
+grc_oidc_client_secret: ""
+grc_oidc_provider_id: keycloak
+grc_oidc_provider_name: Keycloak
+grc_oidc_issuer: >-
+  {{ (keycloak_hostname | default('https://sso.example.internal')) ~ '/realms/' ~ (keycloak_realm | default('org')) }}
+grc_force_sso: true
+# Default role -> CISO Assistant built-in user groups (rbac_model capability "evidence"):
+# security-admin administers, platform-admin/operator/auditor read; developer and member get nothing.
+grc_role_user_groups:
+  security-admin: [BI-UG-ADM]
+  platform-admin: [BI-UG-GAD]
+  operator: [BI-UG-GAD]
+  auditor: [BI-UG-GAD]
+
+# ---------------------------------------------------------------- seeding through the API
+grc_seed: true
+# Framework libraries shipped with CISO Assistant. ISO/IEC 27017 is not among them (see docs/grc.md).
+grc_seed_libraries:
+  - urn:intuitem:risk:library:soc2-2017
+  - urn:intuitem:risk:library:iso27001-2022
+
+# Deploy the CISO Assistant containers. Only the Molecule lab sets false, where the image registry is
+# unreachable; everything else (database dump, backup declaration, TLS terminator) still runs.
+grc_app_deploy: true
+
+# ---------------------------------------------------------------- backup (BCK-01, BCK-04)
+grc_backup_dir: /var/backups/grc
+grc_backup_rpo_hours: 24
+grc_backup_rto_hours: 8
+
+# Upgrades (CHG-07): a version change runs only with grc_upgrade_allowed (playbooks/upgrade.yml),
+# after a database dump.
+grc_upgrade_allowed: false

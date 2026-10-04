@@ -1,0 +1,15 @@
+---
+# GRC and compliance evidence: CISO Assistant (roles/grc, docs/grc.md). One node by design
+# (documented exception to HA-01); restored from backup within grc_backup_rto_hours.
+grc_hostname: https://grc.example.internal
+grc_db_host: db.example.internal
+grc_db_password: "{{ vault_grc_db_password }}"
+grc_secret_key: "{{ vault_grc_secret_key }}"
+grc_admin_email: grc-break-glass@example.com
+grc_admin_password: "{{ vault_grc_admin_password }}"
+grc_oidc_client_secret: "{{ vault_grc_oidc_client_secret }}"
+
+# The edge proxy (app zone) and management networks reach the TLS terminator (NET-01, NET-03);
+# /metrics/ is limited to the monitoring networks inside it.
+firewall_rules_grc:
+  - { name: grc-https, port: 8443, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }

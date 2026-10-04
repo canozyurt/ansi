@@ -1,0 +1,20 @@
+---
+# Public status page (roles/status_page, docs/status-page.md). Public and read-only by design:
+# the documented exception to IAM-01.
+status_page_hostname: https://status.example.com
+status_page_title: Example status
+status_page_heading: Example service status
+# Endpoints come from edge_services (public: true) automatically; add anything else here.
+status_page_extra_endpoints: []
+#  - { name: Website, url: "https://www.example.com/", group: Marketing }
+
+# Alerts go through Prometheus and Alertmanager (prometheus_rules_status_page in group_vars/monitoring).
+# Optional direct email from each Gatus node:
+# status_page_alert_email_host: smtp.example.internal
+# status_page_alert_email_from: status@example.com
+# status_page_alert_email_password: "{{ vault_status_page_smtp_password }}"
+# status_page_alert_email_to: [oncall@example.com]
+
+# The edge proxy (app zone) serves the page; Prometheus (mgmt zone) scrapes /metrics (NET-01, NET-03).
+firewall_rules_status_page:
+  - { name: status-page-https, port: 8444, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }

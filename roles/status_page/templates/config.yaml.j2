@@ -1,0 +1,61 @@
+{# Built as data and dumped, so quoting is always right. Gatus expands $VAR in the file: every "$"
+   in the data is doubled, then the secret placeholders become environment references. #}
+{% set ns = namespace(alerts=[], endpoints=[], alerting={}, ui={}) %}
+{% set alert_types = (['email'] if status_page_alert_email_host | length > 0 else [])
+                     + (['custom'] if status_page_alert_webhook_url | length > 0 else []) %}
+{% for t in alert_types %}
+{%   set ns.alerts = ns.alerts + [{'type': t, 'enabled': true, 'send-on-resolved': true,
+                                   'failure-threshold': status_page_alert_failure_threshold | int,
+                                   'success-threshold': status_page_alert_success_threshold | int,
+                                   'description': 'status page check failed'}] %}
+{% endfor %}
+{% set defaults = {'group': status_page_group_name, 'interval': status_page_interval,
+                   'conditions': status_page_conditions,
+                   'client': {'timeout': status_page_client_timeout, 'insecure': false},
+                   'ui': {'hide-errors': status_page_hide_errors | bool, 'hide-port': true},
+                   'alerts': ns.alerts} %}
+{% for svc in status_page_catalog %}
+{%   set ns.endpoints = ns.endpoints + [defaults | combine({'name': svc.name,
+       'url': 'https://' ~ (svc.hostnames | first) ~ (svc.health_path | default('/'))})] %}
+{% endfor %}
+{% for ep in status_page_extra_endpoints %}
+{%   set ns.endpoints = ns.endpoints + [defaults | combine(ep)] %}
+{% endfor %}
+{% if 'email' in alert_types %}
+{%   set ns.alerting = ns.alerting | combine({'email': {
+       'from': status_page_alert_email_from,
+       'username': status_page_alert_email_username or status_page_alert_email_from,
+       'password': '__STATUS_PAGE_SMTP_PASSWORD__' if status_page_alert_email_password | length > 0 else '',
+       'host': status_page_alert_email_host,
+       'port': status_page_alert_email_port | int,
+       'to': status_page_alert_email_to | join(','),
+       'client': {'insecure': false}}}) %}
+{% endif %}
+{% if 'custom' in alert_types %}
+{%   set headers = {'Content-Type': 'application/json'} | combine(
+       {'Authorization': 'Bearer __STATUS_PAGE_WEBHOOK_TOKEN__'} if status_page_alert_webhook_bearer_token | length > 0 else {}) %}
+{%   set ns.alerting = ns.alerting | combine({'custom': {
+       'url': status_page_alert_webhook_url,
+       'method': 'POST',
+       'headers': headers,
+       'body': {'source': 'status-page', 'node': inventory_hostname, 'status': '[ALERT_TRIGGERED_OR_RESOLVED]',
+                'endpoint': '[ENDPOINT_NAME]', 'group': '[ENDPOINT_GROUP]', 'url': '[ENDPOINT_URL]',
+                'description': '[ALERT_DESCRIPTION]'} | to_json}}) %}
+{% endif %}
+{% set ns.ui = {'title': status_page_title, 'header': status_page_header,
+                'dashboard-heading': status_page_heading, 'dashboard-subheading': status_page_subheading}
+   | combine({'logo': status_page_logo} if status_page_logo | length > 0 else {})
+   | combine({'link': status_page_link} if status_page_link | length > 0 else {}) %}
+{% set config = {
+  'metrics': status_page_metrics | bool,
+  'storage': {'type': 'sqlite', 'path': '/data/data.db'} if status_page_storage_type == 'sqlite' else {'type': 'memory'},
+  'web': {'port': status_page_port | int,
+          'tls': {'certificate-file': '/tls/tls.crt', 'private-key-file': '/tls/tls.key'}},
+  'ui': ns.ui,
+  'endpoints': ns.endpoints}
+  | combine({'alerting': ns.alerting} if ns.alerting else {})
+  | combine({'announcements': status_page_announcements} if status_page_announcements | length > 0 else {}) %}
+# {{ ansible_managed }}
+{{ config | to_json | from_json | to_nice_yaml(indent=2, width=1000) | replace('$', '$$')
+   | replace('__STATUS_PAGE_SMTP_PASSWORD__', '${STATUS_PAGE_SMTP_PASSWORD}')
+   | replace('__STATUS_PAGE_WEBHOOK_TOKEN__', '${STATUS_PAGE_WEBHOOK_TOKEN}') }}

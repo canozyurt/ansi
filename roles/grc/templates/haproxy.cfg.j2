@@ -1,0 +1,49 @@
+# {{ ansible_managed }}
+# Node-local TLS terminator for CISO Assistant: /api/ (and /metrics/ for monitoring) to the backend,
+# everything else to the frontend. The edge proxy in front adds the WAF, rate limits and admin-only access.
+global
+    log stdout format raw local0 info
+    maxconn 2000
+    # TLS 1.2+ with forward-secret AEAD ciphers only (SEC-03).
+    ssl-default-bind-ciphers {{ grc_tls_ciphers }}
+    ssl-default-bind-ciphersuites {{ grc_tls_ciphersuites }}
+    ssl-default-bind-options prefer-client-ciphers ssl-min-ver {{ grc_tls_min_version }} no-tls-tickets
+
+crt-store grc
+    load crt "/tls/tls.crt" key "/tls/tls.key" alias "grc"
+
+defaults
+    mode http
+    log global
+    option dontlognull
+    timeout connect 5s
+    timeout client 120s
+    timeout server 120s
+    timeout http-request 10s
+    timeout http-keep-alive 10s
+    default-server inter 5s fall 3 rise 2
+    log-format "%{+json}o %(timestamp)[accept_date(ms),ms_utime(%Y-%m-%dT%H:%M:%S.%3NZ)] %(client_ip)ci %(frontend)ft %(backend)b %(method)HM %(path)HPO %(status)ST %(bytes_sent)B %(time_total_ms)Ta %(termination_state)ts %(tls_version)sslv"
+
+frontend fe_grc
+    bind :{{ grc_https_port }} ssl crt "@grc/grc" alpn http/1.1
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-Host %[req.hdr(host)] unless { req.hdr(x-forwarded-host) -m found }
+    acl is_metrics path_beg /metrics
+{% if grc_metrics_allowed_cidrs | length > 0 %}
+    acl from_monitoring src {{ grc_metrics_allowed_cidrs | join(' ') }}
+    http-request deny deny_status 403 if is_metrics !from_monitoring
+{% else %}
+    http-request deny deny_status 403 if is_metrics
+{% endif %}
+    http-response set-header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    http-response set-header X-Content-Type-Options nosniff
+    use_backend be_api if { path_beg /api/ } || is_metrics
+    default_backend be_frontend
+
+backend be_api
+    option httpchk
+    http-check send meth GET uri /api/health/ hdr Host 127.0.0.1
+    server backend 127.0.0.1:{{ grc_backend_port }} check
+
+backend be_frontend
+    server frontend 127.0.0.1:{{ grc_frontend_port }} check

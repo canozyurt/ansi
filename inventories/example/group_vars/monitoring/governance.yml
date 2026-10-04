@@ -1,0 +1,55 @@
+---
+# Alert rules for the status page and the GRC tool (collected by roles/prometheus as prometheus_rules_*).
+# Every public endpoint is checked by each status page node; an endpoint is down when all nodes agree,
+# so one node's network trouble does not page anyone.
+prometheus_rules_status_page:
+  - name: status-page
+    rules:
+      - alert: PublicEndpointDown
+        expr: max by (name, group) (gatus_results_endpoint_success{job="status_page"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Public endpoint {{ '{{' }} $labels.name {{ '}}' }} fails its status page checks"
+          description: >-
+            Every status page node reports {{ '{{' }} $labels.name {{ '}}' }} as failing (status, certificate or
+            response time). Follow docs/incident-response.md and update the status page.
+      - alert: PublicEndpointSlow
+        expr: min by (name) (gatus_results_duration_seconds{job="status_page"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Public endpoint {{ '{{' }} $labels.name {{ '}}' }} answers slowly"
+          description: "Response time above 2 s on every status page node for 15 minutes."
+      - alert: PublicCertificateExpiringSoon
+        expr: min by (name) (gatus_results_certificate_expiration_seconds{job="status_page"}) < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Certificate of {{ '{{' }} $labels.name {{ '}}' }} expires in less than 14 days (SEC-05)"
+          description: "Renew it before the public check fails."
+      - alert: StatusPageNodeDown
+        expr: up{job="status_page"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Status page node {{ '{{' }} $labels.instance {{ '}}' }} is down"
+          description: "The other node keeps the page up; restore redundancy."
+
+prometheus_rules_grc:
+  - name: grc
+    rules:
+      - alert: GRCDown
+        expr: up{job="grc"} == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GRC tool (CISO Assistant) on {{ '{{' }} $labels.instance {{ '}}' }} is down"
+          description: >-
+            Internal tool, no customer impact (single node by design). Restore within the RTO
+            (docs/grc.md, playbooks/restore.yml).

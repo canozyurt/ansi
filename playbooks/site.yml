@@ -29,3 +29,6 @@
 
 - name: Deploy malware and vulnerability scanning
   ansible.builtin.import_playbook: security_scanning.yml
+
+- name: Deploy the status page and the GRC tool
+  ansible.builtin.import_playbook: governance.yml

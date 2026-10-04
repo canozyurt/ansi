@@ -92,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [keycloak, keycloak-upgrade, monitoring, edge, backup, openbao, openbao-upgrade, access, security_scanning]
+        scenario: [keycloak, keycloak-upgrade, monitoring, edge, backup, openbao, openbao-upgrade, access, security_scanning, governance]
     steps:
       - uses: actions/checkout@v4
 

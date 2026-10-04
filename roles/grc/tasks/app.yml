@@ -1,0 +1,127 @@
+---
+- name: Write the application environment (contains secrets)
+  ansible.builtin.template:
+    src: grc.env.j2
+    dest: "{{ grc_data_dir }}/grc.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  # The container tasks below compare the environment (env_file included) and recreate on change.
+  when: grc_app_deploy | bool
+  tags: [chk_sec_02]
+
+- name: Check for a version change (CHG-07)
+  when: grc_app_deploy | bool
+  tags: [chk_chg_07]
+  block:
+    - name: Read the running backend container
+      community.docker.docker_container_info:
+        name: "{{ grc_backend_container_name }}"
+      register: grc_current
+
+    - name: Note whether the version changes
+      ansible.builtin.set_fact:
+        grc_needs_upgrade: "{{ grc_current.exists and grc_current.container.Config.Image != grc_backend_image }}"
+
+    - name: Change versions only through the upgrade playbook
+      ansible.builtin.assert:
+        that: not grc_needs_upgrade or grc_upgrade_allowed | bool
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ grc_current.container.Config.Image | default('') }} but this release pins
+          {{ grc_backend_image }}. Run playbooks/upgrade.yml, which dumps the database first.
+        quiet: true
+
+    - name: Dump the database before the upgrade (migrations run at start)
+      ansible.builtin.command: /usr/local/sbin/grc-db-dump
+      when: grc_needs_upgrade
+      changed_when: true
+      tags: [chk_bck_01]
+
+- name: Common settings of the application containers
+  ansible.builtin.set_fact:
+    grc_app_env:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_CONFIG_HOME: /tmp/.config
+      XDG_DATA_HOME: /tmp/.local/share
+
+- name: Run the backend (API, migrations and library store at start)
+  community.docker.docker_container:
+    name: "{{ grc_backend_container_name }}"
+    image: "{{ grc_backend_image }}"
+    user: "{{ grc_backend_uid }}:{{ grc_backend_uid }}"
+    network_mode: host
+    env: "{{ grc_app_env }}"
+    env_file: "{{ grc_data_dir }}/grc.env"
+    volumes:
+      - "{{ grc_data_dir }}/data:/code/db"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ grc_backend_memory_limit }}"
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: grc
+    state: started
+  register: grc_backend_container
+  when: grc_app_deploy | bool
+  tags: [chk_hrd_02, chk_iam_01, chk_log_01]
+
+- name: Run the task worker (Huey; notifications and scheduled jobs)
+  community.docker.docker_container:
+    name: "{{ grc_worker_container_name }}"
+    image: "{{ grc_backend_image }}"
+    entrypoint: [/code/.venv/bin/python]
+    command: [manage.py, run_huey, -w, "2", --scheduler-interval, "60"]
+    working_dir: /code
+    user: "{{ grc_backend_uid }}:{{ grc_backend_uid }}"
+    network_mode: host
+    env: "{{ grc_app_env }}"
+    env_file: "{{ grc_data_dir }}/grc.env"
+    volumes:
+      - "{{ grc_data_dir }}/data:/code/db"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ grc_worker_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: grc
+    state: started
+  register: grc_worker_container
+  when: grc_app_deploy | bool
+  tags: [chk_hrd_02]
+
+- name: Run the frontend
+  community.docker.docker_container:
+    name: "{{ grc_frontend_container_name }}"
+    image: "{{ grc_frontend_image }}"
+    user: "{{ grc_frontend_uid }}:{{ grc_frontend_uid }}"
+    network_mode: host
+    env:
+      HOST: 127.0.0.1
+      PORT: "{{ grc_frontend_port | string }}"
+      ORIGIN: "{{ grc_hostname }}"
+      PUBLIC_BACKEND_API_URL: "http://127.0.0.1:{{ grc_backend_port }}/api"
+      PUBLIC_BACKEND_API_EXPOSED_URL: "{{ grc_hostname }}/api"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ grc_frontend_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: grc
+    state: started
+  register: grc_frontend_container
+  when: grc_app_deploy | bool
+  tags: [chk_hrd_02]

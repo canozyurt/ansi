@@ -62,6 +62,10 @@ prometheus_scrape_catalog:
   - { name: alertmanager, group: monitoring, port: 9093, path: /metrics, scheme: https, basic_auth: true }
   - { name: blackbox, group: monitoring, port: 9115, path: /metrics, scheme: https, basic_auth: true }
   - { name: grafana, group: monitoring, port: 3000, path: /metrics, scheme: https, basic_auth: true }
+  # Gatus: no auth on /metrics; the port is open to monitoring and edge networks only.
+  - { name: status_page, group: status_page, port: 8444, path: /metrics, scheme: https }
+  # CISO Assistant through its TLS terminator, which allows /metrics/ from monitoring networks only.
+  - { name: grc, group: grc, port: 8443, path: /metrics/, scheme: https }
 # Entries for services outside this list, same format.
 prometheus_scrape_extra: []
 

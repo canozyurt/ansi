@@ -1,0 +1,13 @@
+---
+# The TLS terminator answers /api/health/ itself: 503 while the backend is down, the backend's 200
+# once it is healthy. First start runs the migrations and stores 200+ libraries (several minutes).
+- name: Wait until CISO Assistant is healthy behind the TLS terminator
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ grc_https_port }}/api/health/"
+    validate_certs: false
+    status_code: "{{ [200] if grc_app_deploy | bool else [503] }}"
+  register: grc_ready
+  until: grc_ready.status == (200 if grc_app_deploy | bool else 503)
+  retries: "{{ 120 if grc_app_deploy | bool else 15 }}"
+  delay: 5
+  tags: [chk_log_05]

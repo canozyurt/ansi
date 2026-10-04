@@ -1,0 +1,7 @@
+---
+# A plain restart keeps the container's settings (the configuration is a mounted file).
+- name: Restart status page
+  ansible.builtin.command: docker restart {{ status_page_container_name }}
+  changed_when: true
+  throttle: 1  # one node at a time keeps the page available behind the edge
+  when: not (status_page_container.changed | default(false))

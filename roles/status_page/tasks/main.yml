@@ -1,0 +1,35 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - status_page_hostname is match('^https://')
+      - status_page_alert_email_host | length == 0 or
+        (status_page_alert_email_from | length > 0 and status_page_alert_email_to | length > 0)
+      - status_page_alert_webhook_url | length == 0 or status_page_alert_webhook_url is match('^https://')
+      - status_page_extra_endpoints | rejectattr('name', 'defined') | list | length == 0
+      - status_page_extra_endpoints | rejectattr('url', 'defined') | list | length == 0
+    fail_msg: >-
+      Set an https status_page_hostname; email alerts need a sender and recipients; the webhook must be
+      https; every extra endpoint needs a name and a url.
+    quiet: true
+
+- name: Require two independent instances (HA-01)
+  ansible.builtin.assert:
+    that: status_page_cluster_hosts | length >= status_page_min_nodes or status_page_allow_single_node | bool
+    fail_msg: >-
+      The status page needs at least {{ status_page_min_nodes }} nodes (found {{ status_page_cluster_hosts | length }}).
+      Set status_page_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Build the endpoint list from the service catalog
+  ansible.builtin.import_tasks: endpoints.yml
+
+- name: Deploy the status page
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Apply pending restarts before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

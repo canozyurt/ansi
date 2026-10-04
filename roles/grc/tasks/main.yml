@@ -1,0 +1,60 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - grc_hostname is match('^https://')
+      - grc_db_host | length > 0
+      - grc_db_password | length > 0
+      - grc_secret_key | length >= 50
+      - grc_admin_email is match('^[^@ ]+@[^@ ]+$')
+      - grc_admin_password | length >= 16
+      - not (grc_oidc_enabled | bool) or grc_oidc_client_secret | length >= 32
+      - grc_role_user_groups.keys() | difference(rbac_model_all_roles.keys()) | length == 0
+    fail_msg: >-
+      Set an https grc_hostname, grc_db_host, grc_db_password, grc_secret_key (50+ characters),
+      grc_admin_email, grc_admin_password (16+ characters) and, with OIDC, grc_oidc_client_secret
+      (32+ characters). grc_role_user_groups may only name roles of rbac_model.
+    quiet: true
+  no_log: true
+
+# Documented exception to HA-01 (docs/grc.md): one active node, restored from backup within the RTO.
+- name: Run exactly one GRC node (HA-01 exception)
+  ansible.builtin.assert:
+    that:
+      - grc_cluster_hosts | length >= grc_min_nodes
+      - grc_cluster_hosts | length <= grc_max_nodes
+    fail_msg: >-
+      CISO Assistant cannot run active/active (local attachments and task queue, migrations at start):
+      put exactly one host in the grc group (found {{ grc_cluster_hosts | length }}). Recovery is a
+      restore from backup within {{ grc_backup_rto_hours }} hours.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy CISO Assistant
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Apply pending restarts before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml
+
+- name: Register the OIDC client in Keycloak
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_id: "{{ grc_oidc_client_id }}"
+    oidc_client_name: GRC (CISO Assistant)
+    oidc_client_secret: "{{ grc_oidc_client_secret }}"
+    oidc_client_root_url: "{{ grc_hostname }}"
+    oidc_client_redirect_uris:
+      - "{{ grc_hostname }}/api/accounts/oidc/{{ grc_oidc_provider_id }}/login/callback/"
+    oidc_client_post_logout_redirect_uris: ["{{ grc_hostname }}/*"]
+  when: grc_oidc_enabled | bool
+  tags: [chk_iam_01, chk_iam_09]
+
+- name: Seed frameworks and SSO through the API
+  ansible.builtin.include_tasks: seed.yml
+  when:
+    - grc_seed | bool
+    - grc_app_deploy | bool

@@ -78,3 +78,21 @@
   roles:
     - role: edge
     - role: keepalived
+
+- name: Upgrade the status page one node at a time (the edge sends traffic to the other node)
+  hosts: status_page
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: status_page
+
+- name: Upgrade the GRC tool (the role dumps the database before the new version migrates it)
+  hosts: grc
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: grc
+      vars:
+        grc_upgrade_allowed: true

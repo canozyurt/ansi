@@ -23,6 +23,7 @@ domains:
   CHG: "Change management"
   DAT: "Data and cloud customer duties"
   EVD: "Evidence and governance"
+  INC: "Incident management"
 
 requirements:
   - id: IAM-01
@@ -451,7 +452,8 @@ requirements:
       iso27001: ["5.36"]
       iso27017: []
     check: "CI coverage check"
-    status: not_started
+    status: designed
+    progress: "tools/evidence_export.py exports every item with status, controls and the implementing/verifying tasks (JSON/CSV), verified in molecule/governance. Remaining: CI job that fails when a Core item has no test."
   - id: EVD-02
     requirement: "Evidence from every run is stored for 12 months in tamper-evident storage"
     controls:
@@ -459,7 +461,8 @@ requirements:
       iso27001: ["5.33"]
       iso27017: []
     check: "Evidence store retention test"
-    status: not_started
+    status: designed
+    progress: "CISO Assistant (roles/grc) holds evidence with a 12-month audit log and backups; docs/grc.md describes attaching each release's export and CI log. Remaining: tamper-evident evidence store, automated upload, retention test."
   - id: EVD-03
     requirement: "An asset inventory with an owner per asset is generated from inventory and agents"
     controls:
@@ -477,3 +480,12 @@ requirements:
     project_rule: true
     check: "Reviewed in the pull request that adds the tool"
     status: not_started
+  - id: INC-01
+    requirement: "Incidents follow a documented process with severity, timeline and postmortem; records kept 12 months"
+    controls:
+      soc2: [CC7.3, CC7.4, CC7.5]
+      iso27001: ["5.24", "5.25", "5.26", "5.27"]
+      iso27017: []
+    check: "Incident issues carry severity, timeline and a linked postmortem; tracker retention reviewed yearly"
+    status: designed
+    progress: "docs/incident-response.md: severities, roles, alert-to-incident flow, Forgejo issue and postmortem templates, status page comms (roles/status_page), 12-month retention. Remaining: Forgejo labels/templates provisioned by the Forgejo role; retention check."

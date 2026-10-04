@@ -1,0 +1,15 @@
+---
+# Incident communication and compliance evidence (docs/status-page.md, docs/grc.md,
+# docs/incident-response.md): the public status page on the status_page group (2+ independent
+# instances behind the edge) and CISO Assistant on the grc group (one node, restored from backup).
+- name: Deploy the public status page
+  hosts: status_page
+  become: true
+  roles:
+    - role: status_page
+
+- name: Deploy the GRC and compliance evidence tool
+  hosts: grc
+  become: true
+  roles:
+    - role: grc

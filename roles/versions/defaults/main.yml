@@ -30,6 +30,11 @@ versions_images:
   coraza_spoa_builder: docker.io/library/golang:1.26.8-alpine
   # Backup repository server (roles/backup_server)
   rest_server: docker.io/restic/rest-server:0.14.0
+  # Public status page and synthetic checks (roles/status_page)
+  gatus: docker.io/twinproduction/gatus:v5.37.0
+  # GRC and compliance evidence (roles/grc): CISO Assistant Community Edition (AGPL-3.0 images)
+  ciso_assistant_backend: ghcr.io/intuitem/ciso-assistant-community/backend:v4.1.0
+  ciso_assistant_frontend: ghcr.io/intuitem/ciso-assistant-community/frontend:v4.1.0
   # Vulnerability scanner (roles/trivy_scan). Pinned by digest too: it runs as root with the
   # Docker socket, so a re-pushed tag must not change what runs.
   trivy: docker.io/aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969

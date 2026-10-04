@@ -206,6 +206,22 @@ Operator workflow: [docs/access.md](access.md).
   (`compliant-backup`, `compliant-restore-test`, `compliant-backup-prune`); rest-server's access log goes to
   journald through the container log. Manual restores: `playbooks/restore.yml`.
 
+## Status page (Gatus) and incident communication
+- `playbooks/governance.yml`: Gatus (Apache-2.0) on the `status_page` group, 2 nodes minimum. Gatus is stateless (endpoints from configuration, results per node), so two independent instances behind the edge are a full HA pair; each keeps local SQLite history (not backed up).
+- Endpoints are generated from the edge catalog (`edge_services` with `public: true`, `https://<first hostname><health_path>`) plus `status_page_extra_endpoints`; each checks HTTP status, certificate expiry (> 14 days) and response time, verifying certificates against the host trust store.
+- Public and read-only by design, no login: the documented exception to IAM-01. Errors are hidden; `/metrics` is an admin path at the edge and the port is open only to the edge and monitoring zones.
+- Hardened container (uid 65534, no capabilities, read-only root, limits), HTTPS only with a `tls_cert` certificate; logs to journald.
+- Alerting through Prometheus (scrapes `/metrics`) and Alertmanager: `PublicEndpointDown` fires only when every node sees the failure; optional direct email/webhook from Gatus.
+- Incidents (docs/incident-response.md): SEV1-4, incident commander and comms roles, Forgejo issues labelled `incident` from the templates in docs/templates/, status page announcements for customers, records kept 12 months (INC-01).
+
+## GRC and compliance evidence (CISO Assistant)
+- CISO Assistant Community Edition (AGPL-3.0 images under ghcr.io/intuitem/ciso-assistant-community, v4.1.0) on the `grc` group: backend, Huey worker and frontend containers (non-root, no capabilities, read-only root) behind a node-local HAProxy TLS terminator (TLS 1.2+, `tls_cert`).
+- One node by design (documented exception to HA-01): attachments and the task queue are local and migrations/scheduled jobs run on every instance; GRC is internal, so it is restored from backup within 8 h (RPO 24 h).
+- PostgreSQL from the data layer (`grc_db_*`); backups declare a `pg_dump` pre-command and the attachments; version changes only via upgrade.yml after a dump.
+- OIDC through Keycloak is in the community edition: the API seed enables it with PKCE, JIT provisioning, the `roles` claim as IdP groups (security-admin -> Administrator; platform-admin, operator, auditor -> Global reader) and Force SSO; the break-glass superuser keeps local login.
+- Seeds the SOC 2 (2017 TSC) and ISO 27001:2022 libraries; ISO 27017 is not shipped by CISO Assistant. `tools/evidence_export.py` exports the checklist (status, controls, implementing/verifying tasks) as JSON/CSV for import as applied controls and evidence.
+- JSON logs to journald; app audit log kept 365 days; Prometheus metrics at `/metrics/` restricted to monitoring networks.
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

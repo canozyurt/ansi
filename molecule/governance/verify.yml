@@ -1,0 +1,308 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify the status page
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_status: https://127.0.0.1:8444
+  tasks:
+    - name: Inspect the status page container
+      community.docker.docker_container_info:
+        name: status-page
+      register: verify_sp_container
+      tags: [chk_hrd_02]
+
+    - name: The container runs non-root with no capabilities, no privilege escalation and a read-only root
+      ansible.builtin.assert:
+        that:
+          - verify_sp_container.container.State.Running
+          - verify_sp_container.container.Config.User == '65534:65534'
+          - "'ALL' in verify_sp_container.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_sp_container.container.HostConfig.SecurityOpt"
+          - verify_sp_container.container.HostConfig.ReadonlyRootfs
+          - not verify_sp_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02]
+
+    - name: The status page refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8444 -tls1_1
+      register: verify_sp_tls11
+      changed_when: false
+      failed_when: verify_sp_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: The status page answers over TLS 1.2
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8444 -tls1_2 -brief
+      register: verify_sp_tls12
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: The public page is served without a login
+      ansible.builtin.uri:
+        url: "{{ verify_status }}/"
+        validate_certs: false
+        return_content: true
+      register: verify_sp_page
+      tags: [chk_inc_01]
+
+    - name: The page is the status page
+      ansible.builtin.assert:
+        that:
+          - verify_sp_page.status == 200
+          - "'<html' in verify_sp_page.content | lower"
+      tags: [chk_inc_01]
+
+    - name: Wait until the test endpoint has been checked
+      ansible.builtin.uri:
+        url: "{{ verify_status }}/api/v1/endpoints/statuses"
+        validate_certs: false
+      register: verify_sp_statuses
+      until: >-
+        verify_sp_statuses.json | selectattr('name', 'equalto', 'test-backend')
+        | map(attribute='results') | first | default([]) | length > 0
+      retries: 30
+      delay: 2
+      tags: [chk_log_05, chk_inc_01]
+
+    - name: Endpoints come from the edge catalog (public only) plus the extra endpoints
+      vars:
+        verify_names: "{{ verify_sp_statuses.json | map(attribute='name') | list }}"
+      ansible.builtin.assert:
+        that:
+          - "'test-backend' in verify_names"
+          - "'app' in verify_names"
+          - "'sso' in verify_names"
+          - "'internal' not in verify_names"
+          - "'grafana' not in verify_names"
+        fail_msg: "Endpoints: {{ verify_names }}"
+      tags: [chk_log_05, chk_inc_01]
+
+    - name: The test endpoint passes the status, certificate expiry and response time checks
+      vars:
+        verify_result: >-
+          {{ (verify_sp_statuses.json | selectattr('name', 'equalto', 'test-backend') | first).results | last }}
+        verify_conditions: "{{ verify_result.conditionResults | map(attribute='condition') | list }}"
+      ansible.builtin.assert:
+        that:
+          - verify_result.success
+          - verify_result.status == 200
+          - verify_conditions | select('search', 'STATUS') | list | length == 1
+          - verify_conditions | select('search', 'CERTIFICATE_EXPIRATION') | list | length == 1
+          - verify_conditions | select('search', 'RESPONSE_TIME') | list | length == 1
+          - verify_result.conditionResults | rejectattr('success') | list | length == 0
+        fail_msg: "{{ verify_result | to_json }}"
+      tags: [chk_log_05, chk_sec_05]
+
+    - name: Read the status page metrics
+      ansible.builtin.uri:
+        url: "{{ verify_status }}/metrics"
+        validate_certs: false
+        return_content: true
+      register: verify_sp_metrics
+      tags: [chk_log_05]
+
+    - name: Prometheus metrics report the endpoint results and certificate expiry
+      ansible.builtin.assert:
+        that:
+          - verify_sp_metrics.content is search('gatus_results_endpoint_success\{[^}]*name="test-backend"[^}]*\} 1')
+          - verify_sp_metrics.content is search('gatus_results_certificate_expiration_seconds\{[^}]*name="test-backend"')
+      tags: [chk_log_05, chk_sec_05]
+
+    - name: Read the status page configuration file
+      ansible.builtin.stat:
+        path: /opt/status_page/status_page.env
+      register: verify_sp_env
+      tags: [chk_sec_02]
+
+    - name: Secrets are in a root-only file
+      ansible.builtin.assert:
+        that:
+          - verify_sp_env.stat.mode == '0600'
+          - verify_sp_env.stat.pw_name == 'root'
+      tags: [chk_sec_02]
+
+- name: Verify the GRC tool
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../roles/versions/defaults/main.yml
+  vars:
+    verify_own_ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+  tasks:
+    - name: Inspect the GRC TLS terminator
+      community.docker.docker_container_info:
+        name: grc-proxy
+      register: verify_grc_proxy
+      tags: [chk_hrd_02]
+
+    - name: The TLS terminator runs non-root with no capabilities and a read-only root
+      ansible.builtin.assert:
+        that:
+          - verify_grc_proxy.container.State.Running
+          - verify_grc_proxy.container.Config.User == '99:99'
+          - "'ALL' in verify_grc_proxy.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_grc_proxy.container.HostConfig.SecurityOpt"
+          - verify_grc_proxy.container.HostConfig.ReadonlyRootfs
+      tags: [chk_hrd_02]
+
+    - name: GRC refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8443 -tls1_1
+      register: verify_grc_tls11
+      changed_when: false
+      failed_when: verify_grc_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: GRC answers over TLS 1.2 and 1.3
+      ansible.builtin.command: "openssl s_client -connect 127.0.0.1:8443 {{ item }} -brief"
+      loop: [-tls1_2, -tls1_3]
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: The TLS terminator routes the API to the backend (absent in the lab, so 503)
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8443/api/health/
+        validate_certs: false
+        status_code: 503
+      tags: [chk_log_05]
+
+    - name: Metrics from a non-monitoring address are refused
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8443/metrics/
+        validate_certs: false
+        status_code: 403
+      tags: [chk_log_05, chk_net_02]
+
+    - name: Metrics from a monitoring address reach the backend (absent in the lab, so 503)
+      ansible.builtin.uri:
+        url: "https://{{ verify_own_ip }}:8443/metrics/"
+        validate_certs: false
+        status_code: 503
+      tags: [chk_log_05]
+
+    - name: Read the backup declaration
+      ansible.builtin.slurp:
+        src: /etc/compliant-infra/backup.d/grc.json
+      register: verify_grc_backup
+      tags: [chk_bck_01, chk_bck_04]
+
+    - name: The declaration covers the dump and the attachments with a pre-command and RPO/RTO
+      vars:
+        verify_decl: "{{ verify_grc_backup.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_decl.name == 'grc'
+          - "'/var/backups/grc' in verify_decl.paths"
+          - "'/opt/grc/data' in verify_decl.paths"
+          - verify_decl.pre_command == '/usr/local/sbin/grc-db-dump'
+          - verify_decl.verify_command is search('pg_restore --list')
+          - verify_decl.rpo_hours | int == 24
+          - verify_decl.rto_hours | int == 8
+      tags: [chk_bck_01, chk_bck_04]
+
+    - name: Put a row in the database
+      ansible.builtin.command: >-
+        docker exec postgres psql -U grc -d grc -c
+        "CREATE TABLE IF NOT EXISTS molecule_probe (id int); INSERT INTO molecule_probe VALUES (1);"
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Run the backup pre-command (database dump)
+      ansible.builtin.command: /usr/local/sbin/grc-db-dump
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Run the declared restore verification against the dump
+      ansible.builtin.shell:
+        cmd: "{{ (verify_grc_backup.content | b64decode | from_json).verify_command }}"
+        executable: /bin/bash
+      environment:
+        RESTORE_DIR: ""
+      changed_when: false
+      tags: [chk_bck_01, chk_bck_03]
+
+    - name: List the dump contents
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          docker run --rm --network=none --volume=/var/backups/grc:/dump:ro
+          {{ versions_images.postgres_client }} pg_restore --list /dump/grc.dump
+        executable: /bin/bash
+      register: verify_grc_dump
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: The dump contains the data and is private to root
+      ansible.builtin.stat:
+        path: /var/backups/grc/grc.dump
+      register: verify_grc_dump_file
+      tags: [chk_bck_01]
+
+    - name: Check the dump
+      ansible.builtin.assert:
+        that:
+          - verify_grc_dump.stdout is search('TABLE DATA public molecule_probe')
+          - verify_grc_dump_file.stat.mode == '0600'
+      tags: [chk_bck_01]
+
+    - name: Read the database credential and application secret files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/opt/grc/pg.env]
+      register: verify_grc_secrets
+      tags: [chk_sec_02]
+
+    - name: Secrets are in root-only files
+      ansible.builtin.assert:
+        that: verify_grc_secrets.results | rejectattr('stat.mode', 'equalto', '0600') | list | length == 0
+      tags: [chk_sec_02]
+
+- name: Verify the evidence export
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    verify_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+    verify_ids: >-
+      {{ (lookup('ansible.builtin.file', verify_root ~ '/compliance/checklist.yml') | from_yaml).requirements
+         | map(attribute='id') | list }}
+  tasks:
+    - name: Export the checklist as JSON
+      ansible.builtin.command: python3 tools/evidence_export.py --format json
+      args:
+        chdir: "{{ verify_root }}"
+      register: verify_export_json
+      changed_when: false
+      tags: [chk_evd_01]
+
+    - name: The JSON export is valid and lists every checklist item with status, controls and evidence
+      vars:
+        verify_items: "{{ (verify_export_json.stdout | from_json)['items'] }}"
+      ansible.builtin.assert:
+        that:
+          - verify_items | map(attribute='id') | list == verify_ids
+          - verify_items | rejectattr('status', 'defined') | list | length == 0
+          - verify_items | rejectattr('controls', 'defined') | list | length == 0
+          - verify_items | selectattr('id', 'equalto', 'BCK-01') | map(attribute='implemented_by') | first | length > 0
+      tags: [chk_evd_01]
+
+    - name: Export the checklist as CSV
+      ansible.builtin.command: python3 tools/evidence_export.py --format csv
+      args:
+        chdir: "{{ verify_root }}"
+      register: verify_export_csv
+      changed_when: false
+      tags: [chk_evd_01]
+
+    - name: Parse the CSV export
+      ansible.builtin.command:
+        cmd: python3 -c "import csv,sys,json; print(json.dumps([r['id'] for r in csv.DictReader(sys.stdin)]))"
+        stdin: "{{ verify_export_csv.stdout }}"
+      register: verify_csv_ids
+      changed_when: false
+      tags: [chk_evd_01]
+
+    - name: The CSV export has one row per checklist item
+      ansible.builtin.assert:
+        that: verify_csv_ids.stdout | from_json == verify_ids
+      tags: [chk_evd_01]

@@ -1,0 +1,88 @@
+---
+# Public status page and synthetic checks: Gatus (Apache-2.0). Each node runs its own Gatus with the
+# same configuration and checks every endpoint independently; the edge proxy balances between them.
+status_page_image: "{{ versions_images.gatus }}"
+status_page_container_name: status-page
+status_page_data_dir: /opt/status_page
+# The image is FROM scratch with no user; run it as nobody.
+status_page_container_uid: 65534
+status_page_memory_limit: 256m
+
+# High availability (HA-01): Gatus keeps no shared state (endpoints come from this configuration,
+# results are per node), so two independent instances behind the edge proxy are a complete HA pair.
+# A single node is allowed only for labs and tests.
+status_page_min_nodes: 2
+status_page_allow_single_node: false
+status_page_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+# Public URL (through the edge proxy). The page is public and read-only by design: it has no login
+# and no write actions, so it is the documented exception to IAM-01 (docs/status-page.md).
+status_page_hostname: "https://status.example.com"
+status_page_port: 8444
+
+# TLS (SEC-03): organisation-supplied files, else the internal PKI, else a temporary self-signed one.
+status_page_tls_cert_file: ""
+status_page_tls_key_file: ""
+
+# Networks that may reach the port: the edge proxy (app zone) and Prometheus (mgmt zone).
+status_page_allowed_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+
+# ---------------------------------------------------------------- endpoints (LOG-05)
+# Endpoints come from the service catalog the edge proxy uses (edge_services: every service with
+# public: true, checked at https://<first hostname><health_path>), plus status_page_extra_endpoints.
+# When edge_services is not visible on these hosts (it is a default of roles/edge), the role reads the
+# edge role's defaults and adds edge_extra_services, so both use the same catalog.
+status_page_edge_defaults_file: "{{ role_path }}/../edge/defaults/main.yml"
+status_page_exclude_services: [status]
+status_page_group_name: Services
+# Extra endpoints (Gatus endpoint format; name and url are required). Missing conditions get the defaults.
+#   - { name: API, url: "https://api.example.com/healthz", group: Product }
+status_page_extra_endpoints: []
+
+# Checks applied to every endpoint: HTTP status, certificate expiry and response time.
+status_page_interval: 60s
+status_page_expected_status: 200
+status_page_cert_min_hours: 336           # 14 days (SEC-05)
+status_page_max_response_ms: 2000
+status_page_conditions:
+  - "[STATUS] == {{ status_page_expected_status }}"
+  - "[CERTIFICATE_EXPIRATION] > {{ status_page_cert_min_hours }}h"
+  - "[RESPONSE_TIME] < {{ status_page_max_response_ms }}"
+status_page_client_timeout: 10s
+# Public page: do not show internal error strings (they can contain internal IPs and DNS names).
+status_page_hide_errors: true
+
+# Results history: SQLite on each node (survives restarts). Monitoring data, not evidence: nothing to
+# back up (Prometheus keeps the metrics).
+status_page_storage_type: sqlite
+
+# ---------------------------------------------------------------- UI
+status_page_title: Service status
+status_page_heading: Service status
+status_page_subheading: Live status of our public services
+status_page_header: Status
+status_page_logo: ""
+status_page_link: ""
+status_page_announcements: []   # Gatus announcement format, for maintenance and incident notes
+
+# ---------------------------------------------------------------- alerting
+# Main path: Prometheus scrapes /metrics and the prometheus_rules_status_page rules (inventory
+# group_vars/monitoring) alert through Alertmanager, which deduplicates both nodes and routes on-call.
+# Optional direct notifications from Gatus (each node sends its own, so expect two):
+status_page_alert_failure_threshold: 3
+status_page_alert_success_threshold: 2
+# Email (STARTTLS); the password comes from Ansible Vault or OpenBao.
+status_page_alert_email_host: ""
+status_page_alert_email_port: 587
+status_page_alert_email_from: ""
+status_page_alert_email_username: ""
+status_page_alert_email_password: ""
+status_page_alert_email_to: []
+# Generic webhook (e.g. the chat bridge Alertmanager also uses). Body is JSON.
+status_page_alert_webhook_url: ""
+status_page_alert_webhook_bearer_token: ""
+
+# ---------------------------------------------------------------- metrics (LOG-05)
+# Gatus serves /metrics on the same port without authentication. Only the networks in
+# status_page_allowed_cidrs reach the port; the edge must list /metrics as an admin path.
+status_page_metrics: true

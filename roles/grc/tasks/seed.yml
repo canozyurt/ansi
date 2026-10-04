@@ -1,0 +1,128 @@
+---
+# Seeding through the CISO Assistant REST API, once, as the break-glass superuser (local login stays
+# available to it when SSO is forced). Not exercised by Molecule: the images cannot be pulled there.
+- name: Seed CISO Assistant
+  run_once: true
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: false
+      headers:
+        Host: 127.0.0.1
+  vars:
+    grc_api: "https://127.0.0.1:{{ grc_https_port }}/api"
+  block:
+    - name: Log in through the headless API
+      ansible.builtin.uri:
+        url: "{{ grc_api }}/_allauth/app/v1/auth/login"
+        method: POST
+        body_format: json
+        body:
+          email: "{{ grc_admin_email }}"
+          password: "{{ grc_admin_password }}"
+      register: grc_login
+      no_log: true
+
+    - name: Keep the API token
+      ansible.builtin.set_fact:
+        grc_api_headers:
+          Authorization: "Token {{ grc_login.json.meta.access_token }}"
+          Host: 127.0.0.1
+      no_log: true
+
+    - name: Read the loaded framework libraries
+      ansible.builtin.uri:
+        url: "{{ grc_api }}/loaded-libraries/"
+        headers: "{{ grc_api_headers }}"
+      register: grc_loaded
+
+    - name: Load the framework libraries (SOC 2, ISO 27001:2022)
+      ansible.builtin.uri:
+        url: "{{ grc_api }}/stored-libraries/{{ item }}/import/"
+        method: POST
+        headers: "{{ grc_api_headers }}"
+        status_code: [200, 201]
+      loop: "{{ grc_seed_libraries }}"
+      when: item not in ((grc_loaded.json.results | default(grc_loaded.json)) | map(attribute='urn') | list)
+      changed_when: true
+
+    - name: Configure OIDC login through Keycloak
+      when: grc_oidc_enabled | bool
+      tags: [chk_iam_01, chk_iam_09]
+      vars:
+        grc_sso_wanted:
+          is_enabled: true
+          force_sso: "{{ grc_force_sso | bool }}"
+          jit_provisioning_enabled: true
+          provider: openid_connect
+          provider_id: "{{ grc_oidc_provider_id }}"
+          provider_name: "{{ grc_oidc_provider_name }}"
+          client_id: "{{ grc_oidc_client_id }}"
+          server_url: "{{ grc_oidc_issuer }}"
+          oauth_pkce_enabled: true
+          attribute_mapping_groups: [roles]
+      block:
+        - name: Read the user groups
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/user-groups/"
+            headers: "{{ grc_api_headers }}"
+          register: grc_user_groups
+
+        - name: Read the IdP groups
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/idp-groups/"
+            headers: "{{ grc_api_headers }}"
+          register: grc_idp_groups
+
+        - name: Map each default role (IdP group from the roles claim) to CISO Assistant user groups
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/idp-groups/"
+            method: POST
+            headers: "{{ grc_api_headers }}"
+            body_format: json
+            body:
+              name: "{{ item.key }}"
+              user_groups: >-
+                {{ (grc_user_groups.json.results | default(grc_user_groups.json))
+                   | selectattr('name', 'in', item.value) | map(attribute='id') | list }}
+            status_code: [200, 201]
+          loop: "{{ grc_role_user_groups | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          when: item.key not in ((grc_idp_groups.json.results | default(grc_idp_groups.json)) | map(attribute='name') | list)
+          changed_when: true
+
+        - name: Read the feature flags
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/settings/feature-flags/"
+            headers: "{{ grc_api_headers }}"
+          register: grc_flags
+
+        - name: Turn on just-in-time provisioning (users and IdP groups from the token)
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/settings/feature-flags/"
+            method: PATCH
+            headers: "{{ grc_api_headers }}"
+            body_format: json
+            body:
+              jit_provisioning: true
+          when: not (grc_flags.json.jit_provisioning | default(false) | bool)
+          changed_when: true
+
+        - name: Read the SSO settings
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/settings/sso/object/"
+            headers: "{{ grc_api_headers }}"
+          register: grc_sso
+
+        - name: Enable OIDC SSO with the roles claim as IdP groups
+          ansible.builtin.uri:
+            url: "{{ grc_api }}/settings/sso/"
+            method: PUT
+            headers: "{{ grc_api_headers }}"
+            body_format: json
+            body: "{{ grc_sso_wanted | combine({'secret': grc_oidc_client_secret}) }}"
+          when: >-
+            grc_sso.json | combine(grc_sso_wanted) != grc_sso.json
+            or not (grc_sso.json.oidc_has_secret | default(false) | bool)
+          changed_when: true
+          no_log: true
