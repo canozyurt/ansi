@@ -1,0 +1,192 @@
+---
+# Forgejo (GPL-3.0-or-later): Git hosting, pull requests with required reviews on protected
+# branches (CHG-01) and Forgejo Actions (CHG-02, with roles/forgejo_runner).
+forgejo_image: "{{ versions_images.forgejo }}"
+forgejo_container_name: forgejo
+# The rootless image runs as git (uid/gid 1000); its data, configuration and TLS key belong to it.
+forgejo_container_uid: 1000
+forgejo_memory_limit: 2g
+
+# Public URL (through the edge proxy). Users, runners and OIDC redirects use it.
+forgejo_root_url: "https://git.example.internal/"
+forgejo_app_name: Forgejo
+
+# --------------------------------------------------------------------------- high availability (HA-01)
+# Forgejo has no built-in replication: every node must see the same repositories.
+#
+# active_passive (default): Forgejo runs on exactly one node. keepalived moves forgejo_vips between
+#   the nodes; the node holding the VIP starts Forgejo, the others keep it stopped. The data volume
+#   (forgejo_data_dir: repositories, queues, indexes) must be replicated or shared by the storage
+#   layer (DRBD, ZFS replication, a SAN or cloud volume, NFS). Promote/demote hooks below attach it.
+#   PostgreSQL, object storage and the cache are shared services either way.
+# active_active: every node serves traffic. Needs repositories on shared POSIX storage
+#   (NFS/CephFS, forgejo_repo_dir), S3 object storage, Valkey/Redis for cache, sessions and queues,
+#   and database-backed indexers. Upstream Forgejo does not document or test multi-instance setups;
+#   choose it only after testing on your storage.
+# standalone: one node, nothing shared beyond PostgreSQL. Labs and tests only.
+forgejo_ha_mode: active_passive
+forgejo_min_nodes: 2
+forgejo_allow_single_node: false
+forgejo_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+# active_passive: VRRP for the active role (roles/keepalived). The VIP also gives runners and
+# internal clients a stable address. Do not put these hosts in the edge group (one keepalived
+# configuration per host).
+forgejo_vips: []                       # e.g. ["10.10.0.50/24"]
+forgejo_vrrp_router_id: 52
+# A recovered node waits this long before taking the active role back (each move restarts Forgejo).
+forgejo_failover_preempt_delay: 600
+# Commands run as root before Forgejo starts on the node that became active, and after it stopped on
+# a node that lost the VIP (e.g. "drbdadm primary forgejo && mount /srv/forgejo"). Must be safe to
+# repeat. Without fencing in the storage layer a network partition can start two writers: use
+# DRBD/Pacemaker fencing or a storage system that refuses a second writer.
+forgejo_failover_promote_command: ""
+forgejo_failover_demote_command: ""
+# Seconds between checks, and failed health checks in a row before the active node gives up the VIP.
+forgejo_failover_interval: 3
+forgejo_failover_unhealthy_checks: 40
+forgejo_failover_start_grace: 180
+# Refuse to deploy a multi-node active_passive cluster unless forgejo_data_dir is its own mount.
+forgejo_require_dedicated_volume: true
+
+# active_active: the repository directory must be on one of these filesystem types.
+forgejo_shared_fstypes: [nfs, nfs4, ceph, fuse.ceph, fuse.cephfs, glusterfs, fuse.glusterfs]
+
+# --------------------------------------------------------------------------- storage paths
+# Local (active_active) or replicated (active_passive) application data.
+forgejo_data_dir: /srv/forgejo
+# Git repositories; active_active points this at the shared mount.
+forgejo_repo_dir: "{{ forgejo_data_dir }}/repositories"
+# Configuration, TLS and generated credentials (root-owned, local to each node).
+forgejo_config_dir: /opt/forgejo
+# forgejo dump output read by the backup role.
+forgejo_dump_dir: /var/backups/forgejo
+
+# --------------------------------------------------------------------------- PostgreSQL (data layer)
+forgejo_db_host: ""
+forgejo_db_port: 5432
+forgejo_db_name: forgejo
+forgejo_db_user: forgejo
+forgejo_db_password: ""
+forgejo_db_sslmode: require            # disable | require | verify-full
+
+# --------------------------------------------------------------------------- object storage (S3)
+# LFS, attachments, avatars, packages, Actions logs and artifacts. Empty endpoint: local disk under
+# forgejo_data_dir (active_passive and labs only).
+forgejo_s3_endpoint: ""                # host:port, no scheme
+forgejo_s3_bucket: forgejo
+forgejo_s3_region: us-east-1
+forgejo_s3_access_key: ""
+forgejo_s3_secret_key: ""
+forgejo_s3_use_ssl: true
+forgejo_s3_bucket_lookup: auto         # auto | dns | path
+forgejo_s3_insecure_skip_verify: false
+
+# --------------------------------------------------------------------------- cache, sessions, queues
+# Valkey/Redis-compatible server. Empty host: in-memory cache, sessions in PostgreSQL, queues on
+# local disk (allowed for active_passive and labs).
+forgejo_cache_host: ""
+forgejo_cache_port: 6379
+forgejo_cache_password: ""
+forgejo_cache_tls: true
+forgejo_cache_db: 0
+
+# --------------------------------------------------------------------------- secrets (Vault/OpenBao)
+# Identical on every node. Generate with: docker run --rm <image> forgejo generate secret <NAME>
+forgejo_secret_key: ""                 # SECRET_KEY (encrypts 2FA secrets and other stored secrets)
+forgejo_internal_token: ""             # INTERNAL_TOKEN (git hooks -> internal API)
+forgejo_jwt_secret: ""                 # JWT_SECRET (43 characters, base64url)
+forgejo_lfs_jwt_secret: ""             # LFS_JWT_SECRET (43 characters, base64url)
+# Bearer token Prometheus presents to /metrics.
+forgejo_metrics_token: ""
+
+# --------------------------------------------------------------------------- listeners and TLS
+forgejo_https_port: 3443
+forgejo_tls_cert_file: ""
+forgejo_tls_key_file: ""
+# Client IPs from these proxies' X-Forwarded-For are trusted (the edge hosts).
+forgejo_trusted_proxies: ["127.0.0.0/8", "::1/128"]
+# Git over SSH is off: HTTPS with tokens only (one listener, behind the edge and WAF).
+forgejo_ssh_enabled: false
+forgejo_ssh_port: 2222
+
+# --------------------------------------------------------------------------- identity (IAM-01)
+# OIDC login through Keycloak. The "roles" claim maps platform-admin to Forgejo site admin;
+# everyone else is a normal user. Organisation and team membership is managed in Forgejo
+# (see docs) or with forgejo_oidc_group_team_map.
+forgejo_oidc_enabled: "{{ oidc_clients_enabled | default(true) }}"
+forgejo_oidc_name: keycloak            # also part of the callback URL
+forgejo_oidc_client_id: forgejo
+forgejo_oidc_client_secret: ""
+forgejo_oidc_keycloak_url: "{{ keycloak_hostname | default('') }}"
+forgejo_oidc_realm: "{{ keycloak_realm | default('org') }}"
+forgejo_oidc_roles_claim: roles
+forgejo_oidc_admin_role: platform-admin
+forgejo_oidc_restricted_role: ""       # e.g. auditor: restricted users see only what they are given
+# Optional {"<role>": {"<org>": ["<team>", ...]}} applied at each login (and removed when the role goes).
+forgejo_oidc_group_team_map: {}
+# Keycloak already enforces MFA; do not ask OIDC users for a second Forgejo-local factor.
+forgejo_oidc_skip_local_2fa: true
+
+# Local accounts. Password sign-in (form and HTTP basic auth) is off for everyone; OIDC registers
+# users. The break-glass admin signs in only after forgejo_break_glass_login is set for an incident.
+forgejo_admin_user: break-glass-admin
+forgejo_admin_email: break-glass@example.internal
+forgejo_admin_password: ""
+forgejo_break_glass_login: false
+# Local accounts holding site admin need 2FA before they can use the web UI or API (all | admin | none).
+forgejo_two_factor_requirement: admin
+forgejo_min_password_length: 14
+forgejo_session_lifetime: 36000        # seconds; matches the Keycloak maximum session
+
+# Machine account that owns the managed organisations and calls the API (no password, token only).
+forgejo_automation_user: platform-automation
+forgejo_automation_email: platform-automation@example.internal
+# Token from Vault/OpenBao. Empty: generated once and kept in forgejo_config_dir/secrets (root 0600).
+forgejo_automation_token: ""
+
+# --------------------------------------------------------------------------- repository policy
+forgejo_require_signin_view: true
+forgejo_default_private: true
+forgejo_allow_create_organization: true
+# Signed commits are verified (GPG and SSH keys of the committer); trust collaborators' signatures.
+forgejo_default_trust_model: collaboratorcommitter
+# Where "uses:" in Actions workflows resolves short action names.
+forgejo_actions_default_url: https://data.forgejo.org
+forgejo_app_ini_extra: {}              # {section: {KEY: value}} merged last
+
+# --------------------------------------------------------------------------- organisations (CHG-01)
+# Organisations and repositories created through the API by tasks_from: org_setup.
+#   - name: platform
+#     visibility: private
+#     repos:
+#       - name: infra
+#         description: Infrastructure as code
+#         protected_branches: [main]          # default [main]
+#         branch_protection: {}               # overrides of forgejo_branch_protection_template
+forgejo_orgs: []
+# Branch protection applied to every protected branch (Forgejo has no instance-wide templates).
+forgejo_branch_protection_template:
+  enable_push: false                  # no direct or force pushes: changes arrive by merged pull request
+  required_approvals: 1
+  dismiss_stale_approvals: true
+  block_on_rejected_reviews: true
+  block_on_official_review_requests: true
+  block_on_outdated_branch: true
+  enable_status_check: true
+  status_check_contexts: ["*"]        # every reported check must pass
+  require_signed_commits: false
+  apply_to_admins: true
+  enable_merge_whitelist: false
+  enable_approvals_whitelist: false
+# Evidence (CHG-01): branch protection settings exported as JSON on the controller.
+forgejo_evidence_dir: "{{ lookup('ansible.builtin.env', 'EVIDENCE_DIR') | default(playbook_dir ~ '/../evidence', true) }}/forgejo"
+
+# --------------------------------------------------------------------------- backup (BCK-01, BCK-04)
+forgejo_backup_rpo_hours: 24
+forgejo_backup_rto_hours: 4
+# Object storage has its own backup (bucket versioning / replication); do not copy it into the dump.
+forgejo_dump_skip_object_storage: "{{ forgejo_s3_endpoint | length > 0 }}"
+
+# --------------------------------------------------------------------------- monitoring
+forgejo_textfile_dir: /var/lib/node_exporter/textfile_collector

@@ -1,0 +1,64 @@
+---
+# Forgejo (playbooks/delivery.yml). Keep secrets out of plain text: ansible-vault encrypt_string, or
+# look them up from OpenBao.
+forgejo_root_url: https://git.example.internal/
+
+# Active/passive (default): mgmt-1 is preferred; the VIP moves to mgmt-2 on failure. /srv/forgejo must
+# be a volume the storage layer replicates or shares; the hooks attach it on the new active node.
+forgejo_ha_mode: active_passive
+forgejo_vips: [10.10.0.50/24]
+# forgejo_failover_promote_command: drbdadm primary forgejo && mount /dev/drbd0 /srv/forgejo
+# forgejo_failover_demote_command: umount /srv/forgejo && drbdadm secondary forgejo
+
+forgejo_db_host: postgres.data.example.internal
+forgejo_db_password: "{{ vault_forgejo_db_password }}"
+forgejo_db_sslmode: verify-full
+
+# S3-compatible object storage for LFS, attachments, avatars, packages and Actions artifacts.
+forgejo_s3_endpoint: s3.data.example.internal:9000
+forgejo_s3_bucket: forgejo
+forgejo_s3_access_key: "{{ vault_forgejo_s3_access_key }}"
+forgejo_s3_secret_key: "{{ vault_forgejo_s3_secret_key }}"
+
+# Valkey/Redis-compatible cache, sessions and queues (required for active_active).
+forgejo_cache_host: valkey.data.example.internal
+forgejo_cache_password: "{{ vault_forgejo_cache_password }}"
+
+forgejo_secret_key: "{{ vault_forgejo_secret_key }}"
+forgejo_internal_token: "{{ vault_forgejo_internal_token }}"
+forgejo_jwt_secret: "{{ vault_forgejo_jwt_secret }}"
+forgejo_lfs_jwt_secret: "{{ vault_forgejo_lfs_jwt_secret }}"
+forgejo_metrics_token: "{{ vault_forgejo_metrics_token }}"
+forgejo_admin_password: "{{ vault_forgejo_admin_password }}"
+forgejo_oidc_client_secret: "{{ vault_forgejo_oidc_client_secret }}"
+
+# The edge proxies forward client addresses.
+forgejo_trusted_proxies: ["{{ network_zones.app }}"]
+
+# Edge route: add to edge_extra_services in group_vars/edge. Only the active node passes /api/healthz,
+# so the edge sends traffic to it. Internal by default (VPN/bastion ranges); add the runners' network.
+#   - name: forgejo
+#     hostnames: [git.example.internal]
+#     backend_group: forgejo
+#     backend_port: 3443
+#     backend_tls: true
+#     health_path: /api/healthz
+#     public: false
+#     allowed_cidrs: ["{{ network_zones.app }}"]
+#     # Diffs and code trip CRS rules; log first, tune exclusions, then switch to blocking.
+#     waf_mode: detection
+
+# Organisations and protected repositories (CHG-01); main gets forgejo_branch_protection_template.
+forgejo_orgs:
+  - name: platform
+    visibility: private
+    repos:
+      - name: infra
+        description: This repository's inventory and playbooks (deployed only from CI, CHG-02)
+
+# HTTPS from the edge proxies, the runners (app zone) and management networks (Prometheus, admins);
+# VRRP only between the Forgejo nodes (NET-01, NET-03).
+firewall_rules_forgejo:
+  - { name: forgejo-https, port: 3443, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }
+firewall_rules_keepalived:
+  - { name: forgejo-vrrp, proto: vrrp, sources: ["{{ network_zones.mgmt }}"] }

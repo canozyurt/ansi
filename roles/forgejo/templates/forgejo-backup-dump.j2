@@ -1,0 +1,25 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Backup pre_command (BCK-01): a consistent "forgejo dump" (database as SQL, repositories, data and
+# configuration) into {{ forgejo_dump_dir }}, replaced atomically. Runs where Forgejo is active;
+# a stopped standby exits 0 and keeps its last dump.
+set -euo pipefail
+NAME={{ forgejo_container_name | quote }}
+DIR={{ forgejo_dump_dir | quote }}
+{% if forgejo_ha_mode == 'active_active' and inventory_hostname != forgejo_cluster_hosts | first %}
+echo "forgejo dump runs on {{ forgejo_cluster_hosts | first }} (active/active); nothing to do here"
+exit 0
+{% endif %}
+{% raw %}
+if [ "$(docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null)" != "true" ]; then
+{% endraw %}
+  echo "Forgejo is not running on this node (standby); keeping the last dump"
+  exit 0
+fi
+rm -f "$DIR/forgejo-dump.tmp.tar.gz"
+docker exec "$NAME" forgejo dump --quiet --type tar.gz --file /backup/forgejo-dump.tmp.tar.gz \
+  --tempdir /var/lib/gitea/tmp --skip-log --skip-index --skip-repo-archives{% if forgejo_dump_skip_object_storage | bool %} \
+  --skip-lfs-data --skip-attachment-data --skip-package-data{% endif %}
+
+mv -f "$DIR/forgejo-dump.tmp.tar.gz" "$DIR/forgejo-dump.tar.gz"
+echo "forgejo dump written to $DIR/forgejo-dump.tar.gz"

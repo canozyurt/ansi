@@ -1,0 +1,60 @@
+---
+- name: Prepare the test host
+  hosts: all
+  become: true
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+    - name: Create the textfile collector directory node_exporter would provide
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/textfile_collector
+        state: directory
+        mode: "0755"
+
+    - name: Start a throwaway PostgreSQL for Forgejo
+      community.docker.docker_container:
+        name: postgres
+        image: docker.io/library/postgres:17
+        network_mode: host
+        env:
+          POSTGRES_DB: forgejo
+          POSTGRES_USER: forgejo
+          POSTGRES_PASSWORD: test-only-db-password
+        state: started
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.wait_for:
+        port: 5432
+        timeout: 120
+
+- name: Deploy source control and CI
+  ansible.builtin.import_playbook: ../../playbooks/delivery.yml

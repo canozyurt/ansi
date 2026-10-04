@@ -1,0 +1,227 @@
+---
+# Organisations, repositories and branch protection through the Forgejo API (CHG-01), plus a JSON
+# export of the protection rules as audit evidence. Run with:
+#   ansible.builtin.include_role: { name: forgejo, tasks_from: org_setup }   (playbooks/delivery.yml)
+- name: Find the active node
+  ansible.builtin.import_tasks: health.yml
+  when: forgejo_active_host is not defined
+
+- name: Organisation setup
+  run_once: true
+  delegate_to: "{{ forgejo_active_host }}"
+  vars:
+    forgejo_api: "https://127.0.0.1:{{ forgejo_https_port }}/api/v1"
+    forgejo_api_headers:
+      Authorization: "token {{ forgejo_api_token }}"
+    forgejo_repo_list: >-
+      {%- set out = [] -%}
+      {%- for org in forgejo_orgs -%}
+      {%-   for repo in org.repos | default([]) -%}
+      {%-     set _ = out.append({'org': org.name, 'name': repo.name, 'description': repo.description | default(''),
+                                  'private': repo.private | default(true)}) -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    forgejo_protection_list: >-
+      {%- set out = [] -%}
+      {%- for org in forgejo_orgs -%}
+      {%-   for repo in org.repos | default([]) -%}
+      {%-     for branch in repo.protected_branches | default(['main']) -%}
+      {%-       set _ = out.append({'org': org.name, 'repo': repo.name, 'branch': branch,
+                                    'settings': forgejo_branch_protection_template
+                                                | combine(repo.branch_protection | default({}))
+                                                | combine({'rule_name': branch})}) -%}
+      {%-     endfor -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {{ out }}
+  block:
+    - name: Load the automation token
+      ansible.builtin.slurp:
+        src: "{{ forgejo_config_dir }}/secrets/automation.token"
+      register: forgejo_token_file
+      when:
+        - forgejo_api_token is not defined
+        - forgejo_automation_token | length == 0
+      no_log: true
+
+    - name: Use the automation token
+      ansible.builtin.set_fact:
+        forgejo_api_token: >-
+          {{ forgejo_automation_token if forgejo_automation_token | length > 0
+             else (forgejo_token_file.content | b64decode | trim) }}
+      when: forgejo_api_token is not defined
+      no_log: true
+
+    - name: Look up the organisations
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/orgs/{{ item.name }}"
+        headers: "{{ forgejo_api_headers }}"
+        validate_certs: false
+        status_code: [200, 404]
+      loop: "{{ forgejo_orgs }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: forgejo_org_lookup
+
+    - name: Create the missing organisations
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/orgs"
+        method: POST
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body:
+          username: "{{ item.item.name }}"
+          full_name: "{{ item.item.full_name | default(item.item.name) }}"
+          visibility: "{{ item.item.visibility | default('private') }}"
+        validate_certs: false
+        status_code: 201
+      loop: "{{ forgejo_org_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.status == 404
+      changed_when: true
+      tags: [chk_chg_01]
+
+    - name: Look up the repositories
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ item.org }}/{{ item.name }}"
+        headers: "{{ forgejo_api_headers }}"
+        validate_certs: false
+        status_code: [200, 404]
+      loop: "{{ forgejo_repo_list }}"
+      loop_control:
+        label: "{{ item.org }}/{{ item.name }}"
+      register: forgejo_repo_lookup
+
+    - name: Create the missing repositories (default branch main)
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/orgs/{{ item.item.org }}/repos"
+        method: POST
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          private: "{{ item.item.private | bool }}"
+          auto_init: true
+          default_branch: main
+        validate_certs: false
+        status_code: 201
+      loop: "{{ forgejo_repo_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.org }}/{{ item.item.name }}"
+      when: item.status == 404
+      changed_when: true
+      tags: [chk_chg_01]
+
+    - name: Look up the branch protection rules
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ item.org }}/{{ item.repo }}/branch_protections/{{ item.branch | urlencode }}"
+        headers: "{{ forgejo_api_headers }}"
+        validate_certs: false
+        status_code: [200, 404]
+      loop: "{{ forgejo_protection_list }}"
+      loop_control:
+        label: "{{ item.org }}/{{ item.repo }}:{{ item.branch }}"
+      register: forgejo_protection_lookup
+
+    - name: Create the missing branch protection rules (CHG-01)
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ item.item.org }}/{{ item.item.repo }}/branch_protections"
+        method: POST
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body: "{{ item.item.settings }}"
+        validate_certs: false
+        status_code: 201
+      loop: "{{ forgejo_protection_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.org }}/{{ item.item.repo }}:{{ item.item.branch }}"
+      when: item.status == 404
+      changed_when: true
+      tags: [chk_chg_01]
+
+    - name: Correct branch protection rules that differ from the template (CHG-01)
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ item.item.org }}/{{ item.item.repo }}/branch_protections/{{ item.item.branch | urlencode }}"
+        method: PATCH
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body: "{{ item.item.settings | dict2items | rejectattr('key', 'equalto', 'rule_name') | items2dict }}"
+        validate_certs: false
+        status_code: 200
+      loop: "{{ forgejo_protection_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.org }}/{{ item.item.repo }}:{{ item.item.branch }}"
+      when:
+        - item.status == 200
+        - item.json | dict2items | selectattr('key', 'in', item.item.settings.keys() | list) | items2dict
+          != item.item.settings
+      changed_when: true
+      tags: [chk_chg_01]
+
+    - name: Read the branch protection rules for the evidence export
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ item.org }}/{{ item.name }}/branch_protections"
+        headers: "{{ forgejo_api_headers }}"
+        validate_certs: false
+      loop: "{{ forgejo_repo_list }}"
+      loop_control:
+        label: "{{ item.org }}/{{ item.name }}"
+      register: forgejo_protection_export
+      tags: [chk_chg_01]
+
+    - name: Collect the exported rules per repository
+      ansible.builtin.set_fact:
+        forgejo_protection_evidence: >-
+          {{ dict(forgejo_repo_list | map(attribute='org') | zip(forgejo_repo_list | map(attribute='name'))
+                  | map('join', '/') | zip(forgejo_protection_export.results | map(attribute='json'))) }}
+
+    - name: Check every protected branch meets the change approval policy (CHG-01)
+      ansible.builtin.assert:
+        that:
+          - rule.rule_name is defined
+          - rule.required_approvals | int >= 1
+          - not rule.enable_push
+          - rule.dismiss_stale_approvals
+          - rule.block_on_rejected_reviews
+          - rule.enable_status_check
+          - rule.apply_to_admins
+        fail_msg: >-
+          {{ item.org }}/{{ item.repo }}:{{ item.branch }} does not meet the CHG-01 policy (protected, 1+ approval,
+          no direct or force pushes, stale approvals dismissed, rejected reviews and status checks block merging,
+          admins included).
+        quiet: true
+      vars:
+        rule: >-
+          {{ forgejo_protection_evidence[item.org ~ '/' ~ item.repo]
+             | selectattr('rule_name', 'equalto', item.branch) | first | default({}) }}
+      loop: "{{ forgejo_protection_list }}"
+      loop_control:
+        label: "{{ item.org }}/{{ item.repo }}:{{ item.branch }}"
+      tags: [chk_chg_01]
+
+    - name: Create the evidence directory on the controller
+      ansible.builtin.file:
+        path: "{{ forgejo_evidence_dir }}"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+      become: false
+
+    - name: Export the branch protection settings as evidence (CHG-01)
+      ansible.builtin.copy:
+        content: >-
+          {{ {'source': forgejo_root_url ~ 'api/v1/repos/' ~ item.key ~ '/branch_protections',
+              'repository': item.key,
+              'policy': forgejo_branch_protection_template,
+              'branch_protections': item.value} | to_nice_json(sort_keys=true) }}
+        dest: "{{ forgejo_evidence_dir }}/branch-protection-{{ item.key | replace('/', '_') }}.json"
+        mode: "0640"
+      loop: "{{ forgejo_protection_evidence | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      delegate_to: localhost
+      become: false
+      tags: [chk_chg_01]

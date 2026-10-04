@@ -369,7 +369,8 @@ requirements:
       iso27001: ["8.32"]
       iso27017: []
     check: "Branch protection settings exported and checked"
-    status: not_started
+    status: implemented
+    progress: "roles/forgejo org_setup creates organisations and repositories with main protected (no direct/force push, 1+ approval, stale approvals dismissed, rejected reviews and status checks block, admins included), checks each rule against the policy and exports it to JSON evidence; molecule/forgejo proves the settings and that a direct push to main is rejected. Remaining: archive the evidence file in the evidence store (EVD-02)."
   - id: CHG-02
     requirement: "Production changes run only from CI, with each run logged (who, what, when)"
     controls:
@@ -377,7 +378,8 @@ requirements:
       iso27001: ["8.32", "8.15"]
       iso27017: []
     check: "CI run logs shipped to SIEM; host denies ad-hoc Ansible runs"
-    status: not_started
+    status: designed
+    progress: "Forgejo Actions runners (roles/forgejo_runner, registered with a vault secret, jobs in unprivileged containers on an isolated network) and a documented deploy pipeline fetching the vault password from OpenBao. Remaining: deploy runner and pipeline in production, deny ad-hoc Ansible runs on hosts, ship CI run logs to the SIEM."
   - id: CHG-03
     requirement: "Drift from the declared state is detected and alerted"
     controls:
@@ -410,7 +412,8 @@ requirements:
       iso27001: ["8.29"]
       iso27017: []
     check: "CI matrix; coverage report of checklist IDs"
-    status: not_started
+    status: designed
+    progress: "Molecule scenarios exist for the service roles (molecule/forgejo covers forgejo and forgejo_runner on Ubuntu 24.04). Remaining: Debian 12 and Ubuntu 22.04 platforms for every scenario, checklist coverage report in CI."
   - id: CHG-07
     requirement: "Upgrades ship as tested release bundles: pinned versions, a CI-tested path from the previous release, a backup first, one node at a time with health gates"
     controls:

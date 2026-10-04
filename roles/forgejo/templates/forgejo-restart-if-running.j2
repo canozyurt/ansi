@@ -1,0 +1,13 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Restarts a container only when it runs (the active/passive standby stays stopped).
+set -eu
+name="$1"
+{% raw %}
+if [ "$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" = "true" ]; then
+{% endraw %}
+  docker restart --time 30 "$name" >/dev/null
+  echo restarted
+else
+  echo "not running"
+fi

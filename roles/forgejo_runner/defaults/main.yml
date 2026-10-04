@@ -1,0 +1,49 @@
+---
+# Forgejo Actions runner (CHG-02: production changes run from CI). Each host of the forgejo_runner
+# group runs one runner container that starts every job in its own container on the host's Docker.
+forgejo_runner_image: "{{ versions_images.forgejo_runner }}"
+forgejo_runner_container_name: forgejo-runner
+# The runner image runs as uid/gid 1000.
+forgejo_runner_uid: 1000
+forgejo_runner_memory_limit: 512m
+forgejo_runner_data_dir: /opt/forgejo-runner
+
+# Two or more runners so CI keeps working while one host is down (HA-01).
+forgejo_runner_min_nodes: 2
+forgejo_runner_allow_single_node: false
+forgejo_runner_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+# Forgejo instance the runner polls (the public URL through the edge, or the Forgejo VIP).
+forgejo_runner_instance_url: "{{ forgejo_root_url | default('') }}"
+# Inventory group of the Forgejo nodes; registration runs there with the Forgejo CLI.
+forgejo_runner_forgejo_group: forgejo
+forgejo_runner_forgejo_container: "{{ forgejo_container_name | default('forgejo') }}"
+# Verify the instance certificate (keep true; labs with self-signed certificates set false).
+forgejo_runner_verify_tls: true
+
+# Registration secret from Vault/OpenBao: 40 hexadecimal characters. Each runner registers with
+# sha1(secret + ":" + inventory_hostname), so one vault entry serves every runner host.
+forgejo_runner_registration_secret: ""
+# Scope: "" (instance-wide), "<org>" or "<org>/<repo>". A deploy runner should be limited to the
+# infrastructure organisation or repository.
+forgejo_runner_scope: ""
+forgejo_runner_name: "{{ inventory_hostname }}"
+# label:docker://image. Jobs choose a runner with "runs-on: <label>".
+forgejo_runner_labels:
+  - "docker:docker://{{ versions_images.forgejo_runner_job }}"
+forgejo_runner_capacity: 2
+forgejo_runner_job_timeout: 3h
+
+# Isolation: jobs run as unprivileged containers on a dedicated bridge network without
+# inter-container traffic, without the Docker socket and without host volumes.
+forgejo_runner_job_network: forgejo-jobs
+# Empty: Docker picks a subnet from its default address pools.
+forgejo_runner_job_subnet: ""
+forgejo_runner_job_privileged: false
+# Extra "docker run" options for job containers; the host CA bundle lets jobs trust the internal CA.
+forgejo_runner_job_options: >-
+  --security-opt=no-new-privileges:true --cap-drop=NET_RAW --pids-limit=4096
+  --volume=/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+forgejo_runner_job_valid_volumes: [/etc/ssl/certs/ca-certificates.crt]
+
+forgejo_runner_textfile_dir: /var/lib/node_exporter/textfile_collector

@@ -5,7 +5,11 @@ groups:
   - name: availability
     rules:
       - alert: TargetDown
+[% if prometheus_alert_target_down_exclude_jobs | length > 0 %]
+        expr: up{job!~"[[ prometheus_alert_target_down_exclude_jobs | join('|') ]]"} == 0
+[% else %]
         expr: up == 0
+[% endif %]
         for: [[ prometheus_alert_target_down_for ]]
         labels:
           severity: critical

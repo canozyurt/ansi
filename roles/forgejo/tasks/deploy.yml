@@ -1,0 +1,126 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Install the dump and restart helpers
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: [forgejo-backup-dump, forgejo-restart-if-running]
+  tags: [chk_bck_01]
+
+- name: Create the configuration directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ forgejo_config_dir }}", owner: root, mode: "0755" }
+    - { path: "{{ forgejo_config_dir }}/conf", owner: "{{ forgejo_container_uid }}", mode: "0700" }
+    - { path: "{{ forgejo_config_dir }}/secrets", owner: root, mode: "0700" }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Create the data, repository and dump directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ forgejo_container_uid }}"
+    group: "{{ forgejo_container_uid }}"
+    mode: "0750"
+  loop:
+    - "{{ forgejo_data_dir }}"
+    - "{{ forgejo_repo_dir }}"
+    - "{{ forgejo_dump_dir }}"
+  tags: [chk_bck_01]
+
+# The image's entrypoint keeps these at 0700.
+- name: Create the custom directory the configuration is mounted into
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ forgejo_container_uid }}"
+    group: "{{ forgejo_container_uid }}"
+    mode: "0700"
+  loop:
+    - "{{ forgejo_data_dir }}/custom"
+    - "{{ forgejo_data_dir }}/custom/conf"
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: forgejo
+    tls_cert_dir: "{{ forgejo_config_dir }}/tls"
+    tls_cert_owner: "{{ forgejo_container_uid }}"
+    tls_cert_common_name: "{{ forgejo_root_url | urlsplit('hostname') }}"
+    tls_cert_src_cert: "{{ forgejo_tls_cert_file }}"
+    tls_cert_src_key: "{{ forgejo_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart Forgejo when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Forgejo restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart forgejo
+
+- name: Write the Forgejo configuration (contains secrets)
+  ansible.builtin.template:
+    src: app.ini.j2
+    dest: "{{ forgejo_config_dir }}/conf/app.ini"
+    owner: "{{ forgejo_container_uid }}"
+    group: "{{ forgejo_container_uid }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart forgejo
+  tags: [chk_sec_02, chk_iam_01, chk_chg_01]
+
+- name: Read the running Forgejo container
+  community.docker.docker_container_info:
+    name: "{{ forgejo_container_name }}"
+  register: forgejo_current
+
+- name: Prepare a version change
+  ansible.builtin.import_tasks: upgrade.yml
+
+# active_passive: the failover service starts Forgejo only on the node holding the VIP, so Ansible
+# creates the container everywhere but starts it only where it already runs.
+- name: Run the Forgejo container
+  community.docker.docker_container:
+    name: "{{ forgejo_container_name }}"
+    image: "{{ forgejo_image }}"
+    user: "{{ forgejo_container_uid }}:{{ forgejo_container_uid }}"
+    network_mode: host
+    env:
+      GITEA_TEMP: /var/lib/gitea/tmp
+      TMPDIR: /var/lib/gitea/tmp
+    volumes:
+      - "{{ forgejo_data_dir }}:/var/lib/gitea"
+      - "{{ forgejo_repo_dir }}:/var/lib/gitea/repositories"
+      - "{{ forgejo_config_dir }}/conf/app.ini:/var/lib/gitea/custom/conf/app.ini:ro"
+      - "{{ forgejo_config_dir }}/tls:/etc/forgejo/tls:ro"
+      - "{{ forgejo_dump_dir }}:/backup"
+      # The host trust store (with the internal CA) for Keycloak, S3 and webhooks.
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    restart_policy: "{{ 'no' if forgejo_ha_mode == 'active_passive' else 'unless-stopped' }}"
+    memory: "{{ forgejo_memory_limit }}"
+    pids_limit: 2048
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: forgejo
+    state: >-
+      {{ 'started' if forgejo_ha_mode != 'active_passive' or forgejo_current.container.State.Running | default(false)
+         else 'present' }}
+  register: forgejo_container
+  tags: [chk_hrd_02, chk_iam_01]

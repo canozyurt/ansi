@@ -24,6 +24,7 @@ vrrp_instance {{ inst.name }} {
     priority {{ 200 - 10 * order.index(inventory_hostname) }}
     advert_int {{ keepalived_advert_int }}
     preempt_delay {{ keepalived_preempt_delay }}
+{%   if keepalived_peers | length > 1 %}
     unicast_src_ip {{ keepalived_address }}
     unicast_peer {
 {%   for peer in keepalived_peers | reject('equalto', inventory_hostname) | list %}
@@ -34,6 +35,9 @@ vrrp_instance {{ inst.name }} {
     }
     # Accept adverts only from the peers listed above.
     check_unicast_src
+{%   else %}
+    # Single-node lab (keepalived_allow_single_node): no peers, so no unicast settings.
+{%   endif %}
 {%   if keepalived_auth_pass | length > 0 %}
     authentication {
         auth_type PASS

@@ -1,0 +1,176 @@
+; {{ ansible_managed }}
+; Contains secrets: root renders it 0600 for the container user and mounts it read-only.
+{% set redis_url = ('rediss' if forgejo_cache_tls | bool else 'redis') ~ '://'
+     ~ ((':' ~ (forgejo_cache_password | urlencode) ~ '@') if forgejo_cache_password | length > 0 else '')
+     ~ forgejo_cache_host ~ ':' ~ forgejo_cache_port ~ '/' ~ forgejo_cache_db %}
+APP_NAME = {{ forgejo_app_name }}
+RUN_USER = git
+RUN_MODE = prod
+WORK_PATH = /var/lib/gitea
+
+[server]
+PROTOCOL = https
+HTTP_ADDR = 0.0.0.0
+HTTP_PORT = {{ forgejo_https_port }}
+ROOT_URL = {{ forgejo_root_url }}
+DOMAIN = {{ forgejo_root_url | urlsplit('hostname') }}
+CERT_FILE = /etc/forgejo/tls/tls.crt
+KEY_FILE = /etc/forgejo/tls/tls.key
+SSL_MIN_VERSION = TLSv1.2
+APP_DATA_PATH = /var/lib/gitea/data
+LFS_START_SERVER = true
+LFS_JWT_SECRET = {{ forgejo_lfs_jwt_secret }}
+OFFLINE_MODE = true
+LANDING_PAGE = login
+{% if forgejo_ssh_enabled | bool %}
+DISABLE_SSH = false
+START_SSH_SERVER = true
+SSH_DOMAIN = {{ forgejo_root_url | urlsplit('hostname') }}
+SSH_PORT = {{ forgejo_ssh_port }}
+SSH_LISTEN_PORT = {{ forgejo_ssh_port }}
+{% else %}
+DISABLE_SSH = true
+START_SSH_SERVER = false
+{% endif %}
+
+[database]
+DB_TYPE = postgres
+HOST = {{ forgejo_db_host }}:{{ forgejo_db_port }}
+NAME = {{ forgejo_db_name }}
+USER = {{ forgejo_db_user }}
+PASSWD = `{{ forgejo_db_password }}`
+SSL_MODE = {{ forgejo_db_sslmode }}
+LOG_SQL = false
+
+[repository]
+ROOT = /var/lib/gitea/repositories
+DEFAULT_PRIVATE = {{ 'private' if forgejo_default_private | bool else 'last' }}
+DEFAULT_BRANCH = main
+
+[repository.signing]
+; Commits signed by their authors (GPG or SSH keys) are verified; the instance itself does not sign.
+SIGNING_KEY = none
+DEFAULT_TRUST_MODEL = {{ forgejo_default_trust_model }}
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY = {{ forgejo_secret_key }}
+INTERNAL_TOKEN = {{ forgejo_internal_token }}
+GLOBAL_TWO_FACTOR_REQUIREMENT = {{ forgejo_two_factor_requirement }}
+MIN_PASSWORD_LENGTH = {{ forgejo_min_password_length }}
+PASSWORD_COMPLEXITY = lower,upper,digit
+PASSWORD_HASH_ALGO = argon2
+LOGIN_REMEMBER_DAYS = 1
+REVERSE_PROXY_LIMIT = 1
+REVERSE_PROXY_TRUSTED_PROXIES = {{ forgejo_trusted_proxies | join(',') }}
+DISABLE_WEBHOOKS = false
+
+[oauth2]
+; Forgejo as an OAuth2 provider is not needed (Keycloak is the IdP).
+ENABLED = false
+JWT_SECRET = {{ forgejo_jwt_secret }}
+
+[service]
+DISABLE_REGISTRATION = false
+ALLOW_ONLY_EXTERNAL_REGISTRATION = true
+ENABLE_INTERNAL_SIGNIN = {{ forgejo_break_glass_login | bool | lower }}
+ENABLE_BASIC_AUTHENTICATION = false
+REQUIRE_SIGNIN_VIEW = {{ forgejo_require_signin_view | bool | lower }}
+DEFAULT_KEEP_EMAIL_PRIVATE = true
+DEFAULT_ALLOW_CREATE_ORGANIZATION = {{ forgejo_allow_create_organization | bool | lower }}
+DEFAULT_ORG_VISIBILITY = private
+ENABLE_NOTIFY_MAIL = false
+
+[openid]
+ENABLE_OPENID_SIGNIN = false
+ENABLE_OPENID_SIGNUP = false
+
+[oauth2_client]
+ENABLE_AUTO_REGISTRATION = true
+USERNAME = nickname
+; Never attach an OIDC login to an existing local account by e-mail address.
+ACCOUNT_LINKING = disabled
+UPDATE_AVATAR = false
+OPENID_CONNECT_SCOPES = email profile
+
+[session]
+{% if forgejo_cache_host | length > 0 %}
+PROVIDER = redis
+PROVIDER_CONFIG = {{ redis_url }}
+{% else %}
+PROVIDER = db
+{% endif %}
+COOKIE_SECURE = true
+COOKIE_NAME = forgejo_session
+SAME_SITE = lax
+SESSION_LIFE_TIME = {{ forgejo_session_lifetime }}
+
+[cache]
+{% if forgejo_cache_host | length > 0 %}
+ADAPTER = redis
+HOST = {{ redis_url }}
+{% else %}
+ADAPTER = memory
+{% endif %}
+
+[queue]
+{% if forgejo_cache_host | length > 0 %}
+TYPE = redis
+CONN_STR = {{ redis_url }}
+{% else %}
+TYPE = level
+{% endif %}
+
+[indexer]
+; Database-backed issue search works with several nodes; code search is off.
+ISSUE_INDEXER_TYPE = db
+REPO_INDEXER_ENABLED = false
+
+[storage]
+{% if forgejo_s3_endpoint | length > 0 %}
+STORAGE_TYPE = minio
+MINIO_ENDPOINT = {{ forgejo_s3_endpoint }}
+MINIO_ACCESS_KEY_ID = {{ forgejo_s3_access_key }}
+MINIO_SECRET_ACCESS_KEY = {{ forgejo_s3_secret_key }}
+MINIO_BUCKET = {{ forgejo_s3_bucket }}
+MINIO_LOCATION = {{ forgejo_s3_region }}
+MINIO_USE_SSL = {{ forgejo_s3_use_ssl | bool | lower }}
+MINIO_INSECURE_SKIP_VERIFY = {{ forgejo_s3_insecure_skip_verify | bool | lower }}
+MINIO_BUCKET_LOOKUP = {{ forgejo_s3_bucket_lookup }}
+SERVE_DIRECT = false
+{% else %}
+STORAGE_TYPE = local
+{% endif %}
+
+[lfs]
+{% if forgejo_s3_endpoint | length == 0 %}
+PATH = /var/lib/gitea/data/lfs
+{% endif %}
+
+[actions]
+ENABLED = true
+DEFAULT_ACTIONS_URL = {{ forgejo_actions_default_url }}
+
+[metrics]
+ENABLED = true
+TOKEN = {{ forgejo_metrics_token }}
+
+[log]
+MODE = console
+LEVEL = Info
+LOGGER_ACCESS_MODE = console
+LOGGER_ROUTER_MODE = console
+
+[cron.update_checker]
+ENABLED = false
+
+[other]
+SHOW_FOOTER_VERSION = false
+SHOW_FOOTER_TEMPLATE_LOAD_TIME = false
+{% for section, values in forgejo_app_ini_extra.items() %}
+
+[{{ section }}]
+{%   for key, value in values.items() %}
+{{ key }} = {{ value }}
+{%   endfor %}
+{% endfor %}

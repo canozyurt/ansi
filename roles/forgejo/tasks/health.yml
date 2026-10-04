@@ -1,0 +1,44 @@
+---
+# Healthy means: every node serves (active_active, standalone) or the active node behind the VIP
+# serves (active_passive). Sets forgejo_active_host, the node the API and CLI tasks run on.
+- name: Wait until Forgejo is ready on this node
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ forgejo_https_port }}/api/healthz"
+    validate_certs: false
+    status_code: 200
+  register: forgejo_ready
+  until: forgejo_ready.status == 200
+  retries: 60
+  delay: 5
+  when: forgejo_ha_mode != 'active_passive'
+  tags: [chk_log_05]
+
+- name: Wait until the active node answers on the VIP
+  ansible.builtin.uri:
+    url: "https://{{ (forgejo_vips | first).split('/') | first }}:{{ forgejo_https_port }}/api/healthz"
+    validate_certs: false
+    status_code: 200
+  register: forgejo_vip_ready
+  until: forgejo_vip_ready.status == 200
+  retries: 60
+  delay: 5
+  run_once: true
+  when: forgejo_ha_mode == 'active_passive'
+  tags: [chk_log_05, chk_ha_01]
+
+- name: Find the node holding the VIP
+  ansible.builtin.command:
+    argv: [ip, -o, addr, show, to, "{{ (forgejo_vips | first).split('/') | first }}"]
+  delegate_to: "{{ item }}"
+  loop: "{{ forgejo_cluster_hosts }}"
+  register: forgejo_vip_holder
+  changed_when: false
+  run_once: true
+  when: forgejo_ha_mode == 'active_passive'
+
+- name: Note the node serving Forgejo
+  ansible.builtin.set_fact:
+    forgejo_active_host: >-
+      {{ (forgejo_vip_holder.results | selectattr('stdout', 'truthy') | map(attribute='item') | first)
+         if forgejo_ha_mode == 'active_passive' else (forgejo_cluster_hosts | first) }}
+  run_once: true

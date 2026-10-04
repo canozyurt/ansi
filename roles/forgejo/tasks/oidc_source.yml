@@ -1,0 +1,68 @@
+---
+# OIDC login source (IAM-01, IAM-09), created and updated with the Forgejo admin CLI. The settings
+# (with the client secret) are hashed into a marker file, so the source is only rewritten when they change.
+- name: Work out the login source settings
+  ansible.builtin.set_fact:
+    forgejo_oidc_args: >-
+      {{ ['--name', forgejo_oidc_name,
+          '--provider', 'openidConnect',
+          '--key', forgejo_oidc_client_id,
+          '--auto-discover-url', forgejo_oidc_keycloak_url ~ '/realms/' ~ forgejo_oidc_realm ~ '/.well-known/openid-configuration',
+          '--scopes', 'openid', '--scopes', 'email', '--scopes', 'profile',
+          '--group-claim-name', forgejo_oidc_roles_claim,
+          '--admin-group', forgejo_oidc_admin_role]
+         + (['--restricted-group', forgejo_oidc_restricted_role] if forgejo_oidc_restricted_role | length > 0 else [])
+         + (['--group-team-map', forgejo_oidc_group_team_map | to_json, '--group-team-map-removal']
+            if forgejo_oidc_group_team_map | length > 0 else [])
+         + (['--skip-local-2fa'] if forgejo_oidc_skip_local_2fa | bool else []) }}
+  tags: [chk_iam_01, chk_iam_09]
+
+- name: Read the marker of the applied settings
+  ansible.builtin.slurp:
+    src: "{{ forgejo_config_dir }}/secrets/oidc-source.sha256"
+  register: forgejo_oidc_marker
+  failed_when: false
+
+- name: Compare the settings with the marker
+  ansible.builtin.set_fact:
+    forgejo_oidc_hash: "{{ (forgejo_oidc_args + [forgejo_oidc_client_secret]) | to_json | hash('sha256') }}"
+  no_log: true
+
+- name: Apply the login source settings
+  when: forgejo_oidc_hash != (forgejo_oidc_marker.content | default('') | b64decode | trim)
+  tags: [chk_iam_01, chk_iam_09]
+  block:
+    - name: List the login sources
+      ansible.builtin.command:
+        argv: [docker, exec, "{{ forgejo_container_name }}", forgejo, admin, auth, list]
+      register: forgejo_auth_list
+      changed_when: false
+
+    - name: Find the existing source
+      ansible.builtin.set_fact:
+        forgejo_oidc_source_id: >-
+          {{ forgejo_auth_list.stdout_lines | select('match', '^[0-9]') | map('split')
+             | selectattr('1', 'equalto', forgejo_oidc_name) | map(attribute='0') | first | default('') }}
+
+    # $@ holds the arguments after "sh -c script name"; the secret comes from the environment.
+    - name: Create or update the OIDC login source (roles claim, platform-admin is site admin)
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'exec', '--env', 'FORGEJO_OIDC_SECRET', forgejo_container_name, 'sh', '-c',
+              'exec forgejo admin auth "$@" --secret "$FORGEJO_OIDC_SECRET"', 'forgejo-oidc']
+             + (['update-oauth', '--id', forgejo_oidc_source_id] if forgejo_oidc_source_id | length > 0 else ['add-oauth'])
+             + forgejo_oidc_args }}
+      environment:
+        FORGEJO_OIDC_SECRET: "{{ forgejo_oidc_client_secret }}"
+      changed_when: true
+      no_log: true
+
+    - name: Record the applied settings
+      ansible.builtin.copy:
+        content: "{{ forgejo_oidc_hash }}\n"
+        dest: "{{ forgejo_config_dir }}/secrets/oidc-source.sha256"
+        owner: root
+        group: root
+        mode: "0600"
+      delegate_to: "{{ item }}"
+      loop: "{{ forgejo_cluster_hosts }}"

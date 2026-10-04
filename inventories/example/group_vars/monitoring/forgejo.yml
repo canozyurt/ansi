@@ -1,0 +1,52 @@
+---
+# Forgejo alert rules for Prometheus (collected from prometheus_rules_* variables, LOG-05).
+# Annotations use Prometheus templates, wrapped in raw blocks so Ansible leaves them alone.
+# Scrape entry for prometheus_scrape_extra (group_vars/monitoring):
+#   - { name: forgejo, group: forgejo, port: 3443, path: /metrics, scheme: https,
+#       bearer_token: "{{ vault_forgejo_metrics_token }}" }
+prometheus_rules_forgejo:
+  - name: forgejo
+    rules:
+      - alert: ForgejoUnavailable
+        # Active/passive: only the active node answers, so alert when no node does.
+        expr: max(up{job="forgejo"}) == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: No Forgejo node is serving
+          description: Every Forgejo scrape fails; pull requests, CI and deployments are blocked.
+      - alert: ForgejoSplitBrain
+        expr: sum(forgejo_failover_active) > 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Forgejo runs on more than one node in active/passive mode
+          description: >-
+            {% raw %}{{ $value }}{% endraw %} nodes run Forgejo. Stop all but the VIP holder and check the
+            replicated volume for divergent writes.
+      - alert: ForgejoNoStandby
+        expr: count(forgejo_failover_eligible) > 1 and sum(forgejo_failover_eligible) < 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Forgejo has no standby that can take over
+          description: Fewer than two Forgejo nodes are eligible for the active role.
+      - alert: ForgejoActionsRunnerDown
+        expr: forgejo_runner_up == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}Forgejo Actions runner on {{ $labels.instance }} is down{% endraw %}"
+          description: CI jobs and deployments queue until a runner is back.
+      - alert: ForgejoNoActionsRunner
+        expr: count(forgejo_runner_up) > 0 and sum(forgejo_runner_up) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No Forgejo Actions runner is up
+          description: Production changes run only from CI (CHG-02); no deployment can run.

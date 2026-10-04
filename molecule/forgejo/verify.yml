@@ -1,0 +1,374 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_url: https://127.0.0.1:3443
+    verify_api: https://127.0.0.1:3443/api/v1
+    verify_dev_password: Test-only-Dev-Password-123
+  tasks:
+    # ------------------------------------------------------------------ container and TLS
+    - name: Inspect the Forgejo container
+      community.docker.docker_container_info:
+        name: forgejo
+      register: verify_container
+      tags: [chk_hrd_02]
+
+    - name: The container runs as non-root with no capabilities, no privilege escalation and a read-only root
+      ansible.builtin.assert:
+        that:
+          - verify_container.container.State.Running
+          - verify_container.container.Config.User == '1000:1000'
+          - "'ALL' in verify_container.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
+          - verify_container.container.HostConfig.ReadonlyRootfs
+          - not verify_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02]
+
+    - name: Forgejo is healthy over HTTPS
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/api/healthz"
+        validate_certs: false
+      register: verify_health
+      tags: [chk_sec_03, chk_log_05]
+
+    - name: The health check passes for the database and cache
+      ansible.builtin.assert:
+        that: verify_health.json.status == 'pass'
+      tags: [chk_sec_03, chk_log_05]
+
+    - name: Plain HTTP is not served on the HTTPS port
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3443/api/healthz
+        status_code: [-1, 400]
+      register: verify_plain
+      failed_when: verify_plain.status == 200
+      tags: [chk_sec_03]
+
+    - name: HTTPS refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:3443 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    # ------------------------------------------------------------------ metrics
+    - name: Metrics need the token
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/metrics"
+        validate_certs: false
+        status_code: 401
+      tags: [chk_log_05]
+
+    - name: Read the metrics with the token
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/metrics"
+        headers:
+          Authorization: Bearer test-only-metrics-token-0123456789abcdef
+        validate_certs: false
+        return_content: true
+      register: verify_metrics
+      tags: [chk_log_05]
+
+    - name: Prometheus metrics are exposed
+      ansible.builtin.assert:
+        that: "'gitea_repositories' in verify_metrics.content"
+      tags: [chk_log_05]
+
+    # ------------------------------------------------------------------ identity
+    - name: List the local users
+      ansible.builtin.command: docker exec forgejo forgejo admin user list --admin
+      register: verify_admins
+      changed_when: false
+      tags: [chk_iam_01]
+
+    - name: The break-glass admin is the only site admin
+      ansible.builtin.assert:
+        that:
+          - verify_admins.stdout_lines | select('search', 'break-glass-admin') | list | length == 1
+          - verify_admins.stdout_lines | select('match', '^[0-9]') | list | length == 1
+      tags: [chk_iam_01]
+
+    - name: List all local users
+      ansible.builtin.command: docker exec forgejo forgejo admin user list
+      register: verify_users
+      changed_when: false
+      tags: [chk_iam_01, chk_chg_01]
+
+    - name: Create a local test user with a password
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - forgejo
+          - forgejo
+          - admin
+          - user
+          - create
+          - --username
+          - dev-test
+          - --email
+          - dev-test@example.test
+          - --password
+          - "{{ verify_dev_password }}"
+          - --must-change-password=false
+      when: verify_users.stdout_lines | select('search', ' dev-test ') | list | length == 0
+      changed_when: false
+      tags: [chk_iam_01, chk_chg_01]
+
+    - name: Open the login page
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/user/login"
+        validate_certs: false
+        return_content: true
+      register: verify_login_page
+      tags: [chk_iam_01]
+
+    - name: The login page offers no password form
+      ansible.builtin.assert:
+        that: "'name=\"password\"' not in verify_login_page.content"
+      tags: [chk_iam_01]
+
+    # With the form enabled Forgejo answers 303 (signed in) to correct credentials and 200 to wrong ones.
+    - name: Try a local password login through the form with correct credentials
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/user/login"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          user_name: dev-test
+          password: "{{ verify_dev_password }}"
+        follow_redirects: none
+        validate_certs: false
+        status_code: [200, 302, 303, 403]
+      register: verify_login_post
+      tags: [chk_iam_01]
+
+    - name: The form login is refused
+      ansible.builtin.assert:
+        that: verify_login_post.status == 403
+      tags: [chk_iam_01]
+
+    - name: Try the API with the local password (HTTP basic auth)
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/user"
+        url_username: dev-test
+        url_password: "{{ verify_dev_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200, 401, 403]
+      register: verify_basic
+      tags: [chk_iam_01]
+
+    - name: Password authentication on the API is refused
+      ansible.builtin.assert:
+        that: verify_basic.status in [401, 403]
+      tags: [chk_iam_01]
+
+    # ------------------------------------------------------------------ change approval (CHG-01)
+    - name: Read the automation token
+      ansible.builtin.slurp:
+        src: /opt/forgejo/secrets/automation.token
+      register: verify_token_file
+      no_log: true
+
+    - name: Read the repository
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/repos/platform/infra"
+        headers:
+          Authorization: "token {{ verify_token_file.content | b64decode | trim }}"
+        validate_certs: false
+      register: verify_repo
+      tags: [chk_chg_01]
+
+    - name: Read the branch protection of main
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/repos/platform/infra/branch_protections/main"
+        headers:
+          Authorization: "token {{ verify_token_file.content | b64decode | trim }}"
+        validate_certs: false
+      register: verify_protection
+      tags: [chk_chg_01]
+
+    - name: The organisation and repository exist and main needs an approved pull request
+      ansible.builtin.assert:
+        that:
+          - verify_repo.json.owner.login == 'platform'
+          - verify_repo.json.default_branch == 'main'
+          - verify_repo.json.private
+          - verify_protection.json.required_approvals == 1
+          - not verify_protection.json.enable_push
+          - verify_protection.json.dismiss_stale_approvals
+          - verify_protection.json.block_on_rejected_reviews
+          - verify_protection.json.enable_status_check
+          - verify_protection.json.apply_to_admins
+      tags: [chk_chg_01]
+
+    - name: Read the exported evidence on the controller
+      ansible.builtin.set_fact:
+        verify_evidence: >-
+          {{ lookup('ansible.builtin.file',
+                    lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') ~ '/evidence/forgejo/branch-protection-platform_infra.json')
+             | from_json }}
+      tags: [chk_chg_01]
+
+    - name: The evidence file holds the protection rule of main
+      ansible.builtin.assert:
+        that:
+          - verify_evidence.repository == 'platform/infra'
+          - verify_evidence.branch_protections | selectattr('rule_name', 'equalto', 'main') | list | length == 1
+          - (verify_evidence.branch_protections | first).required_approvals == 1
+      tags: [chk_chg_01]
+
+    - name: Give the test user write access to the repository
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/repos/platform/infra/collaborators/dev-test"
+        method: PUT
+        headers:
+          Authorization: "token {{ verify_token_file.content | b64decode | trim }}"
+        body_format: json
+        body:
+          permission: write
+        validate_certs: false
+        status_code: 204
+      tags: [chk_chg_01]
+
+    - name: Create a push token for the test user
+      ansible.builtin.command: >-
+        docker exec forgejo forgejo admin user generate-access-token --username dev-test
+        --token-name push-{{ now(utc=true, fmt='%s') }} --scopes write:repository --raw
+      register: verify_dev_token
+      changed_when: false
+      no_log: true
+      tags: [chk_chg_01]
+
+    - name: Push a commit straight to main over HTTPS
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - --env
+          - GIT_SSL_NO_VERIFY=true
+          - --env
+          - "PUSH_URL=https://dev-test:{{ verify_dev_token.stdout | trim }}@127.0.0.1:3443/platform/infra.git"
+          - forgejo
+          - sh
+          - -c
+          - >-
+            rm -rf /tmp/push-test && git clone -q "$PUSH_URL" /tmp/push-test && cd /tmp/push-test &&
+            git -c user.name=dev-test -c user.email=dev-test@example.test commit -q --allow-empty -m direct &&
+            git push origin main; rc=$?; rm -rf /tmp/push-test; exit $rc
+      register: verify_push
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags: [chk_chg_01]
+
+    - name: The direct push is rejected by branch protection
+      ansible.builtin.assert:
+        that:
+          - verify_push.rc != 0
+          - "'protected branch' in verify_push.stderr"
+        fail_msg: "rc={{ verify_push.rc }} {{ verify_push.stderr | regex_replace('dev-test:[^@]*@', 'dev-test:***@') }}"
+      tags: [chk_chg_01]
+
+    # ------------------------------------------------------------------ backup
+    - name: Read the backup declaration
+      ansible.builtin.slurp:
+        src: /etc/compliant-infra/backup.d/forgejo.json
+      register: verify_backup_decl
+      tags: [chk_bck_01, chk_bck_04]
+
+    - name: Run the backup pre-command
+      ansible.builtin.command: "{{ (verify_backup_decl.content | b64decode | from_json).pre_command }}"
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: List the dump
+      ansible.builtin.command: tar -tzf /var/backups/forgejo/forgejo-dump.tar.gz  # noqa: command-instead-of-module -- listing only
+      register: verify_dump
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: The declaration has RPO/RTO and the dump holds the database, configuration and repositories
+      vars:
+        verify_decl: "{{ verify_backup_decl.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_decl.paths == ['/var/backups/forgejo']
+          - verify_decl.rpo_hours | int > 0
+          - verify_decl.rto_hours | int > 0
+          - "'forgejo-db.sql' in verify_dump.stdout_lines"
+          - "'app.ini' in verify_dump.stdout_lines"
+          - verify_dump.stdout_lines | select('match', '^repos/platform/infra.git/') | list | length > 0
+      tags: [chk_bck_01, chk_bck_04]
+
+    # ------------------------------------------------------------------ runner (CHG-02)
+    - name: List the runners of the organisation
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/orgs/platform/actions/runners"
+        headers:
+          Authorization: "token {{ verify_token_file.content | b64decode | trim }}"
+        validate_certs: false
+      register: verify_runners
+      tags: [chk_chg_02]
+
+    - name: The runner is registered under its host name
+      vars:
+        verify_runner_list: >-
+          {{ verify_runners.json.runners | default([]) if verify_runners.json is mapping else verify_runners.json }}
+      ansible.builtin.assert:
+        that: "'forgejo-ubuntu2404' in verify_runner_list | map(attribute='name') | list"
+        fail_msg: "{{ verify_runners.json | to_json }}"
+      tags: [chk_chg_02]
+
+    - name: Inspect the runner container
+      community.docker.docker_container_info:
+        name: forgejo-runner
+      register: verify_runner_container
+      tags: [chk_hrd_02, chk_chg_02]
+
+    - name: The runner is hardened and jobs get an isolated network without the Docker socket
+      ansible.builtin.assert:
+        that:
+          - verify_runner_container.container.State.Running
+          - "'ALL' in verify_runner_container.container.HostConfig.CapDrop"
+          - verify_runner_container.container.HostConfig.ReadonlyRootfs
+          - not verify_runner_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02, chk_chg_02]
+
+    # ------------------------------------------------------------------ active/passive failover
+    - name: Stop keepalived (the node loses the VIP)
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: stopped
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: Forgejo stops on a node without the VIP
+      community.docker.docker_container_info:
+        name: forgejo
+      register: verify_after_loss
+      until: not verify_after_loss.container.State.Running
+      retries: 20
+      delay: 3
+      tags: [chk_ha_01]
+
+    - name: Start keepalived again (the node takes the VIP back)
+      ansible.builtin.systemd_service:
+        name: keepalived
+        state: started
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: Forgejo answers on the VIP again
+      ansible.builtin.uri:
+        url: https://192.0.2.10:3443/api/healthz
+        validate_certs: false
+      register: verify_vip
+      until: verify_vip.status == 200
+      retries: 40
+      delay: 3
+      tags: [chk_ha_01]

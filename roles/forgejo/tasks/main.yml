@@ -1,0 +1,96 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - forgejo_root_url is match('^https://.+/$')
+      - forgejo_db_host | length > 0
+      - forgejo_db_password | length > 0
+      - forgejo_secret_key | length >= 32
+      - forgejo_internal_token | length >= 32
+      - forgejo_jwt_secret is match('^[A-Za-z0-9_-]{43}$')
+      - forgejo_lfs_jwt_secret is match('^[A-Za-z0-9_-]{43}$')
+      - forgejo_metrics_token | length >= 32
+      - forgejo_admin_password | length >= 16
+      - forgejo_two_factor_requirement in ['all', 'admin']
+      - forgejo_ha_mode in ['active_passive', 'active_active', 'standalone']
+      - not (forgejo_oidc_enabled | bool) or forgejo_oidc_client_secret | length >= 32
+      - not (forgejo_oidc_enabled | bool) or forgejo_oidc_keycloak_url is match('^https://')
+    fail_msg: >-
+      Set an https forgejo_root_url ending in "/", forgejo_db_host and forgejo_db_password, forgejo_secret_key and
+      forgejo_internal_token (32+), forgejo_jwt_secret and forgejo_lfs_jwt_secret (forgejo generate secret),
+      forgejo_metrics_token (32+), forgejo_admin_password (16+), a 2FA requirement of all or admin, a valid
+      forgejo_ha_mode and, with SSO, forgejo_oidc_client_secret (32+). Keep secrets in Vault or OpenBao.
+    quiet: true
+  no_log: true
+
+- name: Require a highly available deployment (HA-01)
+  ansible.builtin.assert:
+    that:
+      - forgejo_cluster_hosts | length >= forgejo_min_nodes or forgejo_allow_single_node | bool
+      - forgejo_ha_mode != 'standalone' or forgejo_allow_single_node | bool
+      - forgejo_ha_mode != 'standalone' or forgejo_cluster_hosts | length == 1
+    fail_msg: >-
+      Forgejo needs at least {{ forgejo_min_nodes }} nodes in active_passive or active_active mode (found
+      {{ forgejo_cluster_hosts | length }}). standalone and single nodes need forgejo_allow_single_node (labs).
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Check the shared services an active/active cluster needs (HA-01)
+  ansible.builtin.assert:
+    that:
+      - forgejo_cache_host | length > 0
+      - forgejo_s3_endpoint | length > 0
+    fail_msg: >-
+      active_active needs Valkey/Redis (forgejo_cache_host) for cache, sessions and queues and S3 object
+      storage (forgejo_s3_endpoint). Use active_passive without them.
+    quiet: true
+  when: forgejo_ha_mode == 'active_active'
+  tags: [chk_ha_01]
+
+- name: Check the VRRP settings for active/passive failover (HA-01)
+  ansible.builtin.assert:
+    that:
+      - forgejo_vips | length > 0
+      - inventory_hostname not in groups['edge'] | default([])
+    fail_msg: >-
+      active_passive needs forgejo_vips (CIDR form), and Forgejo nodes must not be edge nodes
+      (both use keepalived, which has one configuration per host).
+    quiet: true
+  when: forgejo_ha_mode == 'active_passive'
+  tags: [chk_ha_01]
+
+- name: Check the storage layout (HA-01)
+  ansible.builtin.import_tasks: storage_check.yml
+
+- name: Register Forgejo as an OIDC client in Keycloak
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_enabled: "{{ forgejo_oidc_enabled }}"
+    oidc_client_id: "{{ forgejo_oidc_client_id }}"
+    oidc_client_name: Forgejo
+    oidc_client_secret: "{{ forgejo_oidc_client_secret }}"
+    oidc_client_keycloak_url: "{{ forgejo_oidc_keycloak_url }}"
+    oidc_client_realm: "{{ forgejo_oidc_realm }}"
+    oidc_client_root_url: "{{ forgejo_root_url }}"
+    oidc_client_redirect_uris: ["{{ forgejo_root_url }}user/oauth2/{{ forgejo_oidc_name }}/callback"]
+    oidc_client_post_logout_redirect_uris: ["{{ forgejo_root_url }}"]
+  when: forgejo_oidc_enabled | bool
+  tags: [chk_iam_01, chk_iam_09]
+
+- name: Deploy Forgejo
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Set up active/passive failover
+  ansible.builtin.include_tasks: failover.yml
+  when: forgejo_ha_mode == 'active_passive'
+  tags: [chk_ha_01]
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml
+
+- name: Configure accounts and the login source
+  ansible.builtin.import_tasks: accounts.yml
+
+- name: Declare the backup
+  ansible.builtin.import_tasks: backup.yml

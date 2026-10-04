@@ -1,0 +1,34 @@
+---
+# Forgejo keeps repositories on a filesystem, so both HA modes depend on the storage layer (HA-01).
+- name: Check the storage of a multi-node cluster
+  when: forgejo_cluster_hosts | length > 1
+  tags: [chk_ha_01]
+  block:
+    - name: Find the filesystems holding the data and the repositories
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --output, "TARGET,FSTYPE", --target, "{{ item }}"]
+      loop: ["{{ forgejo_data_dir }}", "{{ forgejo_repo_dir }}"]
+      register: forgejo_findmnt
+      changed_when: false
+      failed_when: false
+
+    - name: Require a dedicated (replicated or shared) data volume for active/passive
+      ansible.builtin.assert:
+        that: (forgejo_findmnt.results[0].stdout.split() | first | default('')) == forgejo_data_dir
+        fail_msg: >-
+          {{ forgejo_data_dir }} is not a mount point. active_passive needs it on a volume the storage layer
+          replicates or shares (DRBD, ZFS replication, SAN, cloud volume, NFS) so the standby sees the same
+          repositories. Set forgejo_require_dedicated_volume: false only if you replicate it another way.
+        quiet: true
+      when:
+        - forgejo_ha_mode == 'active_passive'
+        - forgejo_require_dedicated_volume | bool
+
+    - name: Require shared storage for the repositories in active/active
+      ansible.builtin.assert:
+        that: (forgejo_findmnt.results[1].stdout.split() | last | default('')) in forgejo_shared_fstypes
+        fail_msg: >-
+          active_active needs {{ forgejo_repo_dir }} on shared storage ({{ forgejo_shared_fstypes | join(', ') }});
+          found {{ forgejo_findmnt.results[1].stdout }}.
+        quiet: true
+      when: forgejo_ha_mode == 'active_active'

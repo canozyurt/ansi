@@ -1,0 +1,42 @@
+---
+# Version changes (CHG-07). Forgejo migrates the database when the new version starts, and nodes of
+# different versions must not share it. playbooks/upgrade.yml runs one node at a time; the first
+# node upgraded dumps everything and, in active/active, stops the other nodes first.
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    forgejo_needs_upgrade: "{{ forgejo_current.exists and forgejo_current.container.Config.Image != forgejo_image }}"
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: not forgejo_needs_upgrade or ansible_play_batch | length == 1
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ forgejo_current.container.Config.Image | default('') }} but this release pins
+      {{ forgejo_image }}. Run playbooks/upgrade.yml, which dumps Forgejo and upgrades one node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Back up and stop the other nodes before the first node changes version
+  when:
+    - forgejo_needs_upgrade
+    - forgejo_current.container.State.Running | default(false)
+    - forgejo_upgrade_done is not defined
+  tags: [chk_chg_07, chk_bck_01]
+  block:
+    - name: Dump Forgejo before the upgrade
+      ansible.builtin.command: /usr/local/sbin/forgejo-backup-dump
+      changed_when: true
+
+    - name: Stop Forgejo on the other nodes (no mixed versions on one database)
+      community.docker.docker_container:
+        name: "{{ forgejo_container_name }}"
+        state: stopped
+      delegate_to: "{{ item }}"
+      loop: "{{ forgejo_cluster_hosts | reject('equalto', inventory_hostname) | list }}"
+      when: forgejo_ha_mode == 'active_active'
+
+    - name: Remember that the upgrade has started
+      ansible.builtin.set_fact:
+        forgejo_upgrade_done: true
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ forgejo_cluster_hosts }}"

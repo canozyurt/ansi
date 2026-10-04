@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Export the Forgejo runner state for node_exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/forgejo-runner-metrics

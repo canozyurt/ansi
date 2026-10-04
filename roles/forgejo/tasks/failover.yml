@@ -1,0 +1,46 @@
+---
+# Active/passive (HA-01): keepalived elects the active node by moving forgejo_vips; the
+# forgejo-failover service on each node starts Forgejo where the VIP is and stops it elsewhere.
+# keepalived tracks the file the service keeps while the node may serve; the service removes it
+# when Forgejo stays unhealthy, so the VIP (and Forgejo) move to the standby.
+- name: Install the failover service
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: forgejo-failover.j2, dest: /usr/local/sbin/forgejo-failover, mode: "0755" }
+    - { src: forgejo-failover.service.j2, dest: /etc/systemd/system/forgejo-failover.service, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart forgejo-failover
+  tags: [chk_ha_01]
+
+- name: Run keepalived for the Forgejo VIP
+  ansible.builtin.include_role:
+    name: keepalived
+  vars:
+    keepalived_peers: "{{ forgejo_cluster_hosts }}"
+    keepalived_allow_single_node: "{{ forgejo_allow_single_node }}"
+    keepalived_instances:
+      - name: forgejo
+        virtual_router_id: "{{ forgejo_vrrp_router_id }}"
+        vips: "{{ forgejo_vips }}"
+        preferred: "{{ forgejo_cluster_hosts | first }}"
+    # curl reads the eligibility file the failover service maintains.
+    keepalived_check_url: file:///run/forgejo-failover/eligible
+    keepalived_preempt_delay: "{{ forgejo_failover_preempt_delay }}"
+  tags: [chk_ha_01]
+
+- name: Start the failover service and enable it at boot
+  ansible.builtin.systemd_service:
+    name: forgejo-failover
+    state: started
+    enabled: true
+    daemon_reload: true
+  tags: [chk_ha_01]
+
+- name: Apply a changed failover service now
+  ansible.builtin.meta: flush_handlers

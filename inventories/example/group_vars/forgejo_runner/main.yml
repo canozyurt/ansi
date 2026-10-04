@@ -1,0 +1,7 @@
+---
+# Forgejo Actions runners (playbooks/delivery.yml). The runner controls the host's Docker, which is
+# root-equivalent: use dedicated hosts that run nothing else.
+forgejo_runner_instance_url: https://git.example.internal/
+forgejo_runner_registration_secret: "{{ vault_forgejo_runner_registration_secret }}"
+# Limit the runners to the infrastructure organisation: they hold the deploy credentials (CHG-02).
+forgejo_runner_scope: platform

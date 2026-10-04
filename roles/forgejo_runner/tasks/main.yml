@@ -1,0 +1,173 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - forgejo_runner_registration_secret is match('^[0-9a-f]{40}$')
+      - forgejo_runner_instance_url is match('^https://')
+      - forgejo_runner_labels | length > 0
+      - groups[forgejo_runner_forgejo_group] | default([]) | length > 0
+    fail_msg: >-
+      Set forgejo_runner_registration_secret (40 lowercase hex characters, e.g. openssl rand -hex 20, kept in
+      Vault or OpenBao), an https forgejo_runner_instance_url, at least one label, and the Forgejo inventory group.
+    quiet: true
+  no_log: true
+
+- name: Require more than one runner (HA-01)
+  ansible.builtin.assert:
+    that: forgejo_runner_cluster_hosts | length >= forgejo_runner_min_nodes or forgejo_runner_allow_single_node | bool
+    fail_msg: >-
+      Forgejo Actions needs at least {{ forgejo_runner_min_nodes }} runners (found {{ forgejo_runner_cluster_hosts | length }}).
+      Set forgejo_runner_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Install Python libraries the Docker modules need
+  ansible.builtin.apt:
+    name: [python3-requests]
+    state: present
+
+- name: Create the runner directory
+  ansible.builtin.file:
+    path: "{{ forgejo_runner_data_dir }}"
+    state: directory
+    owner: "{{ forgejo_runner_uid }}"
+    group: "{{ forgejo_runner_uid }}"
+    mode: "0700"
+
+- name: Derive this runner's secret from the registration secret
+  ansible.builtin.set_fact:
+    forgejo_runner_secret: "{{ (forgejo_runner_registration_secret ~ ':' ~ inventory_hostname) | hash('sha1') }}"
+  no_log: true
+
+- name: Find the Forgejo node that serves (active/passive keeps the standby stopped)
+  community.docker.docker_container_info:
+    name: "{{ forgejo_runner_forgejo_container }}"
+  delegate_to: "{{ item }}"
+  loop: "{{ groups[forgejo_runner_forgejo_group] }}"
+  register: forgejo_runner_forgejo_nodes
+  run_once: true
+
+- name: Pick the Forgejo node for registration
+  ansible.builtin.set_fact:
+    forgejo_runner_registrar: >-
+      {{ forgejo_runner_forgejo_nodes.results | selectattr('exists')
+         | selectattr('container.State.Running') | map(attribute='item') | first }}
+  run_once: true
+
+# forgejo-cli registration is idempotent: the same secret always yields the same runner.
+- name: Register the runner with a secret read from stdin (CHG-02)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --interactive
+      - "{{ forgejo_runner_forgejo_container }}"
+      - forgejo
+      - forgejo-cli
+      - actions
+      - register
+      - --secret-stdin=true
+      - --name
+      - "{{ forgejo_runner_name }}"
+      - --scope
+      - "{{ forgejo_runner_scope }}"
+      - --labels
+      - "{{ forgejo_runner_labels | map('regex_replace', ':.*$', '') | join(',') }}"
+    stdin: "{{ forgejo_runner_secret }}"
+    stdin_add_newline: false
+  delegate_to: "{{ forgejo_runner_registrar }}"
+  register: forgejo_runner_registration
+  changed_when: false
+  tags: [chk_chg_02]
+
+- name: Write the runner token (the runner reads it from a file)
+  ansible.builtin.copy:
+    content: "{{ forgejo_runner_secret }}"
+    dest: "{{ forgejo_runner_data_dir }}/token"
+    owner: "{{ forgejo_runner_uid }}"
+    group: "{{ forgejo_runner_uid }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart forgejo-runner
+  tags: [chk_sec_02]
+
+- name: Write the runner configuration
+  ansible.builtin.template:
+    src: config.yml.j2
+    dest: "{{ forgejo_runner_data_dir }}/config.yml"
+    owner: "{{ forgejo_runner_uid }}"
+    group: "{{ forgejo_runner_uid }}"
+    mode: "0600"
+  vars:
+    forgejo_runner_uuid: "{{ forgejo_runner_registration.stdout | trim }}"
+  notify: Restart forgejo-runner
+  tags: [chk_chg_02, chk_hrd_02]
+
+- name: Create the job network (no traffic between job containers)
+  community.docker.docker_network:
+    name: "{{ forgejo_runner_job_network }}"
+    driver: bridge
+    driver_options:
+      com.docker.network.bridge.enable_icc: "false"
+    ipam_config: "{{ [{'subnet': forgejo_runner_job_subnet}] if forgejo_runner_job_subnet | length > 0 else omit }}"
+    state: present
+  tags: [chk_hrd_02]
+
+- name: Look up the docker group
+  ansible.builtin.getent:
+    database: group
+    key: docker
+
+# The runner talks to the host's Docker to start job containers. Access to the Docker socket is
+# root-equivalent on this host, so runner hosts run nothing else (see docs/architecture.md).
+- name: Run the runner container
+  community.docker.docker_container:
+    name: "{{ forgejo_runner_container_name }}"
+    image: "{{ forgejo_runner_image }}"
+    command: [forgejo-runner, daemon, --config, /data/config.yml]
+    user: "{{ forgejo_runner_uid }}:{{ forgejo_runner_uid }}"
+    groups: ["{{ ansible_facts.getent_group.docker[1] }}"]
+    network_mode: host
+    volumes:
+      - "{{ forgejo_runner_data_dir }}:/data"
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    restart_policy: unless-stopped
+    memory: "{{ forgejo_runner_memory_limit }}"
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: forgejo_runner
+    state: started
+  register: forgejo_runner_container
+  tags: [chk_hrd_02, chk_chg_02]
+
+- name: Install the runner state metric
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: forgejo-runner-metrics.j2, dest: /usr/local/sbin/forgejo-runner-metrics, mode: "0755" }
+    - { src: forgejo-runner-metrics.service.j2, dest: /etc/systemd/system/forgejo-runner-metrics.service, mode: "0644" }
+    - { src: forgejo-runner-metrics.timer.j2, dest: /etc/systemd/system/forgejo-runner-metrics.timer, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+  tags: [chk_log_05]
+
+- name: Run the runner state metric every minute
+  ansible.builtin.systemd_service:
+    name: forgejo-runner-metrics.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  tags: [chk_log_05]
+
+- name: Wait for the runner to be connected
+  ansible.builtin.import_tasks: health.yml

@@ -1,0 +1,26 @@
+---
+# Source control, CI/CD and change approval (CHG-01, CHG-02): Forgejo, its organisations and
+# protected repositories, and the Forgejo Actions runners.
+- name: Deploy Forgejo
+  hosts: forgejo
+  become: true
+  roles:
+    - role: forgejo
+
+- name: Create organisations and protected repositories, and export branch protection evidence
+  hosts: forgejo
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Apply forgejo_orgs through the API
+      ansible.builtin.include_role:
+        name: forgejo
+        tasks_from: org_setup
+      when: forgejo_orgs | default([]) | length > 0
+      tags: [chk_chg_01]
+
+- name: Deploy the Forgejo Actions runners
+  hosts: forgejo_runner
+  become: true
+  roles:
+    - role: forgejo_runner

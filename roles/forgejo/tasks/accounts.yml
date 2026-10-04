@@ -1,0 +1,137 @@
+---
+# Local accounts, the API token and the OIDC login source. Runs once, on the node serving Forgejo.
+# The Forgejo CLI takes passwords and client secrets only as arguments: they are passed into the
+# container through the environment (docker exec --env NAME) and expanded there, so they never
+# appear on the host's command lines; inside the container they are visible for the lifetime of
+# the CLI call.
+- name: Configure accounts and the login source
+  run_once: true
+  delegate_to: "{{ forgejo_active_host }}"
+  block:
+    - name: List the users
+      ansible.builtin.command:
+        argv: [docker, exec, "{{ forgejo_container_name }}", forgejo, admin, user, list]
+      register: forgejo_users
+      changed_when: false
+
+    - name: Note the existing users
+      ansible.builtin.set_fact:
+        forgejo_existing_users: >-
+          {{ forgejo_users.stdout_lines | select('match', '^[0-9]') | map('split') | map(attribute='1') | list }}
+
+    - name: Create the break-glass admin (IAM-01)
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - --env
+          - FORGEJO_NEW_PASSWORD
+          - "{{ forgejo_container_name }}"
+          - sh
+          - -c
+          - >-
+            exec forgejo admin user create --admin --username "$0" --email "$1"
+            --password "$FORGEJO_NEW_PASSWORD" --must-change-password=false
+          - "{{ forgejo_admin_user }}"
+          - "{{ forgejo_admin_email }}"
+      environment:
+        FORGEJO_NEW_PASSWORD: "{{ forgejo_admin_password }}"
+      when: forgejo_admin_user not in forgejo_existing_users
+      changed_when: true
+      no_log: true
+      tags: [chk_iam_01]
+
+    - name: Create the automation account (token only, no usable password)
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ forgejo_container_name }}"
+          - forgejo
+          - admin
+          - user
+          - create
+          - --username
+          - "{{ forgejo_automation_user }}"
+          - --email
+          - "{{ forgejo_automation_email }}"
+          - --random-password
+          - --must-change-password=false
+      when: forgejo_automation_user not in forgejo_existing_users
+      changed_when: true
+      no_log: true
+
+    - name: Read the stored automation token
+      ansible.builtin.slurp:
+        src: "{{ forgejo_config_dir }}/secrets/automation.token"
+      register: forgejo_token_file
+      failed_when: false
+      when: forgejo_automation_token | length == 0
+      no_log: true
+
+    - name: Pick the automation token
+      ansible.builtin.set_fact:
+        forgejo_api_token: >-
+          {{ forgejo_automation_token if forgejo_automation_token | length > 0
+             else (forgejo_token_file.content | default('') | b64decode | trim) }}
+      no_log: true
+
+    - name: Check the automation token
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ forgejo_https_port }}/api/v1/user"
+        headers:
+          Authorization: "token {{ forgejo_api_token }}"
+        validate_certs: false
+        status_code: [200, 401, 403]
+      register: forgejo_token_check
+      when: forgejo_api_token | length > 0
+      no_log: true
+
+    - name: Generate a new automation token
+      when: forgejo_api_token | length == 0 or forgejo_token_check.status | default(401) != 200
+      no_log: true
+      block:
+        - name: Fail when the token from the vault does not work
+          ansible.builtin.assert:
+            that: forgejo_automation_token | length == 0
+            fail_msg: forgejo_automation_token is rejected by Forgejo; replace it in the vault.
+            quiet: true
+
+        - name: Generate the token with the Forgejo CLI
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ forgejo_container_name }}"
+              - forgejo
+              - admin
+              - user
+              - generate-access-token
+              - --username
+              - "{{ forgejo_automation_user }}"
+              - --token-name
+              - "ansible-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+              - --scopes
+              - "write:organization,write:repository,read:user"
+              - --raw
+          register: forgejo_token_new
+          changed_when: true
+
+        - name: Store the token on every Forgejo node (root only)
+          ansible.builtin.copy:
+            content: "{{ forgejo_token_new.stdout | trim }}\n"
+            dest: "{{ forgejo_config_dir }}/secrets/automation.token"
+            owner: root
+            group: root
+            mode: "0600"
+          delegate_to: "{{ item }}"
+          loop: "{{ forgejo_cluster_hosts }}"
+          tags: [chk_sec_02]
+
+        - name: Use the new token
+          ansible.builtin.set_fact:
+            forgejo_api_token: "{{ forgejo_token_new.stdout | trim }}"
+
+    - name: Configure the OIDC login source
+      ansible.builtin.import_tasks: oidc_source.yml
+      when: forgejo_oidc_enabled | bool

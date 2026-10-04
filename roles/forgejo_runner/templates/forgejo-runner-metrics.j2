@@ -1,0 +1,15 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Writes forgejo_runner_up (1 when the runner container runs) for node_exporter's textfile collector.
+set -eu
+dir={{ forgejo_runner_textfile_dir | quote }}
+[ -d "$dir" ] || exit 0
+{% raw %}
+state="$(docker inspect --format '{{.State.Running}}' {% endraw %}{{ forgejo_runner_container_name | quote }}{% raw %} 2>/dev/null || echo false)"
+{% endraw %}
+up=0
+[ "$state" = "true" ] && up=1
+tmp="$(mktemp "$dir/.forgejo_runner.XXXXXX")"
+printf '# HELP forgejo_runner_up 1 when the Forgejo Actions runner container runs.\n# TYPE forgejo_runner_up gauge\nforgejo_runner_up %s\n' "$up" > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$dir/forgejo_runner.prom"

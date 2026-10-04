@@ -96,3 +96,19 @@
     - role: grc
       vars:
         grc_upgrade_allowed: true
+
+- name: Upgrade Forgejo one node at a time (dumps first; active/active stops the other nodes)
+  hosts: forgejo
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: forgejo
+
+- name: Upgrade the Forgejo Actions runners one at a time
+  hosts: forgejo_runner
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: forgejo_runner

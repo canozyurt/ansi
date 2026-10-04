@@ -1,0 +1,10 @@
+---
+- name: Wait until the runner has declared itself to Forgejo
+  ansible.builtin.command:
+    argv: [docker, logs, "{{ forgejo_runner_container_name }}"]
+  register: forgejo_runner_logs
+  until: forgejo_runner_logs.stderr is search('declared successfully') or forgejo_runner_logs.stdout is search('declared successfully')
+  retries: 30
+  delay: 5
+  changed_when: false
+  tags: [chk_chg_02, chk_log_05]

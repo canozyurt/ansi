@@ -1,0 +1,7 @@
+---
+- name: Restart forgejo-runner
+  community.docker.docker_container:
+    name: "{{ forgejo_runner_container_name }}"
+    state: started
+    restart: true
+  when: not (forgejo_runner_container.changed | default(false))

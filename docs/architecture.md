@@ -222,6 +222,29 @@ Operator workflow: [docs/access.md](access.md).
 - Seeds the SOC 2 (2017 TSC) and ISO 27001:2022 libraries; ISO 27017 is not shipped by CISO Assistant. `tools/evidence_export.py` exports the checklist (status, controls, implementing/verifying tasks) as JSON/CSV for import as applied controls and evidence.
 - JSON logs to journald; app audit log kept 365 days; Prometheus metrics at `/metrics/` restricted to monitoring networks.
 
+## Source control, CI/CD and change approval (Forgejo)
+
+- Forgejo (GPL-3.0+) rootless container on the `forgejo` group, PostgreSQL from the data layer
+  (`forgejo_db_*`), optional S3 for LFS, attachments, avatars, packages and Actions artifacts
+  (`forgejo_s3_*`) and Valkey for cache, sessions and queues (`forgejo_cache_*`).
+- Forgejo has no repository replication. Default HA is active/passive: keepalived moves a VIP, the new
+  active node runs a promote hook (attach the replicated volume) and starts Forgejo; split brain is
+  alerted, not fenced. Active/active needs repositories on shared POSIX storage (NFS/CephFS, checked)
+  and is upstream-untested. Single node only with `forgejo_allow_single_node`.
+- HTTPS only (tls_cert), behind the edge as an internal service; SSH Git disabled by default.
+- Login through Keycloak only (oidc_client; `roles` claim, platform-admin = site admin); no password form
+  or password basic auth; a break-glass local admin needs TOTP and is re-enabled with
+  `forgejo_break_glass_login`. Team membership from roles via `forgejo_oidc_group_team_map` (optional).
+- `forgejo_orgs` are created through the API with main protected: 1+ approval, stale approvals dismissed,
+  rejected reviews and failing checks block, no direct or force push, admins included; the rules are
+  checked and exported as JSON evidence (CHG-01).
+- Forgejo Actions runners (`forgejo_runner` group, dedicated hosts) run jobs as unprivileged containers on
+  the host Docker, without the Docker socket, on an isolated bridge network; deploys run from the
+  protected main branch with the vault password from OpenBao (CHG-02).
+- Backup: `forgejo dump` (DB as SQL, repositories, config) as the backup pre_command on the active node;
+  RPO 24 h, RTO 4 h.
+```
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

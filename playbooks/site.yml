@@ -32,3 +32,6 @@
 
 - name: Deploy the status page and the GRC tool
   ansible.builtin.import_playbook: governance.yml
+
+- name: Deploy source control, CI/CD and change approval
+  ansible.builtin.import_playbook: delivery.yml

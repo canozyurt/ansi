@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+log:
+  level: info
+  job_level: info
+
+runner:
+  capacity: {{ forgejo_runner_capacity }}
+  timeout: {{ forgejo_runner_job_timeout }}
+  shutdown_timeout: 30m
+  insecure: {{ (not (forgejo_runner_verify_tls | bool)) | lower }}
+  fetch_timeout: 30s
+  fetch_interval: 5s
+  labels: {{ forgejo_runner_labels | to_json }}
+
+cache:
+  enabled: false
+
+container:
+  # Dedicated bridge network (inter-container traffic disabled), unprivileged jobs, no Docker
+  # socket and no host paths beyond the CA bundle.
+  network: {{ forgejo_runner_job_network }}
+  privileged: {{ forgejo_runner_job_privileged | bool | lower }}
+  options: {{ forgejo_runner_job_options | to_json }}
+  valid_volumes: {{ forgejo_runner_job_valid_volumes | to_json }}
+  docker_host: "-"
+  force_pull: false
+
+server:
+  connections:
+    forgejo:
+      url: {{ forgejo_runner_instance_url }}
+      uuid: {{ forgejo_runner_uuid }}
+      token_url: file:/data/token

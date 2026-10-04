@@ -1,0 +1,13 @@
+---
+- name: Declare what to back up (BCK-01, BCK-04)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: forgejo
+    backup_register_paths: ["{{ forgejo_dump_dir }}"]
+    backup_register_pre_command: /usr/local/sbin/forgejo-backup-dump
+    backup_register_verify_command: >-
+      tar -tzf "$RESTORE_DIR{{ forgejo_dump_dir }}/forgejo-dump.tar.gz" | grep -q '^forgejo-db.sql$'
+    backup_register_rpo_hours: "{{ forgejo_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ forgejo_backup_rto_hours }}"
+  tags: [chk_bck_01, chk_bck_04]

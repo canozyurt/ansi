@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Forgejo active/passive failover (follows the keepalived VIP)
+After=docker.service keepalived.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/forgejo-failover
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

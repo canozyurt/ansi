@@ -1,0 +1,15 @@
+---
+# Restarts only a running container: in active/passive the standby stays stopped.
+- name: Restart forgejo
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/forgejo-restart-if-running, "{{ forgejo_container_name }}"]
+  register: forgejo_restart
+  changed_when: "'restarted' in forgejo_restart.stdout"
+  throttle: 1  # rolling restart keeps an active/active cluster available
+  when: not (forgejo_container.changed | default(false))
+
+- name: Restart forgejo-failover
+  ansible.builtin.systemd_service:
+    name: forgejo-failover
+    state: restarted
+    daemon_reload: true

@@ -81,6 +81,9 @@ prometheus_alertmanager_port: "{{ alertmanager_port | default(9093) }}"
 
 # ---------------------------------------------------------------- alert thresholds
 prometheus_alert_target_down_for: 5m
+# Jobs where a down target is expected (active/passive services whose passive node is down by design;
+# they ship their own availability alert, e.g. ForgejoUnavailable).
+prometheus_alert_target_down_exclude_jobs: [forgejo]
 prometheus_alert_disk_used_percent: 85
 prometheus_alert_disk_critical_percent: 95
 prometheus_alert_memory_used_percent: 90

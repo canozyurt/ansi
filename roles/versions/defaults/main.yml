@@ -30,6 +30,11 @@ versions_images:
   coraza_spoa_builder: docker.io/library/golang:1.26.8-alpine
   # Backup repository server (roles/backup_server)
   rest_server: docker.io/restic/rest-server:0.14.0
+  # Source control and CI/CD (playbooks/delivery.yml). Forgejo 15 is the LTS branch; rootless image.
+  forgejo: codeberg.org/forgejo/forgejo:15.0.9-rootless
+  forgejo_runner: data.forgejo.org/forgejo/runner:12.10.1
+  # Default job image for the runner's "docker" label.
+  forgejo_runner_job: docker.io/library/node:24.21.0-trixie
   # Public status page and synthetic checks (roles/status_page)
   gatus: docker.io/twinproduction/gatus:v5.37.0
   # GRC and compliance evidence (roles/grc): CISO Assistant Community Edition (AGPL-3.0 images)

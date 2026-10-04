@@ -1,0 +1,104 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Forgejo active/passive failover. Runs on every Forgejo node:
+#  - holding the VIP: run the promote command, start Forgejo, watch its health;
+#  - not holding it: stop Forgejo, then run the demote command.
+# keepalived tracks $STATE_DIR/eligible. When the active Forgejo stays unhealthy the file is removed,
+# keepalived gives the VIP to the standby, and the file comes back after a cool-down.
+set -u
+
+NAME={{ forgejo_container_name | quote }}
+VIP={{ (forgejo_vips | first).split('/') | first | quote }}
+HEALTH_URL="https://127.0.0.1:{{ forgejo_https_port }}/api/healthz"
+INTERVAL={{ forgejo_failover_interval | int }}
+MAX_FAILS={{ forgejo_failover_unhealthy_checks | int }}
+GRACE={{ forgejo_failover_start_grace | int }}
+PROMOTE={{ forgejo_failover_promote_command | quote }}
+DEMOTE={{ forgejo_failover_demote_command | quote }}
+STATE_DIR=/run/forgejo-failover
+TEXTFILE_DIR={{ forgejo_textfile_dir | quote }}
+
+log() { logger -t forgejo-failover -- "$*"; }
+
+holds_vip() { [ -n "$(ip -o addr show to "$VIP" 2>/dev/null)" ]; }
+
+{% raw %}
+running() { [ "$(docker inspect --format '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; }
+{% endraw %}
+
+hook() {
+  [ -z "$1" ] && return 0
+  /bin/bash -c "$1"
+}
+
+metrics() {
+  [ -d "$TEXTFILE_DIR" ] || return 0
+  local tmp
+  tmp="$(mktemp "$TEXTFILE_DIR/.forgejo_failover.XXXXXX")" || return 0
+  {
+    echo "# HELP forgejo_failover_active 1 when Forgejo runs on this node."
+    echo "# TYPE forgejo_failover_active gauge"
+    echo "forgejo_failover_active $1"
+    echo "# HELP forgejo_failover_eligible 1 when this node may take the active role."
+    echo "# TYPE forgejo_failover_eligible gauge"
+    echo "forgejo_failover_eligible $2"
+    echo "# HELP forgejo_failover_holds_vip 1 when this node holds the Forgejo VIP."
+    echo "# TYPE forgejo_failover_holds_vip gauge"
+    echo "forgejo_failover_holds_vip $3"
+  } > "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$TEXTFILE_DIR/forgejo_failover.prom"
+}
+
+mkdir -p "$STATE_DIR"
+chmod 0755 "$STATE_DIR"
+touch "$STATE_DIR/eligible"
+chmod 0644 "$STATE_DIR/eligible"
+fails=0
+started_at=$(date +%s)
+cooldown_until=0
+
+while true; do
+  now=$(date +%s)
+  if holds_vip && [ -e "$STATE_DIR/eligible" ]; then
+    vip=1
+    if ! running; then
+      log "holding $VIP: promoting storage and starting Forgejo"
+      if hook "$PROMOTE"; then
+        docker start "$NAME" >/dev/null && log "Forgejo started"
+        started_at=$now
+        fails=0
+      else
+        log "promote command failed; not starting Forgejo"
+      fi
+    elif (( now - started_at > GRACE )); then
+      if curl --silent --fail --insecure --noproxy '*' --max-time 5 --output /dev/null "$HEALTH_URL"; then
+        fails=0
+      else
+        fails=$((fails + 1))
+        if (( fails >= MAX_FAILS )); then
+          log "Forgejo unhealthy for $fails checks: giving up the VIP"
+          rm -f "$STATE_DIR/eligible"
+          cooldown_until=$((now + GRACE))
+          fails=0
+        fi
+      fi
+    fi
+  else
+    holds_vip && vip=1 || vip=0
+    if running; then
+      log "not the active node: stopping Forgejo"
+      docker stop --time 30 "$NAME" >/dev/null
+      hook "$DEMOTE" || log "demote command failed"
+    fi
+    if [ ! -e "$STATE_DIR/eligible" ] && (( now >= cooldown_until )); then
+      touch "$STATE_DIR/eligible"
+      chmod 0644 "$STATE_DIR/eligible"
+      log "eligible for the active role again"
+    fi
+  fi
+  running && active=1 || active=0
+  [ -e "$STATE_DIR/eligible" ] && eligible=1 || eligible=0
+  metrics "$active" "$eligible" "$vip"
+  sleep "$INTERVAL"
+done

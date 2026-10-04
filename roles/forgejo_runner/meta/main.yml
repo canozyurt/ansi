@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: forgejo_runner
+  author: compliant-infra-ansible contributors
+  description: Forgejo Actions runner running jobs in unprivileged containers on an isolated Docker network
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions
