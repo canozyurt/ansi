@@ -1,0 +1,32 @@
+---
+# Called by service roles through include_role (IAM-01, IAM-09):
+#
+#   - ansible.builtin.include_role:
+#       name: oidc_client
+#     vars:
+#       oidc_client_id: grafana
+#       oidc_client_name: Grafana
+#       oidc_client_secret: "{{ grafana_oidc_client_secret }}"
+#       oidc_client_redirect_uris: ["https://grafana.example.internal/login/generic_oauth"]
+#
+# Tokens issued to the client carry the user's default roles (platform-admin, operator, ...) in
+# the "roles" claim and IdP groups in "groups". The service maps the "roles" claim to its own
+# permissions using rbac_model; organisations only assign groups to roles in Keycloak.
+
+oidc_client_enabled: "{{ oidc_clients_enabled | default(true) }}"
+oidc_client_id: ""
+oidc_client_name: "{{ oidc_client_id }}"
+oidc_client_secret: ""
+oidc_client_public: false
+oidc_client_redirect_uris: []
+oidc_client_root_url: ""
+oidc_client_post_logout_redirect_uris: "{{ oidc_client_redirect_uris }}"
+oidc_client_pkce: true
+
+# Where Keycloak is reached from the service host, and the admin credentials (Vault-encrypted
+# group_vars/all). Defaults match the keycloak role's variables.
+oidc_client_keycloak_url: "{{ keycloak_hostname | default('') }}"
+oidc_client_realm: "{{ keycloak_realm | default('org') }}"
+oidc_client_admin_user: "{{ keycloak_admin_user | default('break-glass-admin') }}"
+oidc_client_admin_password: "{{ keycloak_admin_password | default('') }}"
+oidc_client_validate_certs: true

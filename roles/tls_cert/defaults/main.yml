@@ -1,0 +1,46 @@
+---
+# Called by service roles through include_role with these parameters (SEC-03, SEC-05):
+#
+#   - ansible.builtin.include_role:
+#       name: tls_cert
+#     vars:
+#       tls_cert_name: keycloak
+#       tls_cert_dir: /opt/keycloak/tls
+#       tls_cert_owner: "1000"
+#       tls_cert_common_name: sso.example.internal
+#
+# Writes <dir>/tls.crt (leaf + chain) and <dir>/tls.key and sets the fact tls_cert_changed.
+# Source, in order: organisation-supplied files, the internal PKI (when tls_cert_pki_addr is set),
+# otherwise a temporary self-signed certificate (labs, or before the PKI exists).
+
+tls_cert_name: ""
+tls_cert_dir: ""
+tls_cert_owner: root
+tls_cert_group: root
+tls_cert_dir_mode: "0750"
+tls_cert_key_mode: "0640"
+tls_cert_common_name: "{{ inventory_hostname }}"
+tls_cert_alt_names: []          # extra DNS names; the CN, inventory_hostname and 127.0.0.1 are always added
+tls_cert_ip_sans: ["127.0.0.1"]
+
+# Organisation-supplied files on the host (e.g. a public certificate for the edge).
+tls_cert_src_cert: ""
+tls_cert_src_key: ""
+
+# Internal PKI. Set the global pki_openbao_* variables once in group_vars/all; the openbao role
+# creates the matching PKI role and AppRole.
+tls_cert_pki_addr: "{{ pki_openbao_addr | default('') }}"                # e.g. https://bao.example.internal:8200
+tls_cert_pki_mount: "{{ pki_openbao_mount | default('pki_int') }}"
+tls_cert_pki_role: "{{ pki_openbao_role | default('server') }}"
+tls_cert_pki_ca_file: "{{ pki_openbao_ca_file | default('') }}"          # CA bundle to verify OpenBao; empty uses the system store
+# Authentication: an AppRole for automation (preferred) or a token.
+tls_cert_pki_role_id: "{{ pki_openbao_role_id | default('') }}"
+tls_cert_pki_secret_id: "{{ pki_openbao_secret_id | default('') }}"
+tls_cert_pki_token: "{{ pki_openbao_token | default('') }}"
+
+tls_cert_ttl: 2160h                  # 90 days
+tls_cert_renew_before_days: 30       # re-issue when fewer days remain (alert fires at 14, SEC-05)
+tls_cert_selfsigned_days: 365
+
+# Install the internal CA in the host trust store so services trust each other.
+tls_cert_trust_ca: true

@@ -13,59 +13,24 @@
     mode: "{{ item.mode }}"
   loop:
     - { path: "{{ keycloak_data_dir }}", mode: "0750" }
-    - { path: "{{ keycloak_data_dir }}/tls", mode: "0750", owner: "{{ keycloak_container_uid }}" }
 
-- name: Generate a temporary TLS key until the PKI role issues certificates
-  community.crypto.openssl_privatekey:
-    path: "{{ keycloak_data_dir }}/tls/tls.key"
-    type: ECC
-    curve: secp384r1
-    owner: "{{ keycloak_container_uid }}"
-    group: root
-    mode: "0640"
-  when: keycloak_tls_key_file | length == 0
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: keycloak
+    tls_cert_dir: "{{ keycloak_data_dir }}/tls"
+    tls_cert_owner: "{{ keycloak_container_uid }}"
+    tls_cert_common_name: "{{ keycloak_hostname | urlsplit('hostname') }}"
+    tls_cert_src_cert: "{{ keycloak_tls_cert_file }}"
+    tls_cert_src_key: "{{ keycloak_tls_key_file }}"
   tags: [chk_sec_03]
 
-- name: Generate a temporary certificate signing request
-  community.crypto.openssl_csr_pipe:
-    privatekey_path: "{{ keycloak_data_dir }}/tls/tls.key"
-    common_name: "{{ keycloak_hostname | urlsplit('hostname') }}"
-    subject_alt_name:
-      - "DNS:{{ keycloak_hostname | urlsplit('hostname') }}"
-      - "DNS:{{ inventory_hostname }}"
-      - "IP:127.0.0.1"
-  register: keycloak_csr
-  when: keycloak_tls_cert_file | length == 0
-  changed_when: false
-
-- name: Generate a temporary self-signed certificate
-  community.crypto.x509_certificate:
-    path: "{{ keycloak_data_dir }}/tls/tls.crt"
-    csr_content: "{{ keycloak_csr.csr }}"
-    privatekey_path: "{{ keycloak_data_dir }}/tls/tls.key"
-    provider: selfsigned
-    selfsigned_not_after: "+365d"
-    owner: "{{ keycloak_container_uid }}"
-    group: root
-    mode: "0644"
-  when: keycloak_tls_cert_file | length == 0
+- name: Restart Keycloak when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Keycloak restarts to load it.
+  changed_when: tls_cert_changed | bool
   notify: Restart keycloak
-  tags: [chk_sec_03]
-
-- name: Install the issued certificate and key
-  ansible.builtin.copy:
-    src: "{{ item.src }}"
-    dest: "{{ keycloak_data_dir }}/tls/{{ item.dest }}"
-    remote_src: true
-    owner: "{{ keycloak_container_uid }}"
-    group: root
-    mode: "{{ item.mode }}"
-  loop:
-    - { src: "{{ keycloak_tls_cert_file }}", dest: tls.crt, mode: "0644" }
-    - { src: "{{ keycloak_tls_key_file }}", dest: tls.key, mode: "0640" }
-  when: keycloak_tls_cert_file | length > 0
-  notify: Restart keycloak
-  tags: [chk_sec_03]
 
 - name: Prepare a version change
   ansible.builtin.import_tasks: upgrade_prepare.yml

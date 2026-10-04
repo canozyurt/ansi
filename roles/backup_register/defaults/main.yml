@@ -1,0 +1,26 @@
+---
+# Called by service roles through include_role (BCK-01, BCK-04). Writes a declaration to
+# /etc/compliant-infra/backup.d/<name>.json, which the backup role reads on the same host.
+#
+#   - ansible.builtin.include_role:
+#       name: backup_register
+#     vars:
+#       backup_register_name: openbao
+#       backup_register_paths: [/opt/openbao/snapshots]
+#       backup_register_pre_command: /usr/local/sbin/openbao-snapshot
+#       backup_register_rpo_hours: 24
+#       backup_register_rto_hours: 4
+
+backup_register_name: ""
+backup_register_paths: []
+backup_register_exclude: []
+# Runs before the backup (e.g. a database dump into one of the paths); must exit 0.
+backup_register_pre_command: ""
+backup_register_post_command: ""
+# Recovery objectives; the backup schedule must meet the RPO (BCK-04).
+backup_register_rpo_hours: 24
+backup_register_rto_hours: 4
+# Optional command run by the scheduled restore test after the paths are restored into a
+# scratch directory (its path is in RESTORE_DIR); must exit 0 when the restored data is usable.
+backup_register_verify_command: ""
+backup_register_dir: /etc/compliant-infra/backup.d

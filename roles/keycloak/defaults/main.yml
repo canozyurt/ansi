@@ -23,12 +23,13 @@ keycloak_db_sslmode: require
 keycloak_admin_user: break-glass-admin
 keycloak_admin_password: ""
 
-# TLS (SEC-03). Paths on the host; when empty a self-signed certificate is generated until the PKI role issues one.
+# TLS (SEC-03). Organisation-supplied files on the host. When empty, the tls_cert role issues one from
+# the internal PKI (pki_openbao_addr) or, without a PKI, generates a temporary self-signed certificate.
 keycloak_tls_cert_file: ""
 keycloak_tls_key_file: ""
 # The upstream image runs as uid 1000 / gid 0; TLS material is owned by that uid.
 keycloak_container_uid: 1000
-keycloak_validate_certs: "{{ keycloak_tls_cert_file | length > 0 }}"
+keycloak_validate_certs: "{{ keycloak_tls_cert_file | length > 0 or (pki_openbao_addr | default('')) | length > 0 }}"
 
 keycloak_https_port: 8443
 keycloak_management_port: 9000

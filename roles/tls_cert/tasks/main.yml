@@ -1,0 +1,183 @@
+---
+- name: Check the certificate parameters
+  ansible.builtin.assert:
+    that:
+      - tls_cert_name | length > 0
+      - tls_cert_dir | length > 0
+    fail_msg: tls_cert needs tls_cert_name and tls_cert_dir.
+    quiet: true
+
+- name: Work out the certificate source and names
+  ansible.builtin.set_fact:
+    tls_cert_source: >-
+      {{ 'file' if tls_cert_src_cert | length > 0
+         else ('pki' if tls_cert_pki_addr | length > 0 else 'selfsigned') }}
+    tls_cert_dns_names: "{{ ([tls_cert_common_name, inventory_hostname] + tls_cert_alt_names) | unique }}"
+    tls_cert_changed: false
+
+- name: Install Python libraries for certificate handling
+  ansible.builtin.apt:
+    name: [python3-cryptography]
+    state: present
+
+- name: Create the certificate directory
+  ansible.builtin.file:
+    path: "{{ tls_cert_dir }}"
+    state: directory
+    owner: "{{ tls_cert_owner }}"
+    group: "{{ tls_cert_group }}"
+    mode: "{{ tls_cert_dir_mode }}"
+
+- name: Read the current certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ tls_cert_dir }}/tls.crt"
+    valid_at:
+      renew: "+{{ tls_cert_renew_before_days }}d"
+  register: tls_cert_current
+  failed_when: false
+
+- name: Decide whether the certificate must be (re)issued
+  ansible.builtin.set_fact:
+    tls_cert_needed: >-
+      {{ tls_cert_current.not_after is not defined
+         or not tls_cert_current.valid_at.renew
+         or ((tls_cert_dns_names | map('regex_replace', '^', 'DNS:') | list)
+             | difference(tls_cert_current.subject_alt_name | default([]))) | length > 0
+         or (tls_cert_source == 'pki' and tls_cert_current.issuer == tls_cert_current.subject) }}
+
+- name: Install the organisation-supplied certificate
+  when: tls_cert_source == 'file'
+  tags: [chk_sec_03]
+  block:
+    - name: Copy the certificate and key
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ tls_cert_dir }}/{{ item.dest }}"
+        remote_src: true
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: "{{ tls_cert_src_cert }}", dest: tls.crt, mode: "0644" }
+        - { src: "{{ tls_cert_src_key }}", dest: tls.key, mode: "{{ tls_cert_key_mode }}" }
+      register: tls_cert_copied
+
+    - name: Note the change
+      ansible.builtin.set_fact:
+        tls_cert_changed: "{{ tls_cert_copied is changed }}"
+
+- name: Issue the certificate from the internal PKI
+  when: tls_cert_source == 'pki'
+  tags: [chk_sec_03, chk_sec_05]
+  block:
+    - name: Log in to OpenBao with the AppRole
+      ansible.builtin.uri:
+        url: "{{ tls_cert_pki_addr }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ tls_cert_pki_role_id }}"
+          secret_id: "{{ tls_cert_pki_secret_id }}"
+        ca_path: "{{ tls_cert_pki_ca_file | default(omit, true) }}"
+      register: tls_cert_login
+      when:
+        - tls_cert_needed | bool
+        - tls_cert_pki_token | length == 0
+      no_log: true
+
+    - name: Request the certificate
+      ansible.builtin.uri:
+        url: "{{ tls_cert_pki_addr }}/v1/{{ tls_cert_pki_mount }}/issue/{{ tls_cert_pki_role }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ tls_cert_pki_token if tls_cert_pki_token | length > 0 else tls_cert_login.json.auth.client_token }}"
+        body_format: json
+        body:
+          common_name: "{{ tls_cert_common_name }}"
+          alt_names: "{{ tls_cert_dns_names | join(',') }}"
+          ip_sans: "{{ tls_cert_ip_sans | join(',') }}"
+          ttl: "{{ tls_cert_ttl }}"
+          private_key_format: pem
+        ca_path: "{{ tls_cert_pki_ca_file | default(omit, true) }}"
+      register: tls_cert_issued
+      when: tls_cert_needed | bool
+      no_log: true
+
+    - name: Write the issued key
+      ansible.builtin.copy:
+        content: "{{ tls_cert_issued.json.data.private_key }}\n"
+        dest: "{{ tls_cert_dir }}/tls.key"
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: "{{ tls_cert_key_mode }}"
+      when: tls_cert_needed | bool
+      no_log: true
+
+    - name: Write the issued certificate with its chain
+      ansible.builtin.copy:
+        content: "{{ ([tls_cert_issued.json.data.certificate] + tls_cert_issued.json.data.ca_chain) | join('\n') }}\n"
+        dest: "{{ tls_cert_dir }}/tls.crt"
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: "0644"
+      when: tls_cert_needed | bool
+
+    - name: Trust the internal CA on this host
+      ansible.builtin.copy:
+        content: "{{ tls_cert_issued.json.data.ca_chain | last }}\n"
+        dest: /usr/local/share/ca-certificates/compliant-infra-ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+      register: tls_cert_ca
+      when:
+        - tls_cert_needed | bool
+        - tls_cert_trust_ca | bool
+
+    - name: Update the host trust store
+      ansible.builtin.command: update-ca-certificates
+      when: tls_cert_ca is changed  # noqa: no-handler -- must run before the caller starts its service
+      changed_when: true
+
+    - name: Note the change
+      ansible.builtin.set_fact:
+        tls_cert_changed: "{{ tls_cert_needed | bool }}"
+
+- name: Generate a temporary self-signed certificate
+  when: tls_cert_source == 'selfsigned'
+  tags: [chk_sec_03]
+  block:
+    - name: Generate the key
+      community.crypto.openssl_privatekey:
+        path: "{{ tls_cert_dir }}/tls.key"
+        type: ECC
+        curve: secp384r1
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: "{{ tls_cert_key_mode }}"
+
+    - name: Generate the signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ tls_cert_dir }}/tls.key"
+        common_name: "{{ tls_cert_common_name }}"
+        subject_alt_name: >-
+          {{ (tls_cert_dns_names | map('regex_replace', '^', 'DNS:') | list)
+             + (tls_cert_ip_sans | map('regex_replace', '^', 'IP:') | list) }}
+      register: tls_cert_csr
+      changed_when: false
+
+    - name: Sign the certificate
+      community.crypto.x509_certificate:
+        path: "{{ tls_cert_dir }}/tls.crt"
+        csr_content: "{{ tls_cert_csr.csr }}"
+        privatekey_path: "{{ tls_cert_dir }}/tls.key"
+        provider: selfsigned
+        selfsigned_not_after: "+{{ tls_cert_selfsigned_days }}d"
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: "0644"
+      register: tls_cert_signed
+
+    - name: Note the change
+      ansible.builtin.set_fact:
+        tls_cert_changed: "{{ tls_cert_signed is changed }}"

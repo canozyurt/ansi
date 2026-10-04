@@ -1,0 +1,38 @@
+---
+- name: Check the backup declaration
+  ansible.builtin.assert:
+    that:
+      - backup_register_name is match('^[a-z0-9_-]+$')
+      - backup_register_paths | length > 0
+      - backup_register_rpo_hours | int > 0
+      - backup_register_rto_hours | int > 0
+    fail_msg: backup_register needs a name ([a-z0-9_-]), at least one path, and an RPO and RTO in hours.
+    quiet: true
+  tags: [chk_bck_04]
+
+- name: Create the backup declaration directory
+  ansible.builtin.file:
+    path: "{{ backup_register_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Declare what to back up
+  ansible.builtin.copy:
+    content: "{{ backup_register_declaration | to_nice_json }}\n"
+    dest: "{{ backup_register_dir }}/{{ backup_register_name }}.json"
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    backup_register_declaration:
+      name: "{{ backup_register_name }}"
+      paths: "{{ backup_register_paths }}"
+      exclude: "{{ backup_register_exclude }}"
+      pre_command: "{{ backup_register_pre_command }}"
+      post_command: "{{ backup_register_post_command }}"
+      verify_command: "{{ backup_register_verify_command }}"
+      rpo_hours: "{{ backup_register_rpo_hours | int }}"
+      rto_hours: "{{ backup_register_rto_hours | int }}"
+  tags: [chk_bck_01, chk_bck_04]
