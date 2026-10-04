@@ -1,0 +1,63 @@
+---
+# Backup client (BCK-01, BCK-03, BCK-04, SEC-04). Runs on every host. Reads the declarations that
+# roles/backup_register writes to /etc/compliant-infra/backup.d/*.json and backs each one up with
+# restic to every backup server (independent, encrypted, append-only copies).
+
+# restic binary (pinned with its SHA-256 in roles/versions).
+backup_restic_version: "{{ versions_tools.restic.version }}"
+backup_restic_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] | default(ansible_facts['architecture']) }}"
+backup_restic_url: "{{ versions_tools.restic.url | replace('{arch}', backup_restic_arch) }}"
+backup_restic_sha256: "{{ versions_tools.restic.sha256[backup_restic_arch] }}"
+backup_restic_bin: /usr/local/bin/restic
+
+# Backup servers: every host in the backup group (roles/backup_server). Each one holds an
+# independent copy; at least two are required outside labs.
+backup_servers: "{{ groups['backup'] | default([]) }}"
+backup_min_servers: 2
+backup_allow_single_server: false
+# A backup server does not count as an off-host copy of itself, so it is skipped when others exist.
+backup_skip_self: true
+# rest-server port (keep equal to backup_server_port).
+backup_rest_port: 8000
+
+# Credentials. Both are derived from one Vault/OpenBao secret shared by clients and servers
+# (inventory: backup_password_seed: "{{ vault_backup_password_seed }}"), so each host gets its own
+# REST login and repository password without storing one secret per host. Override per host to set
+# them explicitly. Changing the seed later locks you out of existing repositories (add a new restic
+# key first).
+backup_password_seed: ""
+backup_rest_user: "{{ inventory_hostname }}"
+backup_rest_password: "{{ (backup_password_seed ~ ':rest:' ~ inventory_hostname) | hash('sha256') }}"
+backup_repo_password: "{{ (backup_password_seed ~ ':repo:' ~ inventory_hostname) | hash('sha256') }}"
+
+# CA bundle used to verify the servers. Empty: with the internal PKI (pki_openbao_addr) the host trust
+# store is used; without it, each server's (self-signed) certificate is copied from the server.
+backup_cacert_file: ""
+backup_fetch_server_certs: "{{ (pki_openbao_addr | default('')) | length == 0 and backup_cacert_file | length == 0 }}"
+
+backup_config_dir: /etc/compliant-infra/backup
+backup_declaration_dir: /etc/compliant-infra/backup.d
+backup_state_dir: /var/lib/compliant-backup
+backup_cache_dir: /var/cache/restic
+backup_textfile_dir: /var/lib/node_exporter/textfile_collector
+backup_retry_lock: 30m
+
+# Schedule (BCK-04). Empty: derived from the smallest declared RPO, never less often than daily.
+backup_on_calendar: ""
+backup_max_interval_hours: 24
+
+# Monthly restore test (BCK-03): restores the latest snapshot of every declaration from every server
+# into a scratch directory, runs its verify_command and times it against the RTO.
+backup_restore_test_on_calendar: "*-*-01 04:00:00"
+backup_restore_test_randomized_delay: 3h
+# Needs free space for the largest declaration.
+backup_restore_test_dir: /var/tmp/compliant-restore-test
+
+# Host essentials, declared through backup_register like any service.
+backup_host_essentials: true
+backup_host_essentials_name: host-etc
+backup_host_essentials_paths: [/etc]
+backup_host_essentials_exclude: []
+backup_host_essentials_rpo_hours: 24
+backup_host_essentials_rto_hours: 4
+backup_host_essentials_verify_command: test -s "$RESTORE_DIR/etc/hostname" && test -s "$RESTORE_DIR/etc/passwd"

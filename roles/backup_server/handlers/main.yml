@@ -1,0 +1,30 @@
+---
+- name: Restart rest-server
+  community.docker.docker_container:
+    name: "{{ backup_server_container_name }}"
+    image: "{{ backup_server_image }}"
+    entrypoint: [/usr/bin/rest-server]
+    command: "{{ backup_server_command }}"
+    network_mode: host
+    user: "{{ backup_server_uid }}:{{ backup_server_uid }}"
+    volumes:
+      - "{{ backup_server_repo_dir }}:/data:rw"
+      - "{{ backup_server_data_dir }}/auth:/auth:ro"
+      - "{{ backup_server_data_dir }}/tls:/tls:ro"
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ backup_server_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: backup_server
+    state: started
+    restart: true
+  throttle: 1  # one server at a time; clients keep writing to the other copy
+  when: not (backup_server_container.changed | default(false))
+
+# rest-server re-reads the htpasswd file on SIGHUP (and on its own within 30 seconds).
+- name: Reload rest-server logins
+  ansible.builtin.command: docker kill --signal HUP {{ backup_server_container_name }}
+  changed_when: true

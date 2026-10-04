@@ -1,0 +1,8 @@
+---
+# Fixed rest-server flags. --append-only: clients can add data but never delete or overwrite it
+# (BCK-02). --private-repos: each login reaches only /<login>/. --prometheus: /metrics for the
+# "metrics" login. --log -: access log to stdout (journald).
+backup_server_command: >-
+  {{ ['--path', '/data', '--htpasswd-file', '/auth/htpasswd', '--listen', ':' ~ backup_server_port,
+      '--tls', '--tls-cert', '/tls/tls.crt', '--tls-key', '/tls/tls.key',
+      '--append-only', '--private-repos', '--prometheus', '--log', '-'] + backup_server_extra_args }}

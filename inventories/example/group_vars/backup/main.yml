@@ -1,0 +1,21 @@
+---
+# Backup servers (roles/backup_server). Put them in different failure domains (rooms, zones or
+# providers): every client writes an independent copy to each one.
+
+# Retention, applied on the servers only (clients are append-only).
+backup_server_keep_daily: 14
+backup_server_keep_weekly: 8
+backup_server_keep_monthly: 12
+
+# Optional off-site copy to an S3-compatible bucket with versioning and Object Lock.
+# backup_s3_endpoint: s3.eu-central-1.amazonaws.com
+# backup_s3_bucket: example-restic-offsite
+# backup_s3_region: eu-central-1
+# backup_s3_access_key: "{{ vault_backup_s3_access_key }}"
+# backup_s3_secret_key: "{{ vault_backup_s3_secret_key }}"
+
+# rest-server (TLS) is reachable from every managed host and nothing else (NET-01, NET-03).
+firewall_rules_backup_server:
+  - name: restic-rest-server
+    port: 8000
+    sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}", "{{ network_zones.data }}"]

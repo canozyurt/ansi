@@ -1,0 +1,14 @@
+---
+# Encrypted, append-only backups (BCK-01..04): the rest-server nodes first, then the restic client
+# on every host. Service roles declare what to back up through roles/backup_register.
+- name: Deploy the backup servers
+  hosts: backup
+  become: true
+  roles:
+    - role: backup_server
+
+- name: Configure backups on every host
+  hosts: all
+  become: true
+  roles:
+    - role: backup

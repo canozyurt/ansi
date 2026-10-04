@@ -17,3 +17,6 @@
 
 - name: Deploy the edge proxy, WAF and VIP failover
   ansible.builtin.import_playbook: edge.yml
+
+- name: Deploy backups
+  ansible.builtin.import_playbook: backup.yml

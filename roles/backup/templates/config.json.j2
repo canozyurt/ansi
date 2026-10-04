@@ -1,0 +1,15 @@
+{
+  "host": {{ inventory_hostname | to_json }},
+  "restic": {{ backup_restic_bin | to_json }},
+  "declaration_dir": {{ backup_declaration_dir | to_json }},
+  "state_file": {{ (backup_state_dir ~ '/state.json') | to_json }},
+  "cache_dir": {{ backup_cache_dir | to_json }},
+  "textfile_dir": {{ backup_textfile_dir | to_json }},
+  "restore_test_dir": {{ backup_restore_test_dir | to_json }},
+  "retry_lock": {{ backup_retry_lock | to_json }},
+  "repos": [
+{% for server in backup_repo_servers %}
+    {"name": {{ server | to_json }}, "env_file": {{ (backup_config_dir ~ '/repos/' ~ server ~ '.env') | to_json }}}{{ '' if loop.last else ',' }}
+{% endfor %}
+  ]
+}

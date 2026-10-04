@@ -26,6 +26,17 @@ versions_images:
   coraza_spoa: ghcr.io/corazawaf/coraza-spoa:0.9.0
   # Toolchain for edge_waf_build (builds the same coraza-spoa version from the Go module proxy).
   coraza_spoa_builder: docker.io/library/golang:1.26.8-alpine
+  # Backup repository server (roles/backup_server)
+  rest_server: docker.io/restic/rest-server:0.14.0
+
+# Host binaries installed outside the package manager, verified by SHA-256.
+versions_tools:
+  restic:
+    version: 0.19.1
+    url: https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_{arch}.bz2
+    sha256:
+      amd64: f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+      arm64: a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
 
 # What the previous release of this repository deployed. CI installs these first
 # and upgrades to versions_images, so every release proves its upgrade path.

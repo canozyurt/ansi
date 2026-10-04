@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Every {{ backup_interval_hours }}h: the smallest declared RPO is {{ backup_min_rpo_hours }}h (BCK-04).
+[Unit]
+Description=Scheduled encrypted backups
+
+[Timer]
+OnCalendar={{ backup_calendar }}
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

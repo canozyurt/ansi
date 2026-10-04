@@ -1,0 +1,24 @@
+{
+  "restic": {{ backup_restic_bin | default('/usr/local/bin/restic') | to_json }},
+  "user": {{ backup_server_user | to_json }},
+  "repo_dir": {{ backup_server_repo_dir | to_json }},
+  "password_file": {{ (backup_server_config_dir ~ '/repo-passwords.json') | to_json }},
+  "state_file": {{ (backup_server_state_dir ~ '/state.json') | to_json }},
+  "cache_dir": "/var/cache/restic-server",
+  "textfile_dir": {{ backup_server_textfile_dir | to_json }},
+  "retry_lock": {{ backup_server_retry_lock | to_json }},
+  "keep": {
+    "hourly": {{ backup_server_keep_hourly | int }},
+    "daily": {{ backup_server_keep_daily | int }},
+    "weekly": {{ backup_server_keep_weekly | int }},
+    "monthly": {{ backup_server_keep_monthly | int }},
+    "yearly": {{ backup_server_keep_yearly | int }},
+    "within": {{ backup_server_keep_within | to_json }}
+  },
+  "s3": {
+    "enabled": {{ backup_server_s3_enabled | bool | to_json }},
+    "repository": {{ ('s3:' ~ backup_server_s3_endpoint ~ '/' ~ backup_server_s3_bucket ~ '/' ~ backup_server_s3_prefix) | to_json }},
+    "env_file": {{ (backup_server_config_dir ~ '/s3.env') | to_json }},
+    "forget": {{ backup_server_s3_forget | bool | to_json }}
+  }
+}

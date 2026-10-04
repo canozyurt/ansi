@@ -1,0 +1,66 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,{{ inventory_hostname }}"
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  pre_tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+    - name: Create the sample service directory
+      ansible.builtin.file:
+        path: /opt/sample
+        state: directory
+        mode: "0700"
+
+    - name: Create sample service data with a plaintext marker
+      ansible.builtin.copy:
+        content: "INSERT INTO t VALUES ('COMPLIANT-INFRA-PLAINTEXT-MARKER-5d1f');\n"
+        dest: /opt/sample/data.sql
+        mode: "0600"
+
+    - name: Declare the sample service backup (dump, verify, 6h RPO)
+      ansible.builtin.include_role:
+        name: backup_register
+      vars:
+        backup_register_name: sample
+        backup_register_paths: [/var/backups/sample]
+        backup_register_pre_command: install -d -m 0700 /var/backups/sample && cp /opt/sample/data.sql /var/backups/sample/dump.sql
+        backup_register_post_command: date +%s > /run/sample-post-command
+        backup_register_verify_command: grep -q "PLAINTEXT-MARKER" "$RESTORE_DIR/var/backups/sample/dump.sql"
+        backup_register_rpo_hours: 6
+        backup_register_rto_hours: 1
+
+  roles:
+    - role: backup_server
+    - role: backup

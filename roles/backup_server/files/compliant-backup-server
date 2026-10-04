@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Retention and off-site copy for the restic repositories on this backup server.
+
+Managed by Ansible (roles/backup_server). Runs from systemd; output goes to journald.
+
+  compliant-backup-server prune      restic forget --prune with the retention policy, on every repository
+  compliant-backup-server s3-copy    restic copy every repository to the S3 bucket (then apply retention there)
+  compliant-backup-server metrics    rewrite the textfile metrics from the saved state
+
+Clients reach the repositories only through rest-server in append-only mode, so they cannot delete
+anything (BCK-02). Retention therefore runs here, directly on the repository directories, with each
+repository's password read from a 0600 root file and handed to restic in its environment. restic itself
+runs as the rest-server user so the files it writes stay readable by rest-server.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import pwd
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG = "/etc/compliant-infra/backup-server/config.json"
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def read_env_file(path: str) -> dict:
+    env = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                env[key.strip()] = value
+    return env
+
+
+def drop_privileges(user: str):
+    entry = pwd.getpwnam(user)
+
+    def _drop():
+        os.setgroups([])
+        os.setgid(entry.pw_gid)
+        os.setuid(entry.pw_uid)
+
+    return _drop
+
+
+def restic(cfg: dict, args: list[str], env_extra: dict, capture: bool = False):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("RESTIC_", "AWS_"))}
+    env["HOME"] = cfg["cache_dir"]
+    env["RESTIC_CACHE_DIR"] = cfg["cache_dir"]
+    env.update(env_extra)
+    return subprocess.run([cfg["restic"]] + args, env=env, text=True, preexec_fn=drop_privileges(cfg["user"]),
+                          stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None)
+
+
+def policy_args(cfg: dict) -> list[str]:
+    args = ["forget", "--prune", "--group-by", "host,tags", "--retry-lock", cfg["retry_lock"]]
+    for unit in ("hourly", "daily", "weekly", "monthly", "yearly"):
+        value = int(cfg["keep"].get(unit, 0) or 0)
+        if value > 0:
+            args += [f"--keep-{unit}", str(value)]
+    if cfg["keep"].get("within"):
+        args += ["--keep-within", cfg["keep"]["within"]]
+    return args
+
+
+def repositories(cfg: dict):
+    with open(cfg["password_file"]) as fh:
+        passwords = json.load(fh)
+    for user, password in sorted(passwords.items()):
+        path = os.path.join(cfg["repo_dir"], user)
+        if not os.path.isfile(os.path.join(path, "config")):
+            log(f"{user}: no repository yet, skipped")
+            continue
+        yield user, path, password
+
+
+class State:
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.path = cfg["state_file"]
+
+    def __enter__(self):
+        self.lock = open(self.path + ".lock", "w")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        try:
+            with open(self.path) as fh:
+                self.data = json.load(fh)
+        except (OSError, ValueError):
+            self.data = {}
+        for key in ("prune", "s3"):
+            self.data.setdefault(key, {})
+        return self
+
+    def __exit__(self, *exc):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self.data, fh, indent=1, sort_keys=True)
+        os.replace(tmp, self.path)
+        write_metrics(self.cfg, self.data)
+        self.lock.close()
+
+
+def write_metrics(cfg: dict, data: dict) -> None:
+    lines = []
+    for section, prefix, help_text in (
+        ("prune", "backup_server_prune", "retention (forget --prune)"),
+        ("s3", "backup_server_s3_copy", "copy to the S3 bucket"),
+    ):
+        entries = sorted(data[section].items())
+        for suffix, field, kind, desc in (
+            ("last_success_timestamp_seconds", "last_success", "gauge", f"Unix time of the last successful {help_text}."),
+            ("last_status", "last_ok", "gauge", f"1 if the last {help_text} succeeded."),
+            ("last_duration_seconds", "duration", "gauge", f"Duration of the last {help_text}."),
+        ):
+            lines.append(f"# HELP {prefix}_{suffix} {desc}")
+            lines.append(f"# TYPE {prefix}_{suffix} {kind}")
+            for repo, entry in entries:
+                value = entry.get(field, 0)
+                if isinstance(value, bool):
+                    value = int(value)
+                lines.append(f'{prefix}_{suffix}{{repo="{repo}"}} {round(value, 3)}')
+    lines.append("# HELP backup_server_snapshots Snapshots in the repository after the last retention run.")
+    lines.append("# TYPE backup_server_snapshots gauge")
+    for repo, entry in sorted(data["prune"].items()):
+        if "snapshots" in entry:
+            lines.append(f'backup_server_snapshots{{repo="{repo}"}} {entry["snapshots"]}')
+    os.makedirs(cfg["textfile_dir"], mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=cfg["textfile_dir"], prefix=".backup_server.prom.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(cfg["textfile_dir"], "backup_server.prom"))
+
+
+def cmd_prune(cfg: dict) -> int:
+    failed = False
+    with State(cfg) as state:
+        for user, path, password in repositories(cfg):
+            start = time.time()
+            env = {"RESTIC_REPOSITORY": path, "RESTIC_PASSWORD": password}
+            log(f"{user}: applying retention {' '.join(policy_args(cfg)[1:])}")
+            ok = restic(cfg, policy_args(cfg), env).returncode == 0
+            entry = state.data["prune"].setdefault(user, {})
+            entry.update(last_run=int(time.time()), duration=time.time() - start, last_ok=ok)
+            if ok:
+                entry["last_success"] = int(time.time())
+                snaps = restic(cfg, ["snapshots", "--json"], env, capture=True)
+                if snaps.returncode == 0:
+                    entry["snapshots"] = len(json.loads(snaps.stdout or "[]"))
+            else:
+                failed = True
+                log(f"ERROR {user}: retention failed")
+    return 1 if failed else 0
+
+
+def cmd_s3_copy(cfg: dict) -> int:
+    s3 = cfg["s3"]
+    if not s3.get("enabled"):
+        log("S3 copy is not configured")
+        return 0
+    failed = False
+    base_env = read_env_file(s3["env_file"])
+    with State(cfg) as state:
+        for user, path, password in repositories(cfg):
+            start = time.time()
+            env = dict(base_env)
+            env.update({
+                "RESTIC_REPOSITORY": f"{s3['repository']}/{user}",
+                "RESTIC_PASSWORD": password,
+                "RESTIC_FROM_REPOSITORY": path,
+                "RESTIC_FROM_PASSWORD": password,
+            })
+            ok = True
+            if restic(cfg, ["cat", "config"], env, capture=True).returncode != 0:
+                log(f"{user}: initialising the S3 repository")
+                ok = restic(cfg, ["init", "--copy-chunker-params"], env).returncode == 0
+            if ok:
+                log(f"{user}: copying new snapshots to S3")
+                ok = restic(cfg, ["copy", "--retry-lock", cfg["retry_lock"]], env).returncode == 0
+            if ok and s3.get("forget"):
+                ok = restic(cfg, policy_args(cfg), env).returncode == 0
+            entry = state.data["s3"].setdefault(user, {})
+            entry.update(last_run=int(time.time()), duration=time.time() - start, last_ok=ok)
+            if ok:
+                entry["last_success"] = int(time.time())
+            else:
+                failed = True
+                log(f"ERROR {user}: S3 copy failed")
+    return 1 if failed else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=["prune", "s3-copy", "metrics"])
+    args = parser.parse_args()
+    os.umask(0o077)
+    with open(CONFIG) as fh:
+        cfg = json.load(fh)
+    if args.command == "prune":
+        return cmd_prune(cfg)
+    if args.command == "s3-copy":
+        return cmd_s3_copy(cfg)
+    with State(cfg):
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

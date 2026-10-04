@@ -134,7 +134,8 @@ requirements:
       iso27001: ["8.24"]
       iso27017: []
     check: "Host facts check for LUKS or provider encryption; service config tests"
-    status: not_started
+    status: designed
+    progress: "Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). Remaining: disks, databases and object storage."
   - id: SEC-05
     requirement: "Certificates renew automatically; an alert fires 14 days before any expiry"
     controls:
@@ -299,7 +300,8 @@ requirements:
       iso27001: ["8.13"]
       iso27017: []
     check: "CI asserts each stateful role defines a backup job; backup age alert"
-    status: not_started
+    status: implemented
+    progress: "restic on every host backs up each backup_register declaration plus /etc to 2+ append-only rest-servers (independent encrypted copies); optional nightly restic copy to S3 (untested); BackupRPOExceeded/BackupFailed alerts in monitoring; tested in molecule/backup. Remaining: CI check that every stateful role registers a backup."
   - id: BCK-02
     requirement: "Backups are immutable (append-only) for their retention period"
     controls:
@@ -307,7 +309,8 @@ requirements:
       iso27001: ["8.13"]
       iso27017: []
     check: "Test: deleting a backup with service credentials fails"
-    status: not_started
+    status: implemented
+    progress: "rest-server --append-only and --private-repos; retention runs only on the server; molecule/backup proves client forget/prune and HTTP DELETE get 403. Remaining: Object Lock on the S3 copy is recommended, not enforced."
   - id: BCK-03
     requirement: "Restores are tested automatically at least monthly and timed against the RTO"
     controls:
@@ -315,7 +318,8 @@ requirements:
       iso27001: ["8.13", "5.30"]
       iso27017: []
     check: "Restore job result stored as evidence"
-    status: not_started
+    status: implemented
+    progress: "Monthly timer restores the latest snapshot of each declaration from each server, runs its verify_command, times it against the RTO and writes metrics (RestoreTestOverdue, RestoreSlowerThanRTO alerts); playbooks/restore.yml for manual restores; tested. Remaining: archive results as audit evidence."
   - id: BCK-04
     requirement: "Each service declares an RTO and RPO, and its backup schedule meets the RPO"
     controls:
@@ -323,7 +327,8 @@ requirements:
       iso27001: ["5.30"]
       iso27017: []
     check: "Lint check: RTO/RPO variables set and consistent with schedule"
-    status: not_started
+    status: implemented
+    progress: "backup_register requires RPO/RTO; the backup role derives the timer from the smallest RPO (at least daily) and asserts it meets it. Remaining: CI lint across roles."
   - id: HA-01
     requirement: "Every Core service runs on 3 or more nodes (or 2 plus a witness) with automatic failover"
     controls:
@@ -415,6 +420,7 @@ requirements:
       iso27017: ["CLD.8.1.5"]
     check: "Test: export then delete a sample dataset"
     status: not_started
+    progress: "playbooks/restore.yml restores a declaration to a separate directory (a building block for export). Export and secure-deletion playbooks not started."
   - id: DAT-03
     requirement: "A shared-responsibility matrix states what the repo, the company and the hosting provider own"
     controls:

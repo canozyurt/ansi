@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Nightly off-site copy of the backups
+
+[Timer]
+OnCalendar={{ backup_server_s3_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

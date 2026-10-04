@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Monthly restore test (BCK-03).
+[Unit]
+Description=Monthly backup restore test
+
+[Timer]
+OnCalendar={{ backup_restore_test_on_calendar }}
+RandomizedDelaySec={{ backup_restore_test_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

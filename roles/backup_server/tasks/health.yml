@@ -1,0 +1,15 @@
+---
+- name: Wait until rest-server answers
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ backup_server_port }}/metrics"
+    url_username: metrics
+    url_password: "{{ backup_server_metrics_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: backup_server_ready
+  until: backup_server_ready.status == 200
+  retries: 30
+  delay: 2
+  no_log: true
+  tags: [chk_log_05]

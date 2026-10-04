@@ -1,0 +1,84 @@
+---
+- name: Create the backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ backup_config_dir }}", mode: "0700" }
+    - { path: "{{ backup_config_dir }}/repos", mode: "0700" }
+    - { path: "{{ backup_config_dir }}/ca", mode: "0755" }
+    - { path: "{{ backup_state_dir }}", mode: "0700" }
+    - { path: "{{ backup_cache_dir }}", mode: "0700" }
+    - { path: "{{ backup_textfile_dir }}", mode: "0755" }
+
+- name: Read the certificate of each backup server
+  ansible.builtin.slurp:
+    src: "{{ hostvars[item].backup_server_data_dir | default('/opt/rest-server') }}/tls/tls.crt"
+  delegate_to: "{{ item }}"
+  loop: "{{ backup_repo_servers }}"
+  register: backup_server_certs
+  when: backup_fetch_server_certs | bool
+  tags: [chk_sec_03]
+
+- name: Trust the certificate of each backup server
+  ansible.builtin.copy:
+    content: "{{ item.content | b64decode }}"
+    dest: "{{ backup_config_dir }}/ca/{{ item.item }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ backup_server_certs.results | default([]) | selectattr('content', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [chk_sec_03]
+
+- name: Write one environment file per repository (contains secrets)
+  ansible.builtin.template:
+    src: repo.env.j2
+    dest: "{{ backup_config_dir }}/repos/{{ item }}.env"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ backup_repo_servers }}"
+  no_log: true
+  tags: [chk_sec_02, chk_sec_04]
+
+- name: Remove environment files of servers that are gone
+  ansible.builtin.find:
+    paths: "{{ backup_config_dir }}/repos"
+    patterns: "*.env"
+  register: backup_env_files
+
+- name: Delete stale repository environment files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ backup_env_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename | regex_replace('\.env$', '')) not in backup_repo_servers
+
+- name: Write the backup configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ backup_config_dir }}/config.json"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install the backup tool
+  ansible.builtin.copy:
+    src: compliant-backup
+    dest: /usr/local/sbin/compliant-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Initialise the encrypted repositories
+  ansible.builtin.command: /usr/local/sbin/compliant-backup init
+  register: backup_init
+  changed_when: "'Initialising' in backup_init.stdout"
+  tags: [chk_sec_04, chk_bck_01]

@@ -1,0 +1,73 @@
+---
+- name: Install restic for server-side retention
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restic.yml
+
+- name: Write the S3 credentials (contains secrets)
+  ansible.builtin.template:
+    src: s3.env.j2
+    dest: "{{ backup_server_config_dir }}/s3.env"
+    owner: root
+    group: root
+    mode: "0600"
+  when: backup_server_s3_enabled | bool
+  no_log: true
+  tags: [chk_sec_02, chk_bck_01]
+
+- name: Remove the S3 credentials when the copy is off
+  ansible.builtin.file:
+    path: "{{ backup_server_config_dir }}/s3.env"
+    state: absent
+  when: not (backup_server_s3_enabled | bool)
+
+- name: Write the maintenance configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ backup_server_config_dir }}/config.json"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [chk_bck_02]
+
+- name: Install the maintenance tool
+  ansible.builtin.copy:
+    src: compliant-backup-server
+    dest: /usr/local/sbin/compliant-backup-server
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - compliant-backup-prune.service
+    - compliant-backup-prune.timer
+    - compliant-backup-s3.service
+    - compliant-backup-s3.timer
+  register: backup_server_units
+  tags: [chk_bck_02, chk_bck_01]
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: backup_server_units is changed  # noqa: no-handler -- the timers are enabled in the next task
+
+- name: Enable server-side retention
+  ansible.builtin.systemd_service:
+    name: compliant-backup-prune.timer
+    enabled: true
+    state: started
+  tags: [chk_bck_02]
+
+- name: Enable or disable the nightly S3 copy
+  ansible.builtin.systemd_service:
+    name: compliant-backup-s3.timer
+    enabled: "{{ backup_server_s3_enabled | bool }}"
+    state: "{{ 'started' if backup_server_s3_enabled | bool else 'stopped' }}"
+  tags: [chk_bck_01]

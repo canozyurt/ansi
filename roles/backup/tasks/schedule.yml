@@ -1,0 +1,79 @@
+---
+- name: Find the backup declarations on this host
+  ansible.builtin.find:
+    paths: "{{ backup_declaration_dir }}"
+    patterns: "*.json"
+  register: backup_declaration_files
+
+- name: Read the backup declarations
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ backup_declaration_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: backup_declaration_contents
+
+- name: Derive the schedule from the smallest RPO (BCK-04)
+  vars:
+    backup_rpos: >-
+      {{ backup_declaration_contents.results | map(attribute='content') | map('b64decode') | map('from_json')
+         | map(attribute='rpo_hours') | map('int') | list }}
+    backup_min_rpo: "{{ backup_rpos | union([backup_max_interval_hours | int]) | min }}"
+  ansible.builtin.set_fact:
+    backup_min_rpo_hours: "{{ backup_min_rpo | int }}"
+    # Largest interval that divides the day evenly and does not exceed the RPO.
+    backup_interval_hours: "{{ [1, 2, 3, 4, 6, 8, 12, 24] | select('le', backup_min_rpo | int) | max }}"
+    backup_minute: "{{ (inventory_hostname | hash('md5'))[:6] | int(base=16) % 60 }}"
+  tags: [chk_bck_04]
+
+- name: Work out the timer calendar
+  ansible.builtin.set_fact:
+    backup_calendar: >-
+      {{ backup_on_calendar if backup_on_calendar | length > 0
+         else ('*-*-* 01:%02d:00' | format(backup_minute | int) if backup_interval_hours | int == 24
+               else '*-*-* 00/%d:%02d:00' | format(backup_interval_hours | int, backup_minute | int)) }}
+
+- name: The schedule meets every declared RPO and runs at least daily (BCK-04)
+  ansible.builtin.assert:
+    that:
+      - backup_on_calendar | length > 0 or backup_interval_hours | int <= backup_min_rpo_hours | int
+      - backup_on_calendar | length > 0 or backup_interval_hours | int <= 24
+    fail_msg: The backup interval ({{ backup_interval_hours }}h) is longer than the smallest RPO ({{ backup_min_rpo_hours }}h).
+    quiet: true
+  tags: [chk_bck_04]
+
+- name: Install the systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - compliant-backup.service
+    - compliant-backup.timer
+    - compliant-restore-test.service
+    - compliant-restore-test.timer
+  register: backup_units
+  tags: [chk_bck_01, chk_bck_03, chk_bck_04]
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: backup_units is changed  # noqa: no-handler -- the timers are enabled in the next task
+
+- name: Enable the backup and restore-test timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - compliant-backup.timer
+    - compliant-restore-test.timer
+  tags: [chk_bck_01, chk_bck_03]
+
+- name: Publish the declared objectives as metrics
+  ansible.builtin.command: /usr/local/sbin/compliant-backup metrics
+  args:
+    creates: "{{ backup_textfile_dir }}/backup.prom"
+  tags: [chk_log_05]

@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Restore test of every backup declaration, timed against its RTO
+Wants=network-online.target
+After=network-online.target compliant-backup.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-backup restore-test
+SyslogIdentifier=compliant-restore-test
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=24h

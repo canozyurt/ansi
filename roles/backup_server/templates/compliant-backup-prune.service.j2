@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Apply the backup retention policy to every restic repository (server side)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-backup-server prune
+SyslogIdentifier=compliant-backup-prune
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+TimeoutStartSec=12h

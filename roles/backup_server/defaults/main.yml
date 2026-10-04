@@ -1,0 +1,60 @@
+---
+# Backup server: restic rest-server in append-only mode (BCK-01, BCK-02, SEC-04).
+backup_server_image: "{{ versions_images.rest_server }}"
+backup_server_container_name: rest-server
+
+# High availability (HA-01): clients write an independent copy to every server, so two servers in
+# different failure domains (rooms, zones or providers) are the minimum. One only in labs.
+backup_server_min_nodes: 2
+backup_server_allow_single_node: false
+backup_server_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+backup_server_port: 8000
+backup_server_data_dir: /opt/rest-server       # TLS material and the htpasswd file
+backup_server_repo_dir: /srv/restic            # one repository per client: <repo_dir>/<client user>
+backup_server_config_dir: /etc/compliant-infra/backup-server
+backup_server_state_dir: /var/lib/compliant-backup-server
+backup_server_textfile_dir: /var/lib/node_exporter/textfile_collector
+# Unprivileged account the container (and server-side restic) runs as.
+backup_server_user: rest-server
+backup_server_uid: 10800
+backup_server_memory_limit: 1g
+backup_server_extra_args: []
+
+# TLS (SEC-03): organisation files, else the internal PKI, else self-signed (labs).
+backup_server_tls_cert_file: ""
+backup_server_tls_key_file: ""
+backup_server_tls_common_name: "{{ inventory_hostname }}"
+
+# Clients: every host in the inventory gets a REST login and a private repository.
+backup_server_clients: "{{ groups['all'] }}"
+# Same Vault/OpenBao secret the clients use (see roles/backup/defaults/main.yml). Client passwords are
+# derived from it unless a client host sets backup_rest_password / backup_repo_password explicitly.
+backup_server_password_seed: "{{ backup_password_seed | default('') }}"
+# Login for the Prometheus endpoint (/metrics). rest-server only lets the user "metrics" read it.
+backup_server_metrics_password: "{{ (backup_server_password_seed ~ ':rest:metrics') | hash('sha256') }}"
+
+# Retention (BCK-02): applied on the server only, because clients cannot delete. Snapshots are
+# grouped per host and declaration (tag).
+backup_server_keep_hourly: 0
+backup_server_keep_daily: 14
+backup_server_keep_weekly: 8
+backup_server_keep_monthly: 12
+backup_server_keep_yearly: 0
+backup_server_keep_within: ""         # e.g. 7d keeps every snapshot of the last week
+backup_server_prune_on_calendar: "*-*-* 05:15:00"
+backup_server_retry_lock: 30m
+
+# Optional off-site copy to any S3-compatible bucket. Set the inventory variables backup_s3_endpoint,
+# backup_s3_bucket, backup_s3_access_key and backup_s3_secret_key (Vault). Use a bucket with
+# versioning and Object Lock where the provider supports it (see roles/backup_server/README.md).
+backup_server_s3_endpoint: "{{ backup_s3_endpoint | default('') }}"      # e.g. s3.eu-central-1.amazonaws.com
+backup_server_s3_bucket: "{{ backup_s3_bucket | default('') }}"
+backup_server_s3_prefix: "{{ backup_s3_prefix | default(inventory_hostname) }}"
+backup_server_s3_region: "{{ backup_s3_region | default('') }}"
+backup_server_s3_access_key: "{{ backup_s3_access_key | default('') }}"
+backup_server_s3_secret_key: "{{ backup_s3_secret_key | default('') }}"
+backup_server_s3_on_calendar: "{{ backup_s3_on_calendar | default('*-*-* 06:30:00') }}"
+# Apply the retention policy to the bucket too (with Object Lock, deletes only add delete markers).
+backup_server_s3_forget: "{{ backup_s3_forget | default(true) }}"
+backup_server_s3_enabled: "{{ backup_server_s3_bucket | length > 0 and backup_server_s3_endpoint | length > 0 }}"

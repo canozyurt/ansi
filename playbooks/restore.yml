@@ -1,0 +1,83 @@
+---
+# Manual restore of one backup declaration on one host (BCK-03). See roles/backup/README.md.
+#
+#   # list the snapshots first
+#   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=app-1.example.internal \
+#     -e restore_name=host-etc -e restore_list=true
+#
+#   # restore the latest snapshot (or -e restore_snapshot=<id>) into a new directory
+#   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=app-1.example.internal \
+#     -e restore_name=host-etc -e restore_confirm=host-etc
+#
+# The data lands in restore_target (default /var/restore/<name>-<timestamp>, 0700) with its original
+# absolute paths below it. Stop the service, put the files (or load the dump) back as its runbook says,
+# and start it again. Restoring straight over the live paths needs restore_target=/ and
+# restore_in_place_confirm=<name>, and the service must be stopped first.
+- name: Restore a backup declaration
+  hosts: "{{ restore_host | default('restore_host_not_set') }}"
+  become: true
+  gather_facts: false
+  vars:
+    restore_name: ""
+    restore_snapshot: latest
+    restore_repo: ""            # backup server to restore from; default: the first one
+    restore_list: false
+    restore_confirm: ""
+    restore_in_place_confirm: ""
+    restore_target: ""          # default: /var/restore/<name>-<UTC timestamp>
+  tasks:
+    - name: Check the request
+      ansible.builtin.assert:
+        that:
+          - restore_name is match('^[a-z0-9_-]+$')
+          - restore_snapshot is match('^(latest|[0-9a-f]{8,64})$')
+          - ansible_play_hosts_all | length == 1
+        fail_msg: Set restore_host (one host), restore_name (a backup declaration) and optionally restore_snapshot.
+        quiet: true
+      tags: [chk_bck_03]
+
+    - name: Fix the restore directory
+      ansible.builtin.set_fact:
+        restore_dir: >-
+          {{ restore_target if restore_target | length > 0
+             else '/var/restore/' ~ restore_name ~ '-' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}
+
+    - name: List the snapshots of the declaration
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/compliant-backup', 'snapshots', '--name', restore_name]
+             + (['--repo', restore_repo] if restore_repo | length > 0 else []) }}
+      register: restore_snapshots
+      changed_when: false
+
+    - name: Show the snapshots
+      ansible.builtin.debug:
+        msg: "{{ restore_snapshots.stdout_lines }}"
+
+    - name: Require confirmation
+      ansible.builtin.assert:
+        that:
+          - restore_confirm == restore_name
+          - restore_dir != '/' or restore_in_place_confirm == restore_name
+        fail_msg: >-
+          Nothing restored. Re-run with -e restore_confirm={{ restore_name }} to restore into
+          {{ restore_dir }}{{ ' (and -e restore_in_place_confirm=' ~ restore_name ~ ' to overwrite live files)'
+          if restore_dir == '/' else '' }}.
+        quiet: true
+      when: not (restore_list | bool)
+
+    - name: Restore the snapshot
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/compliant-backup', 'restore', '--name', restore_name,
+              '--snapshot', restore_snapshot, '--target', restore_dir]
+             + (['--repo', restore_repo] if restore_repo | length > 0 else []) }}
+      register: restore_result
+      changed_when: true
+      when: not (restore_list | bool)
+      tags: [chk_bck_03]
+
+    - name: Report where the data is
+      ansible.builtin.debug:
+        msg: "Restored {{ restore_name }} ({{ restore_snapshot }}) into {{ restore_dir }}."
+      when: not (restore_list | bool)

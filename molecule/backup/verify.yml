@@ -1,0 +1,349 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_repo: "/srv/restic/{{ inventory_hostname }}"
+    verify_env: "/etc/compliant-infra/backup/repos/{{ inventory_hostname }}.env"
+    verify_marker: COMPLIANT-INFRA-PLAINTEXT-MARKER-5d1f
+    verify_prom: /var/lib/node_exporter/textfile_collector/backup.prom
+  tasks:
+    # ------------------------------------------------------------------ server
+    - name: Inspect the rest-server container
+      community.docker.docker_container_info:
+        name: rest-server
+      register: verify_container
+      tags: [chk_hrd_02, chk_bck_02]
+
+    - name: The rest-server container is hardened, append-only, private per client and TLS only
+      ansible.builtin.assert:
+        that:
+          - verify_container.container.State.Running
+          - "'ALL' in verify_container.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
+          - not verify_container.container.HostConfig.Privileged
+          - verify_container.container.HostConfig.ReadonlyRootfs
+          - verify_container.container.Config.User == '10800:10800'
+          - "'--append-only' in verify_container.container.Config.Cmd"
+          - "'--private-repos' in verify_container.container.Config.Cmd"
+          - "'--tls' in verify_container.container.Config.Cmd"
+      tags: [chk_hrd_02, chk_bck_02]
+
+    - name: HTTPS refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:8000 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    # ------------------------------------------------------------------ backup
+    - name: Note the time before the test runs
+      ansible.builtin.command: date +%s
+      register: verify_start
+      changed_when: false
+
+    - name: Run the scheduled backup now
+      ansible.builtin.systemd_service:
+        name: compliant-backup.service
+        state: started
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: Find the snapshots stored on the server
+      ansible.builtin.find:
+        paths: "{{ verify_repo }}/snapshots"
+      register: verify_server_snapshots
+      tags: [chk_bck_01]
+
+    - name: Snapshots of the sample service and the host essentials are on the server
+      ansible.builtin.assert:
+        that: verify_server_snapshots.matched >= 2
+      tags: [chk_bck_01]
+
+    - name: List the client's snapshots
+      ansible.builtin.command: /usr/local/sbin/compliant-backup snapshots --json
+      register: verify_snapshots_raw
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: Snapshots carry the declaration tag and the inventory host name
+      vars:
+        verify_snapshots: "{{ verify_snapshots_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_snapshots | selectattr('tags', 'defined') | selectattr('tags', 'contains', 'sample') | list | length >= 1
+          - verify_snapshots | selectattr('tags', 'defined') | selectattr('tags', 'contains', 'host-etc') | list | length >= 1
+          - verify_snapshots | map(attribute='hostname') | unique | list == [inventory_hostname]
+      tags: [chk_bck_01]
+
+    - name: The post_command ran after the backup
+      ansible.builtin.stat:
+        path: /run/sample-post-command
+      register: verify_post
+      failed_when: not verify_post.stat.exists
+      tags: [chk_bck_01]
+
+    - name: Read the backup log from journald
+      ansible.builtin.command: journalctl -u compliant-backup.service --no-pager -o cat
+      register: verify_journal
+      changed_when: false
+      tags: [chk_log_01]
+
+    - name: Backup results are logged to journald
+      ansible.builtin.assert:
+        that: "verify_journal.stdout is search('sample -> ' ~ inventory_hostname ~ ': OK')"
+      tags: [chk_log_01]
+
+    # ------------------------------------------------------------------ append-only
+    - name: Try to forget a snapshot with the client's credentials
+      ansible.builtin.shell: |
+        set -a; . {{ verify_env }}; set +a
+        restic forget --no-cache {{ (verify_snapshots_raw.stdout | from_json | first).id }}
+      args:
+        executable: /bin/bash
+      register: verify_forget
+      changed_when: false
+      failed_when: verify_forget.rc == 0 or '403' not in (verify_forget.stdout ~ verify_forget.stderr)
+      tags: [chk_bck_02]
+
+    - name: Take a second snapshot of the sample service so there is something to forget
+      ansible.builtin.command: /usr/local/sbin/compliant-backup backup --name sample
+      changed_when: false
+      tags: [chk_bck_02]
+
+    - name: Count the snapshots before the delete attempts
+      ansible.builtin.find:
+        paths: "{{ verify_repo }}/snapshots"
+      register: verify_server_snapshots_before
+      tags: [chk_bck_02]
+
+    - name: Try to forget and prune with the client's credentials
+      ansible.builtin.shell: |
+        set -a; . {{ verify_env }}; set +a
+        restic forget --no-cache --keep-last 1 --prune
+      args:
+        executable: /bin/bash
+      register: verify_prune
+      changed_when: false
+      failed_when: verify_prune.rc == 0 or '403' not in (verify_prune.stdout ~ verify_prune.stderr)
+      tags: [chk_bck_02]
+
+    - name: Read the client's REST login
+      ansible.builtin.slurp:
+        src: "{{ verify_env }}"
+      register: verify_env_file
+      no_log: true
+
+    - name: Try to delete a snapshot file directly over HTTP
+      vars:
+        verify_creds:
+          user: "{{ verify_env_file.content | b64decode | regex_search('RESTIC_REST_USERNAME=(.*)', '\\1') | first }}"
+          password: "{{ verify_env_file.content | b64decode | regex_search('RESTIC_REST_PASSWORD=(.*)', '\\1') | first }}"
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:8000/{{ inventory_hostname }}/snapshots/{{ verify_server_snapshots.files[0].path | basename }}"
+        method: DELETE
+        url_username: "{{ verify_creds.user }}"
+        url_password: "{{ verify_creds.password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [403]
+      no_log: true
+      tags: [chk_bck_02]
+
+    - name: Try to read another client's repository
+      vars:
+        verify_creds:
+          user: "{{ verify_env_file.content | b64decode | regex_search('RESTIC_REST_USERNAME=(.*)', '\\1') | first }}"
+          password: "{{ verify_env_file.content | b64decode | regex_search('RESTIC_REST_PASSWORD=(.*)', '\\1') | first }}"
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:8000/some-other-host/config"
+        url_username: "{{ verify_creds.user }}"
+        url_password: "{{ verify_creds.password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [401, 403, 404]
+      register: verify_other
+      no_log: true
+      tags: [chk_bck_02]
+
+    - name: Count the snapshots again
+      ansible.builtin.find:
+        paths: "{{ verify_repo }}/snapshots"
+      register: verify_server_snapshots_after
+      tags: [chk_bck_02]
+
+    - name: Nothing was deleted
+      ansible.builtin.assert:
+        that:
+          - verify_server_snapshots_after.matched == verify_server_snapshots_before.matched
+          - verify_server_snapshots_before.matched > verify_server_snapshots.matched
+          - verify_other.status != 200
+      tags: [chk_bck_02]
+
+    # ------------------------------------------------------------------ metrics and schedule
+    - name: Read the backup metrics
+      ansible.builtin.slurp:
+        src: "{{ verify_prom }}"
+      register: verify_metrics_raw
+      tags: [chk_bck_01, chk_bck_04, chk_log_05]
+
+    - name: Backup metrics exist with a recent timestamp
+      vars:
+        verify_metrics: "{{ verify_metrics_raw.content | b64decode }}"
+        verify_ts: >-
+          {{ verify_metrics | regex_search('backup_last_success_timestamp_seconds\{name="sample",repo="'
+             ~ inventory_hostname ~ '"\} (\d+)', '\1') | first | int }}
+      ansible.builtin.assert:
+        that:
+          - verify_ts | int >= verify_start.stdout | int
+          - verify_metrics is search('backup_last_duration_seconds\{name="sample",repo="[^"]+"\} [0-9.]+')
+          - verify_metrics is search('backup_rpo_seconds\{name="sample"\} 21600')
+          - verify_metrics is search('backup_last_success_timestamp_seconds\{name="host-etc",repo="[^"]+"\} [1-9]')
+      tags: [chk_bck_01, chk_bck_04, chk_log_05]
+
+    - name: Read the backup timer
+      ansible.builtin.systemd_service:
+        name: compliant-backup.timer
+      register: verify_timer
+      tags: [chk_bck_04]
+
+    - name: The timer runs every 6 hours to meet the smallest RPO (6h)
+      ansible.builtin.assert:
+        that: verify_timer.status.TimersCalendar is search('00/6:')
+      tags: [chk_bck_04]
+
+    # ------------------------------------------------------------------ restore test
+    - name: Run the monthly restore test now
+      ansible.builtin.systemd_service:
+        name: compliant-restore-test.service
+        state: started
+      changed_when: false
+      tags: [chk_bck_03]
+
+    - name: Read the restore-test metrics
+      ansible.builtin.slurp:
+        src: "{{ verify_prom }}"
+      register: verify_metrics_raw2
+      tags: [chk_bck_03]
+
+    - name: The restore test succeeded, was timed and wrote its metrics
+      vars:
+        verify_metrics: "{{ verify_metrics_raw2.content | b64decode }}"
+        verify_ts: >-
+          {{ verify_metrics | regex_search('backup_restore_test_last_success_timestamp_seconds\{name="sample",repo="'
+             ~ inventory_hostname ~ '"\} (\d+)', '\1') | first | int }}
+      ansible.builtin.assert:
+        that:
+          - verify_ts | int >= verify_start.stdout | int
+          - verify_metrics is search('backup_restore_test_duration_seconds\{name="sample",repo="[^"]+"\} [0-9.]+')
+          - verify_metrics is search('backup_restore_test_last_status\{name="host-etc",repo="[^"]+"\} 1')
+          - verify_metrics is search('backup_rto_seconds\{name="sample"\} 3600')
+      tags: [chk_bck_03]
+
+    - name: Find leftovers in the scratch directory
+      ansible.builtin.find:
+        paths: /var/tmp/compliant-restore-test
+        file_type: any
+      register: verify_scratch
+      tags: [chk_bck_03]
+
+    - name: The scratch directory was cleaned up
+      ansible.builtin.assert:
+        that: verify_scratch.matched == 0
+      tags: [chk_bck_03]
+
+    - name: Restore the sample service by hand (as playbooks/restore.yml does)
+      ansible.builtin.command: >-
+        /usr/local/sbin/compliant-backup restore --name sample --snapshot latest --target /var/restore/verify
+      changed_when: false
+      tags: [chk_bck_03]
+
+    - name: Read the restored dump
+      ansible.builtin.slurp:
+        src: /var/restore/verify/var/backups/sample/dump.sql
+      register: verify_restored
+      tags: [chk_bck_03]
+
+    - name: The restored dump matches the source
+      ansible.builtin.assert:
+        that: verify_marker in (verify_restored.content | b64decode)
+      tags: [chk_bck_03]
+
+    # ------------------------------------------------------------------ encryption and secrets
+    - name: Search the repository files for the plaintext marker
+      ansible.builtin.command: grep -r -l -a -e {{ verify_marker }} -e "root:x:0:0" {{ verify_repo }}
+      register: verify_grep
+      changed_when: false
+      failed_when: verify_grep.rc != 1
+      tags: [chk_sec_04]
+
+    - name: Read the repository configuration file
+      ansible.builtin.slurp:
+        src: "{{ verify_repo }}/config"
+      register: verify_repo_config
+      tags: [chk_sec_04]
+
+    - name: The repository is encrypted (its config is not readable JSON)
+      ansible.builtin.assert:
+        that: "'chunker_polynomial' not in (verify_repo_config.content | b64decode(encoding='latin-1'))"
+      tags: [chk_sec_04]
+
+    - name: Inspect secret files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /opt/rest-server/auth/htpasswd
+        - "{{ verify_env }}"
+        - /etc/compliant-infra/backup/config.json
+        - /etc/compliant-infra/backup-server/repo-passwords.json
+      register: verify_secret_files
+      tags: [chk_sec_02]
+
+    - name: The htpasswd file, env files and password store are 0600
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.mode == '0600'
+          - item.stat.pw_name in ['root', 'rest-server']
+        fail_msg: "{{ item.item }} is {{ item.stat.mode | default('missing') }}"
+      loop: "{{ verify_secret_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_sec_02]
+
+    - name: Read the htpasswd file
+      ansible.builtin.slurp:
+        src: /opt/rest-server/auth/htpasswd
+      register: verify_htpasswd
+      no_log: true
+      tags: [chk_sec_02]
+
+    - name: Logins are bcrypt hashes
+      ansible.builtin.assert:
+        that: (verify_htpasswd.content | b64decode).splitlines() | reject('search', ':\$2[aby]\$') | list | length == 0
+      tags: [chk_sec_02]
+
+    # ------------------------------------------------------------------ retention
+    - name: Run server-side retention now
+      ansible.builtin.systemd_service:
+        name: compliant-backup-prune.service
+        state: started
+      changed_when: false
+      tags: [chk_bck_02]
+
+    - name: Read the server metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/backup_server.prom
+      register: verify_server_metrics
+      tags: [chk_bck_02]
+
+    - name: Retention ran and kept the new snapshots
+      vars:
+        verify_metrics: "{{ verify_server_metrics.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - verify_metrics is search('backup_server_prune_last_status\{repo="' ~ inventory_hostname ~ '"\} 1')
+          - verify_metrics is search('backup_server_snapshots\{repo="' ~ inventory_hostname ~ '"\} [2-9]')
+      tags: [chk_bck_02]

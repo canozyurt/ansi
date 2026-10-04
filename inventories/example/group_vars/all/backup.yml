@@ -1,0 +1,5 @@
+---
+# One secret for the backup system (roles/backup, roles/backup_server): each host's REST login and
+# restic repository password are derived from it. Keep it in Ansible Vault or OpenBao, and keep an
+# offline copy: without it the backups cannot be decrypted.
+backup_password_seed: "{{ vault_backup_password_seed }}"

@@ -1,0 +1,42 @@
+---
+# Installs the pinned restic binary (also used by roles/backup_server through tasks_from).
+- name: Install bzip2 to unpack restic
+  ansible.builtin.apt:
+    name: bzip2
+    state: present
+
+- name: Create the download directory
+  ansible.builtin.file:
+    path: /var/cache/compliant-infra-downloads
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Download restic {{ backup_restic_version }}
+  ansible.builtin.get_url:
+    url: "{{ backup_restic_url }}"
+    dest: "/var/cache/compliant-infra-downloads/restic_{{ backup_restic_version }}_{{ backup_restic_arch }}.bz2"
+    checksum: "sha256:{{ backup_restic_sha256 }}"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [chk_chg_05]
+
+- name: Unpack restic
+  ansible.builtin.shell:
+    cmd: >-
+      set -e;
+      bunzip2 -c /var/cache/compliant-infra-downloads/restic_{{ backup_restic_version }}_{{ backup_restic_arch }}.bz2
+      > {{ backup_restic_bin }}-{{ backup_restic_version }}.tmp;
+      chmod 0755 {{ backup_restic_bin }}-{{ backup_restic_version }}.tmp;
+      mv {{ backup_restic_bin }}-{{ backup_restic_version }}.tmp {{ backup_restic_bin }}-{{ backup_restic_version }}
+    creates: "{{ backup_restic_bin }}-{{ backup_restic_version }}"
+
+- name: Point restic at the pinned version
+  ansible.builtin.file:
+    src: "{{ backup_restic_bin }}-{{ backup_restic_version }}"
+    dest: "{{ backup_restic_bin }}"
+    state: link
+    owner: root
+    group: root

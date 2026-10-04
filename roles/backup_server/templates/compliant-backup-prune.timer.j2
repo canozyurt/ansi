@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Keep daily {{ backup_server_keep_daily }}, weekly {{ backup_server_keep_weekly }}, monthly {{ backup_server_keep_monthly }}.
+[Unit]
+Description=Daily backup retention
+
+[Timer]
+OnCalendar={{ backup_server_prune_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,141 @@
+---
+- name: Install Python libraries the Docker, crypto and htpasswd modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography, python3-passlib, python3-bcrypt]
+    state: present
+
+- name: Create the rest-server group
+  ansible.builtin.group:
+    name: "{{ backup_server_user }}"
+    gid: "{{ backup_server_uid }}"
+    system: true
+
+- name: Create the rest-server user
+  ansible.builtin.user:
+    name: "{{ backup_server_user }}"
+    uid: "{{ backup_server_uid }}"
+    group: "{{ backup_server_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ backup_server_repo_dir }}"
+    create_home: false
+  tags: [chk_hrd_02]
+
+- name: Create the rest-server directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ backup_server_data_dir }}", owner: root, mode: "0755" }
+    - { path: "{{ backup_server_data_dir }}/auth", owner: "{{ backup_server_user }}", mode: "0700" }
+    - { path: "{{ backup_server_repo_dir }}", owner: "{{ backup_server_user }}", mode: "0700" }
+    - { path: "{{ backup_server_config_dir }}", owner: root, mode: "0700" }
+    - { path: "{{ backup_server_state_dir }}", owner: root, mode: "0700" }
+    - { path: "/var/cache/restic-server", owner: "{{ backup_server_user }}", mode: "0700" }
+  tags: [chk_sec_04]
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: rest-server
+    tls_cert_dir: "{{ backup_server_data_dir }}/tls"
+    tls_cert_owner: "{{ backup_server_uid }}"
+    tls_cert_group: "{{ backup_server_uid }}"
+    tls_cert_common_name: "{{ backup_server_tls_common_name }}"
+    tls_cert_src_cert: "{{ backup_server_tls_cert_file }}"
+    tls_cert_src_key: "{{ backup_server_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart rest-server when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; rest-server restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart rest-server
+
+- name: Work out the client accounts
+  ansible.builtin.set_fact:
+    backup_server_accounts: >-
+      {{ backup_server_accounts | default([]) + [{
+           'user': hostvars[item].backup_rest_user | default(item),
+           'rest_password': hostvars[item].backup_rest_password
+                            | default((backup_server_password_seed ~ ':rest:' ~ item) | hash('sha256')),
+           'repo_password': hostvars[item].backup_repo_password
+                            | default((backup_server_password_seed ~ ':repo:' ~ item) | hash('sha256'))}] }}
+  loop: "{{ backup_server_clients }}"
+  no_log: true
+
+- name: Add a REST login per client host (bcrypt, 0600)
+  community.general.htpasswd:
+    path: "{{ backup_server_data_dir }}/auth/htpasswd"
+    name: "{{ item.user }}"
+    password: "{{ item.rest_password }}"
+    hash_scheme: bcrypt
+    owner: "{{ backup_server_user }}"
+    group: "{{ backup_server_user }}"
+    mode: "0600"
+  loop: "{{ backup_server_accounts + [{'user': 'metrics', 'rest_password': backup_server_metrics_password}] }}"
+  loop_control:
+    label: "{{ item.user }}"
+  no_log: true
+  notify: Reload rest-server logins
+  tags: [chk_sec_02, chk_bck_02]
+
+- name: Read the current logins
+  ansible.builtin.slurp:
+    src: "{{ backup_server_data_dir }}/auth/htpasswd"
+  register: backup_server_htpasswd
+
+- name: Remove logins of hosts that are no longer clients
+  community.general.htpasswd:
+    path: "{{ backup_server_data_dir }}/auth/htpasswd"
+    name: "{{ item }}"
+    state: absent
+    owner: "{{ backup_server_user }}"
+    group: "{{ backup_server_user }}"
+    mode: "0600"
+  loop: >-
+    {{ backup_server_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
+       | difference(backup_server_accounts | map(attribute='user')) | difference(['metrics']) }}
+  notify: Reload rest-server logins
+  tags: [chk_iam_05]
+
+- name: Store the repository passwords for server-side retention (0600 root)
+  ansible.builtin.copy:
+    content: "{{ backup_server_accounts | items2dict(key_name='user', value_name='repo_password') | to_nice_json }}\n"
+    dest: "{{ backup_server_config_dir }}/repo-passwords.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Run rest-server (append-only, private repositories, TLS)
+  community.docker.docker_container:
+    name: "{{ backup_server_container_name }}"
+    image: "{{ backup_server_image }}"
+    entrypoint: [/usr/bin/rest-server]
+    command: "{{ backup_server_command }}"
+    network_mode: host
+    user: "{{ backup_server_uid }}:{{ backup_server_uid }}"
+    volumes:
+      - "{{ backup_server_repo_dir }}:/data:rw"
+      - "{{ backup_server_data_dir }}/auth:/auth:ro"
+      - "{{ backup_server_data_dir }}/tls:/tls:ro"
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ backup_server_memory_limit }}"
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: backup_server
+    state: started
+  register: backup_server_container
+  tags: [chk_hrd_02, chk_bck_02, chk_sec_03]
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

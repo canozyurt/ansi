@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Encrypted backup of declared paths to the backup servers (restic)
+Documentation=file:///usr/local/sbin/compliant-backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-backup backup
+SyslogIdentifier=compliant-backup
+# Runs as root to read every declared path and to run the services' dump commands.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec={{ backup_interval_hours | int * 3600 }}

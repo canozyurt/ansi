@@ -123,6 +123,25 @@ or backups inside their retention period, and no approving one's own change.
   WAF verdict and rule IDs; Coraza logs every rule match as JSON. Metrics: HAProxy and Coraza on
   8405 over TLS, monitoring networks only; VRRP state through the node_exporter textfile collector.
 
+## Backups (restic and rest-server)
+
+- Every host runs the restic client (`roles/backup`); the `backup` group (2+ nodes in separate failure
+  domains) runs rest-server in a container (`roles/backup_server`), non-root, read-only, TLS 1.2+.
+- Service roles declare paths, a dump `pre_command`, a `verify_command` and RPO/RTO through
+  `backup_register`; the client also backs up `/etc`. Each declaration goes to every server, so there
+  are two independent copies; servers can copy nightly to an S3 bucket (versioning + Object Lock recommended).
+- restic encrypts on the client (AES-256); per-host REST logins and repository passwords are derived
+  from one Vault/OpenBao secret and live only in 0600 root files and process environments.
+- rest-server runs `--append-only --private-repos`: a host can add snapshots but cannot delete or read
+  another host's. Retention (14 daily, 8 weekly, 12 monthly) runs `restic forget --prune` on the
+  servers, which hold the repository passwords in a 0600 root file; root on a backup server can therefore
+  decrypt its backups.
+- The backup timer follows the smallest declared RPO (at least daily); a monthly restore test restores
+  each declaration into a scratch directory, runs its verify command and times it against the RTO.
+- Results are Prometheus textfile metrics (`backup.prom`, `backup_server.prom`) and journald logs
+  (`compliant-backup`, `compliant-restore-test`, `compliant-backup-prune`); rest-server's access log goes to
+  journald through the container log. Manual restores: `playbooks/restore.yml`.
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

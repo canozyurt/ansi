@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Copy every restic repository to the off-site S3 bucket
+Wants=network-online.target
+After=network-online.target compliant-backup-prune.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-backup-server s3-copy
+SyslogIdentifier=compliant-backup-s3
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+TimeoutStartSec=20h

@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Back up, restore-test and restore the declarations in /etc/compliant-infra/backup.d.
+
+Managed by Ansible (roles/backup). Runs from systemd, so everything it prints goes to journald.
+
+  compliant-backup init                    create missing repositories (idempotent)
+  compliant-backup backup                  back up every declaration to every repository
+  compliant-backup restore-test            restore the latest snapshot of each declaration into a
+                                           scratch directory, run its verify_command, time it
+  compliant-backup restore --name N [--snapshot ID] [--repo R] --target DIR
+  compliant-backup snapshots [--name N]    list this host's snapshots
+  compliant-backup metrics                 rewrite the textfile metrics from the saved state
+
+Secrets (repository and REST passwords) are read from 0600 env files and passed to restic in its
+environment, never on the command line.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG = "/etc/compliant-infra/backup/config.json"
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def load_config() -> dict:
+    with open(CONFIG) as fh:
+        return json.load(fh)
+
+
+def read_env_file(path: str) -> dict:
+    env = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env[key.strip()] = value
+    return env
+
+
+def load_declarations(cfg: dict, only: str | None = None) -> list[dict]:
+    decls = []
+    for path in sorted(glob.glob(os.path.join(cfg["declaration_dir"], "*.json"))):
+        try:
+            with open(path) as fh:
+                decl = json.load(fh)
+        except (OSError, ValueError) as exc:
+            log(f"ERROR cannot read declaration {path}: {exc}")
+            continue
+        if only and decl.get("name") != only:
+            continue
+        decls.append(decl)
+    return decls
+
+
+class State:
+    """Last results, kept across runs so the metrics survive failed runs and reboots."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.path = cfg["state_file"]
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        self.lock = open(self.path + ".lock", "w")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        try:
+            with open(self.path) as fh:
+                self.data = json.load(fh)
+        except (OSError, ValueError):
+            self.data = {}
+        self.data.setdefault("backup", {})
+        self.data.setdefault("restore_test", {})
+        return self
+
+    def save(self) -> None:
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self.data, fh, indent=1, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def __exit__(self, *exc):
+        self.save()
+        write_metrics(self.cfg, self.data)
+        fcntl.flock(self.lock, fcntl.LOCK_UN)
+        self.lock.close()
+
+
+def esc(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+
+
+def write_metrics(cfg: dict, data: dict) -> None:
+    decls = {d["name"]: d for d in load_declarations(cfg) if "name" in d}
+    lines = []
+
+    def metric(name: str, help_text: str, kind: str, samples: list[tuple[dict, float]]) -> None:
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} {kind}")
+        for labels, value in samples:
+            lab = ",".join(f'{k}="{esc(v)}"' for k, v in sorted(labels.items()))
+            lines.append(f"{name}{{{lab}}} {value}")
+
+    backups = [(k.split("|", 1), v) for k, v in sorted(data["backup"].items())
+               if k.split("|", 1)[0] in decls]
+    tests = [(k.split("|", 1), v) for k, v in sorted(data["restore_test"].items())
+             if k.split("|", 1)[0] in decls]
+    metric("backup_last_success_timestamp_seconds", "Unix time of the last successful backup.", "gauge",
+           [({"name": n, "repo": r}, v.get("last_success", 0)) for (n, r), v in backups])
+    metric("backup_last_run_timestamp_seconds", "Unix time of the last backup attempt.", "gauge",
+           [({"name": n, "repo": r}, v.get("last_run", 0)) for (n, r), v in backups])
+    metric("backup_last_status", "1 if the last backup attempt succeeded, 0 if it failed.", "gauge",
+           [({"name": n, "repo": r}, 1 if v.get("last_ok") else 0) for (n, r), v in backups])
+    metric("backup_last_duration_seconds", "Duration of the last backup attempt.", "gauge",
+           [({"name": n, "repo": r}, round(v.get("duration", 0), 3)) for (n, r), v in backups])
+    metric("backup_rpo_seconds", "Recovery point objective declared by the service.", "gauge",
+           [({"name": n}, int(d.get("rpo_hours", 24)) * 3600) for n, d in sorted(decls.items())])
+    metric("backup_rto_seconds", "Recovery time objective declared by the service.", "gauge",
+           [({"name": n}, int(d.get("rto_hours", 4)) * 3600) for n, d in sorted(decls.items())])
+    metric("backup_restore_test_last_success_timestamp_seconds",
+           "Unix time of the last successful restore test.", "gauge",
+           [({"name": n, "repo": r}, v.get("last_success", 0)) for (n, r), v in tests])
+    metric("backup_restore_test_last_status", "1 if the last restore test succeeded, 0 if it failed.", "gauge",
+           [({"name": n, "repo": r}, 1 if v.get("last_ok") else 0) for (n, r), v in tests])
+    metric("backup_restore_test_duration_seconds",
+           "Duration of the last restore test (restore and verify); compare with backup_rto_seconds.", "gauge",
+           [({"name": n, "repo": r}, round(v.get("duration", 0), 3)) for (n, r), v in tests])
+
+    out_dir = cfg["textfile_dir"]
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=".backup.prom.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(out_dir, "backup.prom"))
+
+
+def restic(cfg: dict, repo: dict, args: list[str], capture: bool = False, cwd: str | None = None):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RESTIC_")}
+    env.update(read_env_file(repo["env_file"]))
+    env.setdefault("RESTIC_CACHE_DIR", cfg["cache_dir"])
+    cmd = [cfg["restic"]] + args
+    return subprocess.run(cmd, env=env, cwd=cwd, text=True,
+                          stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None)
+
+
+def run_hook(command: str, what: str, extra_env: dict | None = None, cwd: str | None = None) -> bool:
+    if not command:
+        return True
+    env = dict(os.environ)
+    env.update(extra_env or {})
+    log(f"{what}: {command}")
+    result = subprocess.run(["/bin/bash", "-c", command], env=env, cwd=cwd)
+    if result.returncode != 0:
+        log(f"ERROR {what} exited with {result.returncode}")
+        return False
+    return True
+
+
+def repo_ready(cfg: dict, repo: dict) -> bool:
+    return restic(cfg, repo, ["cat", "config"], capture=True).returncode == 0
+
+
+def cmd_init(cfg: dict, _args) -> int:
+    rc = 0
+    for repo in cfg["repos"]:
+        if repo_ready(cfg, repo):
+            continue
+        log(f"Initialising repository {repo['name']}")
+        result = restic(cfg, repo, ["init"], capture=True)
+        if result.returncode != 0:
+            log(f"ERROR cannot initialise {repo['name']}: {result.stderr.strip()}")
+            rc = 1
+    return rc
+
+
+def cmd_backup(cfg: dict, args) -> int:
+    failed = False
+    decls = load_declarations(cfg, args.name)
+    with State(cfg) as state:
+        for decl in decls:
+            name = decl["name"]
+            log(f"Backing up {name}")
+            pre_ok = run_hook(decl.get("pre_command", ""), f"{name} pre_command")
+            for repo in cfg["repos"]:
+                key = f"{name}|{repo['name']}"
+                entry = state.data["backup"].setdefault(key, {})
+                start = time.time()
+                ok = False
+                if pre_ok:
+                    cmd = ["backup", "--host", cfg["host"], "--tag", name, "--retry-lock", cfg["retry_lock"],
+                           "--exclude-caches"]
+                    for pattern in decl.get("exclude") or []:
+                        cmd += ["--exclude", pattern]
+                    paths = [p for p in decl.get("paths") or [] if os.path.exists(p)]
+                    missing = set(decl.get("paths") or []) - set(paths)
+                    if missing:
+                        log(f"WARNING {name}: paths not found: {', '.join(sorted(missing))}")
+                    if paths:
+                        result = restic(cfg, repo, cmd + ["--"] + paths)
+                        ok = result.returncode in (0, 3) and len(missing) == 0
+                        if result.returncode == 3:
+                            log(f"WARNING {name}: some files could not be read")
+                    else:
+                        log(f"ERROR {name}: nothing to back up")
+                entry["last_run"] = int(time.time())
+                entry["duration"] = time.time() - start
+                entry["last_ok"] = ok
+                if ok:
+                    entry["last_success"] = int(time.time())
+                    log(f"{name} -> {repo['name']}: OK in {entry['duration']:.1f}s")
+                else:
+                    failed = True
+                    log(f"ERROR {name} -> {repo['name']}: backup failed")
+                state.save()
+            if not run_hook(decl.get("post_command", ""), f"{name} post_command"):
+                failed = True
+    return 1 if failed else 0
+
+
+def restore(cfg: dict, repo: dict, name: str, snapshot: str, target: str, include: list[str] | None = None):
+    cmd = ["restore", snapshot, "--target", target, "--retry-lock", cfg["retry_lock"]]
+    if snapshot == "latest":
+        cmd += ["--host", cfg["host"], "--tag", name]
+    for path in include or []:
+        cmd += ["--include", path]
+    return restic(cfg, repo, cmd)
+
+
+def cmd_restore_test(cfg: dict, args) -> int:
+    failed = False
+    base = cfg["restore_test_dir"]
+    os.makedirs(base, mode=0o700, exist_ok=True)
+    os.chmod(base, 0o700)
+    with State(cfg) as state:
+        for decl in load_declarations(cfg, args.name):
+            name = decl["name"]
+            for repo in cfg["repos"]:
+                key = f"{name}|{repo['name']}"
+                entry = state.data["restore_test"].setdefault(key, {})
+                scratch = tempfile.mkdtemp(prefix=f"{name}.", dir=base)
+                log(f"Restore test {name} from {repo['name']} into {scratch}")
+                start = time.time()
+                try:
+                    ok = restore(cfg, repo, name, "latest", scratch).returncode == 0
+                    if ok:
+                        ok = all(os.path.lexists(scratch + p) for p in decl.get("paths") or [])
+                        if not ok:
+                            log(f"ERROR {name}: restored snapshot is missing declared paths")
+                    if ok:
+                        ok = run_hook(decl.get("verify_command", ""), f"{name} verify_command",
+                                      {"RESTORE_DIR": scratch, "BACKUP_NAME": name}, cwd=scratch)
+                finally:
+                    shutil.rmtree(scratch, ignore_errors=True)
+                duration = time.time() - start
+                entry.update(last_run=int(time.time()), duration=duration, last_ok=ok)
+                rto = int(decl.get("rto_hours", 4)) * 3600
+                if ok:
+                    entry["last_success"] = int(time.time())
+                    log(f"Restore test {name} from {repo['name']}: OK in {duration:.1f}s (RTO {rto}s)")
+                    if duration > rto:
+                        log(f"WARNING {name}: restore took longer than the RTO")
+                else:
+                    failed = True
+                    log(f"ERROR restore test {name} from {repo['name']} failed")
+                state.save()
+    return 1 if failed else 0
+
+
+def pick_repo(cfg: dict, wanted: str | None) -> dict:
+    for repo in cfg["repos"]:
+        if not wanted or repo["name"] == wanted:
+            return repo
+    sys.exit(f"unknown repository {wanted}; known: {', '.join(r['name'] for r in cfg['repos'])}")
+
+
+def cmd_restore(cfg: dict, args) -> int:
+    if not load_declarations(cfg, args.name):
+        log(f"WARNING no current declaration named {args.name}; restoring from snapshots anyway")
+    repo = pick_repo(cfg, args.repo)
+    if args.snapshot != "latest":
+        check = restic(cfg, repo, ["snapshots", "--json", "--host", cfg["host"], "--tag", args.name, args.snapshot],
+                       capture=True)
+        if check.returncode != 0 or not json.loads(check.stdout or "[]"):
+            log(f"ERROR snapshot {args.snapshot} is not a snapshot of {args.name} on this host")
+            return 1
+    os.makedirs(args.target, mode=0o700, exist_ok=True)
+    log(f"Restoring {args.name} ({args.snapshot}) from {repo['name']} into {args.target}")
+    return restore(cfg, repo, args.name, args.snapshot, args.target, args.include).returncode
+
+
+def cmd_snapshots(cfg: dict, args) -> int:
+    repo = pick_repo(cfg, args.repo)
+    cmd = ["snapshots", "--host", cfg["host"]]
+    if args.name:
+        cmd += ["--tag", args.name]
+    if args.json:
+        cmd.append("--json")
+    return restic(cfg, repo, cmd).returncode
+
+
+def cmd_metrics(cfg: dict, _args) -> int:
+    with State(cfg):
+        pass
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("init")
+    p = sub.add_parser("backup")
+    p.add_argument("--name")
+    p = sub.add_parser("restore-test")
+    p.add_argument("--name")
+    p = sub.add_parser("restore")
+    p.add_argument("--name", required=True)
+    p.add_argument("--snapshot", default="latest")
+    p.add_argument("--repo")
+    p.add_argument("--target", required=True)
+    p.add_argument("--include", action="append")
+    p = sub.add_parser("snapshots")
+    p.add_argument("--name")
+    p.add_argument("--repo")
+    p.add_argument("--json", action="store_true")
+    sub.add_parser("metrics")
+    args = parser.parse_args()
+    os.umask(0o077)
+    cfg = load_config()
+    handler = {"init": cmd_init, "backup": cmd_backup, "restore-test": cmd_restore_test,
+               "restore": cmd_restore, "snapshots": cmd_snapshots, "metrics": cmd_metrics}[args.command]
+    return handler(cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

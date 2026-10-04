@@ -1,0 +1,53 @@
+---
+- name: Check the backup settings
+  ansible.builtin.assert:
+    that:
+      - backup_rest_password | length >= 32
+      - backup_repo_password | length >= 32
+      - backup_password_seed | length >= 32 or backup_password_seed | length == 0
+      - backup_password_seed | length > 0 or (backup_rest_password != ((':rest:' ~ inventory_hostname) | hash('sha256')))
+    fail_msg: >-
+      Set backup_password_seed (32+ characters, from Ansible Vault or OpenBao), or set backup_rest_password
+      and backup_repo_password for this host explicitly.
+    quiet: true
+  no_log: true
+
+- name: Work out which servers hold this host's copies
+  ansible.builtin.set_fact:
+    backup_repo_servers: >-
+      {{ (backup_servers | difference([inventory_hostname]))
+         if (backup_skip_self | bool and (backup_servers | difference([inventory_hostname])) | length > 0)
+         else backup_servers }}
+
+- name: Require independent copies on separate servers (BCK-01)
+  ansible.builtin.assert:
+    that:
+      - backup_repo_servers | length >= backup_min_servers or
+        (backup_allow_single_server | bool and backup_repo_servers | length > 0)
+    fail_msg: >-
+      Backups need at least {{ backup_min_servers }} backup servers (found {{ backup_repo_servers | length }}:
+      {{ backup_repo_servers | join(', ') }}). Set backup_allow_single_server only for labs and tests.
+    quiet: true
+  tags: [chk_bck_01, chk_ha_01]
+
+- name: Install restic
+  ansible.builtin.import_tasks: restic.yml
+
+- name: Declare the host essentials
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: "{{ backup_host_essentials_name }}"
+    backup_register_paths: "{{ backup_host_essentials_paths }}"
+    backup_register_exclude: "{{ backup_host_essentials_exclude }}"
+    backup_register_rpo_hours: "{{ backup_host_essentials_rpo_hours }}"
+    backup_register_rto_hours: "{{ backup_host_essentials_rto_hours }}"
+    backup_register_verify_command: "{{ backup_host_essentials_verify_command }}"
+  when: backup_host_essentials | bool
+  tags: [chk_bck_01]
+
+- name: Configure the repositories
+  ansible.builtin.import_tasks: repos.yml
+
+- name: Schedule backups and restore tests
+  ansible.builtin.import_tasks: schedule.yml

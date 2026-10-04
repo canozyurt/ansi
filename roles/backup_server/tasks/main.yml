@@ -1,0 +1,28 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - backup_server_password_seed | length >= 32
+      - backup_server_metrics_password | length >= 32
+      - not (backup_server_s3_enabled | bool) or
+        (backup_server_s3_access_key | length > 0 and backup_server_s3_secret_key | length > 0)
+    fail_msg: >-
+      Set backup_password_seed (32+ characters, from Ansible Vault or OpenBao) and, for the S3 copy,
+      backup_s3_access_key and backup_s3_secret_key.
+    quiet: true
+  no_log: true
+
+- name: Require at least two backup servers (HA-01)
+  ansible.builtin.assert:
+    that: backup_server_cluster_hosts | length >= backup_server_min_nodes or backup_server_allow_single_node | bool
+    fail_msg: >-
+      Backups need at least {{ backup_server_min_nodes }} servers in separate failure domains (found
+      {{ backup_server_cluster_hosts | length }}). Set backup_server_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01, chk_bck_01]
+
+- name: Deploy rest-server
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Set up retention and the off-site copy
+  ansible.builtin.import_tasks: maintenance.yml
