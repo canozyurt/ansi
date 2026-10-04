@@ -92,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [keycloak]
+        scenario: [keycloak, keycloak-upgrade]
     steps:
       - uses: actions/checkout@v4
 

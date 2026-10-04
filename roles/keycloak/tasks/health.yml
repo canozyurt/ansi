@@ -1,0 +1,11 @@
+---
+- name: Wait until Keycloak is ready
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ keycloak_management_port }}/health/ready"
+    validate_certs: false
+    status_code: 200
+  register: keycloak_ready
+  until: keycloak_ready.status == 200
+  retries: 60
+  delay: 5
+  tags: [chk_log_05]

@@ -1,0 +1,89 @@
+---
+# Runs after the new configuration is written and before the container is replaced.
+# Keycloak itself decides whether a rolling update is safe (exit code 0) or every node
+# must stop first (3 or 4). The decision, the database dump and, for a recreate, the
+# shutdown of all nodes happen once, on the first node upgraded (CHG-07).
+
+- name: Decide the update strategy and back up
+  when: keycloak_upgrade_decide | bool
+  tags: [chk_chg_07]
+  block:
+    - name: Check the metadata against the new version and configuration
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network=none
+          - --env-file={{ keycloak_data_dir }}/keycloak.env
+          - --volume={{ keycloak_data_dir }}/upgrade:/upgrade:ro
+          - "{{ keycloak_image }}"
+          - update-compatibility
+          - check
+          - --file=/upgrade/metadata.json
+      register: keycloak_compat
+      changed_when: false
+      failed_when: keycloak_compat.rc not in [0, 3, 4]
+
+    - name: Share the strategy with every Keycloak node
+      ansible.builtin.set_fact:
+        keycloak_upgrade_strategy: "{{ 'rolling' if keycloak_compat.rc == 0 else 'recreate' }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ keycloak_cluster_hosts }}"
+
+    - name: Report the strategy
+      ansible.builtin.debug:
+        msg: >-
+          Upgrading Keycloak from {{ keycloak_running_image }} to {{ keycloak_image }} with a
+          {{ keycloak_upgrade_strategy }} update ({{ keycloak_compat.stdout_lines | last | default('') }}).
+
+    - name: Create the backup directory
+      ansible.builtin.file:
+        path: "{{ keycloak_upgrade_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: keycloak_upgrade_backup | bool
+
+    - name: Dump the Keycloak database before the upgrade
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          docker run --rm --network=host -e PGPASSWORD -e PGSSLMODE={{ keycloak_db_sslmode | quote }}
+          {{ versions_images.postgres_client | quote }}
+          pg_dump --format=custom --host={{ keycloak_db_host | quote }} --port={{ keycloak_db_port }}
+          --username={{ keycloak_db_user | quote }} --dbname={{ keycloak_db_name | quote }}
+          > {{ keycloak_upgrade_backup_dir }}/keycloak-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.dump
+        executable: /bin/bash
+      environment:
+        PGPASSWORD: "{{ keycloak_db_password }}"
+      when: keycloak_upgrade_backup | bool
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Find older pre-upgrade dumps
+      ansible.builtin.find:
+        paths: "{{ keycloak_upgrade_backup_dir }}"
+        patterns: keycloak-*.dump
+      register: keycloak_dumps
+      when: keycloak_upgrade_backup | bool
+
+    - name: Keep only the newest pre-upgrade dumps
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ keycloak_dumps.files | default([]) | sort(attribute='mtime', reverse=true) }}"
+      loop_control:
+        label: "{{ item.path }}"
+        index_var: keycloak_dump_index
+      when: keycloak_dump_index >= keycloak_upgrade_backup_keep | int
+
+    - name: Stop every node before the first new-version node starts (recreate update)
+      community.docker.docker_container:
+        name: "{{ keycloak_container_name }}"
+        state: stopped
+      delegate_to: "{{ item }}"
+      loop: "{{ keycloak_cluster_hosts }}"
+      when: keycloak_upgrade_strategy == 'recreate'

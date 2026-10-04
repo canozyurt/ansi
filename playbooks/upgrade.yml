@@ -1,0 +1,28 @@
+---
+# Applies a new release of this repository to running hosts (docs/upgrades.md).
+#
+#   git checkout vX.Y.Z
+#   ansible-playbook -i inventories/<company> playbooks/upgrade.yml
+#
+# Every service is upgraded one node at a time; the run stops at the first node that
+# does not come back healthy. Services back up their data before a version change.
+
+- name: Check the identity provider is healthy before upgrading
+  hosts: keycloak
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Every Keycloak node is ready
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: health
+      when: not (upgrade_skip_preflight | default(false) | bool)
+      tags: [chk_chg_07]
+
+- name: Upgrade the identity provider one node at a time
+  hosts: keycloak
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: keycloak

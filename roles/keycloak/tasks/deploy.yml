@@ -67,6 +67,9 @@
   notify: Restart keycloak
   tags: [chk_sec_03]
 
+- name: Prepare a version change
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
 - name: Write the Keycloak environment (contains secrets)
   ansible.builtin.template:
     src: keycloak.env.j2
@@ -77,6 +80,9 @@
   no_log: true
   notify: Restart keycloak
   tags: [chk_sec_02]
+
+- name: Decide how to apply a version change
+  ansible.builtin.import_tasks: upgrade_apply.yml
 
 - name: Run the Keycloak container
   community.docker.docker_container:
@@ -98,13 +104,5 @@
   register: keycloak_container
   tags: [chk_hrd_02, chk_iam_01]
 
-- name: Wait until Keycloak is ready
-  ansible.builtin.uri:
-    url: "https://127.0.0.1:{{ keycloak_management_port }}/health/ready"
-    validate_certs: false
-    status_code: 200
-  register: keycloak_ready
-  until: keycloak_ready.status == 200
-  retries: 60
-  delay: 5
-  tags: [chk_log_05]
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

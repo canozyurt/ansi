@@ -1,5 +1,5 @@
 ---
-keycloak_image: docker.io/keycloak/keycloak:26.8.0
+keycloak_image: "{{ versions_images.keycloak }}"
 keycloak_container_name: keycloak
 
 # Public URL users and services reach (through the edge proxy or directly).
@@ -66,3 +66,10 @@ keycloak_events_expiration: 7776000          # 90 days in the database; the SIEM
 keycloak_proxy_headers: xforwarded
 # Log user/admin events at info so they reach central logging (they default to debug).
 keycloak_log_level: info
+
+# Upgrades (docs/upgrades.md). A version change runs only through playbooks/upgrade.yml,
+# one node at a time, after a database dump.
+keycloak_upgrade_allow_parallel: false
+keycloak_upgrade_backup: true
+keycloak_upgrade_backup_dir: /var/backups/keycloak
+keycloak_upgrade_backup_keep: 5

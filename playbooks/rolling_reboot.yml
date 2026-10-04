@@ -1,0 +1,37 @@
+---
+# Reboots hosts that need it after unattended security updates, one at a time, and
+# waits for the services on each host to be healthy before moving on (HRD-04).
+# Schedule it in the maintenance window, e.g. weekly from CI or a cron job:
+#
+#   ansible-playbook -i inventories/<company> playbooks/rolling_reboot.yml
+#
+# Set reboot_force=true to reboot every host regardless.
+
+- name: Reboot hosts one at a time
+  hosts: all
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  tasks:
+    - name: Check whether a reboot is pending
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+      tags: [chk_hrd_04]
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        msg: Rolling reboot for security updates (compliant-infra-ansible)
+      when: reboot_required.stat.exists or (reboot_force | default(false) | bool)
+      register: reboot_done
+      tags: [chk_hrd_04]
+
+    - name: Wait for Keycloak on this host
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: health
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['keycloak'] | default([])

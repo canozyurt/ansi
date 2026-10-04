@@ -1,0 +1,59 @@
+---
+# Runs before the new configuration is written. Detects a version change and, once per
+# upgrade, records Keycloak's update metadata from the running version and its current
+# configuration. upgrade_apply.yml compares it with the new version (CHG-07).
+
+- name: Read the running Keycloak container
+  community.docker.docker_container_info:
+    name: "{{ keycloak_container_name }}"
+  register: keycloak_current
+
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    keycloak_running_image: "{{ keycloak_current.container.Config.Image if keycloak_current.exists else '' }}"
+    keycloak_needs_upgrade: "{{ keycloak_current.exists and keycloak_current.container.Config.Image != keycloak_image }}"
+
+# Evaluated once here: a block's "when" is re-checked for every task in it, and the
+# decision below sets keycloak_upgrade_strategy part-way through.
+- name: Note whether this node decides the upgrade strategy
+  ansible.builtin.set_fact:
+    keycloak_upgrade_decide: "{{ keycloak_needs_upgrade and keycloak_upgrade_strategy is not defined }}"
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: >-
+      not keycloak_needs_upgrade
+      or ansible_play_batch | length == 1
+      or keycloak_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ keycloak_running_image }} but this release pins {{ keycloak_image }}.
+      Run playbooks/upgrade.yml, which backs up the database and upgrades one node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Record the update metadata of the running version
+  when: keycloak_upgrade_decide | bool
+  tags: [chk_chg_07]
+  block:
+    - name: Create the upgrade working directory
+      ansible.builtin.file:
+        path: "{{ keycloak_data_dir }}/upgrade"
+        state: directory
+        owner: "{{ keycloak_container_uid }}"
+        group: root
+        mode: "0700"
+
+    - name: Generate update metadata with the running version and configuration
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network=none
+          - --env-file={{ keycloak_data_dir }}/keycloak.env
+          - --volume={{ keycloak_data_dir }}/upgrade:/upgrade
+          - "{{ keycloak_running_image }}"
+          - update-compatibility
+          - metadata
+          - --file=/upgrade/metadata.json
+      changed_when: false

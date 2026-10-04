@@ -1,0 +1,8 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../keycloak/converge.yml
+  vars:
+    keycloak_image: "{{ versions_upgrade_from.keycloak }}"

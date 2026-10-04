@@ -1,0 +1,46 @@
+---
+- name: Verify the upgraded service still meets its checklist items
+  ansible.builtin.import_playbook: ../keycloak/verify.yml
+
+- name: Verify the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    bundle: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/versions/defaults/main.yml') | from_yaml }}"
+  tasks:
+    - name: Inspect the Keycloak container
+      community.docker.docker_container_info:
+        name: keycloak
+      register: verify_kc
+      tags: [chk_chg_07]
+
+    - name: Keycloak runs the version pinned by this release
+      ansible.builtin.assert:
+        that:
+          - verify_kc.container.Config.Image == bundle.versions_images.keycloak
+          - verify_kc.container.State.Running
+      tags: [chk_chg_07]
+
+    - name: Find the pre-upgrade database dump
+      ansible.builtin.find:
+        paths: /var/backups/keycloak
+        patterns: keycloak-*.dump
+      register: verify_dumps
+      tags: [chk_chg_07]
+
+    - name: A non-empty dump was taken before the upgrade
+      ansible.builtin.assert:
+        that:
+          - verify_dumps.matched >= 1
+          - verify_dumps.files | map(attribute='size') | max > 1000
+      tags: [chk_chg_07]
+
+    - name: Read the backup directory
+      ansible.builtin.stat:
+        path: /var/backups/keycloak
+      register: verify_backup_dir
+
+    - name: The backup directory is readable by root only
+      ansible.builtin.assert:
+        that: verify_backup_dir.stat.mode == '0700'

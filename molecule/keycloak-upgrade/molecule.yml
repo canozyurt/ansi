@@ -1,0 +1,56 @@
+---
+# Upgrade path: prepare installs what the previous release deployed (versions_upgrade_from),
+# converge runs playbooks/upgrade.yml to move it to this release, verify checks the result.
+driver:
+  name: docker
+platforms:
+  - name: keycloak-upgrade-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [keycloak, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          sre: [operator]
+          auditors: [auditor]
+        keycloak_allow_single_node: true
+        keycloak_hostname: https://sso.test.internal
+        keycloak_proxy_headers: ""
+        keycloak_db_host: 127.0.0.1
+        keycloak_db_password: test-only-db-password
+        keycloak_db_sslmode: disable
+        keycloak_admin_password: test-only-admin-password
+        keycloak_memory_limit: 1500m
+        # Nested overlay filesystems are not always possible; vfs works everywhere.
+        container_runtime_daemon_extra:
+          storage-driver: vfs
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

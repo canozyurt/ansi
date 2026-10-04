@@ -94,6 +94,12 @@ groups in its IdP and assigns roles to them:
 No role may delete logs or backups inside their retention period, and nobody approves their own change.
 See `roles/rbac_model/defaults/main.yml` and [docs/architecture.md](docs/architecture.md).
 
+## Upgrades
+
+Each release tag is a tested bundle of pinned versions (`roles/versions`). Move to a new tag and run
+`playbooks/upgrade.yml`: it backs up, then upgrades one node at a time with health checks. Versions are
+bumped by maintainers by hand once an upstream release is judged stable. See [docs/upgrades.md](docs/upgrades.md).
+
 ## Testing
 
 ```bash

@@ -376,7 +376,8 @@ requirements:
       iso27001: ["8.8", "8.19"]
       iso27017: []
     check: "CI generates the SBOM and fails on unpinned dependencies"
-    status: not_started
+    status: designed
+    progress: "Collections pinned in requirements.yml; images pinned in roles/versions. Remaining: digest pinning, image scanning, SBOM in CI."
   - id: CHG-06
     requirement: "Every role has Molecule tests on all supported OS versions, including its checklist items"
     controls:
@@ -385,6 +386,15 @@ requirements:
       iso27017: []
     check: "CI matrix; coverage report of checklist IDs"
     status: not_started
+  - id: CHG-07
+    requirement: "Upgrades ship as tested release bundles: pinned versions, a CI-tested path from the previous release, a backup first, one node at a time with health gates"
+    controls:
+      soc2: [CC8.1, A1.2]
+      iso27001: ["8.32", "8.13", "8.8"]
+      iso27017: []
+    check: "Molecule upgrade scenario per stateful service installs the previous release and upgrades it"
+    status: designed
+    progress: "Keycloak: versions role, playbooks/upgrade.yml (compatibility check, rolling or recreate, pre-upgrade pg_dump), molecule/keycloak-upgrade. Remaining: every other service as it is added; release tagging."
   - id: DAT-01
     requirement: "Each product instance gets its own database or bucket and credentials"
     controls:

@@ -11,4 +11,5 @@ galaxy_info:
     - name: Ubuntu
       versions: [jammy, noble]
 dependencies:
+  - role: versions
   - role: rbac_model

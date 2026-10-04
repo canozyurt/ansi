@@ -11,7 +11,8 @@ platforms:
     cgroupns_mode: host
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
-      - molecule-keycloak-docker:/var/lib/docker
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
     command: ""
     groups: [keycloak, container_hosts]
 provisioner:
