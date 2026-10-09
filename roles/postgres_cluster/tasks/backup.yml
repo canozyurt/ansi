@@ -1,0 +1,122 @@
+---
+# pgBackRest: encrypted repositories (aes-256-cbc), continuous WAL archiving (archive_timeout bounds
+# the RPO to minutes), weekly full and daily differential backups from the leader, and a monthly
+# restore test on the first node (BCK-01, BCK-03, SEC-04).
+- name: Create the stanza in every repository (leader)
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_cluster_ct.patroni }}", pgbackrest, "--stanza={{ postgres_cluster_cfg.name }}", stanza-create]
+  register: postgres_cluster_stanza
+  changed_when: "'already exists' not in (postgres_cluster_stanza.stdout + postgres_cluster_stanza.stderr)"
+  when: postgres_cluster_is_leader | bool
+  tags: [chk_bck_01, chk_sec_04]
+
+- name: Check that WAL archiving reaches every repository (leader)
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_cluster_ct.patroni }}", pgbackrest, "--stanza={{ postgres_cluster_cfg.name }}", check]
+  register: postgres_cluster_backup_check
+  changed_when: false
+  when: postgres_cluster_is_leader | bool
+  tags: [chk_bck_01]
+
+- name: Install the backup tool
+  ansible.builtin.copy:
+    src: postgres-backup
+    dest: /usr/local/sbin/postgres-backup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the backup tool configuration
+  ansible.builtin.copy:
+    content: "{{ postgres_cluster_backup_config | to_nice_json }}\n"
+    dest: "/etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    postgres_cluster_backup_config:
+      stanza: "{{ postgres_cluster_cfg.name }}"
+      metric_name: "{{ postgres_cluster_metric_name }}"
+      container: "{{ postgres_cluster_ct.patroni }}"
+      image: "{{ postgres_cluster_server_image }}"
+      uid: "{{ postgres_cluster_uid | int }}"
+      memory: "{{ postgres_cluster_cfg.backup.restore_test_memory | default('1g') }}"
+      patroni_url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}"
+      ca_bundle: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+      designated: "{{ inventory_hostname == postgres_cluster_first }}"
+      designated_host: "{{ postgres_cluster_first }}"
+      repos: "{{ postgres_cluster_repos | map(attribute='key_name') | list }}"
+      repo_mounts: >-
+        {{ postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | map(attribute='host_path')
+           | zip(postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | map(attribute='ct_path')) | list }}
+      network: "{{ postgres_cluster_repos | selectattr('type', 'equalto', 's3') | list | length > 0 }}"
+      pgbackrest_conf_dir: "{{ postgres_cluster_dir }}/pgbackrest"
+      databases: "{{ postgres_cluster_cfg.databases | map(attribute='name') | list }}"
+      verify_sql: "{{ postgres_cluster_cfg.backup.verify_sql }}"
+      rpo_hours: "{{ postgres_cluster_cfg.backup.rpo_hours | int }}"
+      rto_hours: "{{ postgres_cluster_cfg.backup.rto_hours | int }}"
+      restore_dir: "/var/tmp/postgres-restore-test/{{ postgres_cluster_cfg.name }}"
+      state_file: "/var/lib/postgres-backup/{{ postgres_cluster_cfg.name }}/state.json"
+      textfile_dir: "{{ postgres_cluster_textfile_dir }}"
+  tags: [chk_bck_01, chk_bck_03, chk_bck_04]
+
+- name: Install the backup, metrics and restore-test units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: postgres-backup.service.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-full.service", type: full }
+    - { src: postgres-backup.timer.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-full.timer", type: full }
+    - { src: postgres-backup.service.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-diff.service", type: diff }
+    - { src: postgres-backup.timer.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-diff.timer", type: diff }
+    - { src: postgres-backup.service.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-metrics.service", type: metrics }
+    - { src: postgres-backup.timer.j2, dest: "postgres-backup-{{ postgres_cluster_cfg.name }}-metrics.timer", type: metrics }
+    - { src: postgres-backup.service.j2, dest: "postgres-restore-test-{{ postgres_cluster_cfg.name }}.service", type: restore-test }
+    - { src: postgres-backup.timer.j2, dest: "postgres-restore-test-{{ postgres_cluster_cfg.name }}.timer", type: restore-test }
+  loop_control:
+    label: "{{ item.dest }}"
+  vars:
+    postgres_cluster_unit_type: "{{ item.type }}"
+  register: postgres_cluster_units
+  tags: [chk_bck_01, chk_bck_03, chk_bck_04]
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: postgres_cluster_units is changed  # noqa: no-handler -- the timers are enabled in the next task
+
+- name: Enable the backup and metrics timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - "postgres-backup-{{ postgres_cluster_cfg.name }}-full.timer"
+    - "postgres-backup-{{ postgres_cluster_cfg.name }}-diff.timer"
+    - "postgres-backup-{{ postgres_cluster_cfg.name }}-metrics.timer"
+  tags: [chk_bck_01, chk_bck_04]
+
+- name: Enable the monthly restore test on the first node only
+  ansible.builtin.systemd_service:
+    name: "postgres-restore-test-{{ postgres_cluster_cfg.name }}.timer"
+    enabled: "{{ inventory_hostname == postgres_cluster_first }}"
+    state: "{{ 'started' if inventory_hostname == postgres_cluster_first else 'stopped' }}"
+  tags: [chk_bck_03]
+
+- name: Take the first full backup so the RPO clock starts (leader)
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/postgres-backup, --config, "/etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json",
+           backup, --type, full, --if-none]
+  register: postgres_cluster_first_backup
+  changed_when: "'Taking a full backup' in postgres_cluster_first_backup.stdout"
+  when: postgres_cluster_is_leader | bool
+  tags: [chk_bck_01]
+
+- name: Publish the backup metrics
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/postgres-backup, --config, "/etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json", metrics]
+  changed_when: false
+  tags: [chk_log_05, chk_bck_01]

@@ -43,3 +43,15 @@
       when:
         - reboot_done is changed
         - inventory_hostname in groups['openbao'] | default([])
+
+    - name: Wait until every PostgreSQL cluster on this host has its member back and a leader
+      ansible.builtin.include_role:
+        name: postgres_cluster
+        tasks_from: health_entry
+      loop: "{{ postgres_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: postgres_cluster
+        label: "{{ postgres_cluster.name }}"
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['postgres'] | default([])

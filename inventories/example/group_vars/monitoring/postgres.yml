@@ -1,0 +1,108 @@
+---
+# Scrape targets and alert rules for every PostgreSQL cluster in postgres_clusters (LOG-05).
+# Two jobs per cluster: postgres-<name> (postgres_exporter, HTTPS + basic auth) and patroni-<name>
+# (Patroni REST /metrics, HTTPS; read-only endpoint). Both are also probed for certificate expiry.
+postgres_scrape_catalog: >-
+  {%- set out = [] -%}
+  {%- for c in postgres_clusters | default([]) -%}
+  {%-   set ports = {'patroni': 8008, 'exporter': 9187} | combine(c.ports | default({})) -%}
+  {%-   set _ = out.append({'name': 'postgres-' ~ c.name, 'group': c.group, 'port': ports.exporter,
+                           'path': '/metrics', 'scheme': 'https', 'basic_auth': true}) -%}
+  {%-   set _ = out.append({'name': 'patroni-' ~ c.name, 'group': c.group, 'port': ports.patroni,
+                           'path': '/metrics', 'scheme': 'https'}) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+prometheus_scrape_extra_postgres: "{{ postgres_scrape_catalog | from_json }}"
+
+# Alert rules (collected from prometheus_rules_* variables). Backup age and restore tests are covered
+# by the generic BackupRPOExceeded/BackupNeverRan/BackupFailed/RestoreTest* rules, which see the
+# pgBackRest results as name="postgres-<cluster>".
+prometheus_rules_postgres:
+  - name: postgres
+    rules:
+      - alert: PostgresDown
+        expr: pg_up{job=~"postgres-.+"} == 0
+        for: 2m
+        labels: { severity: critical, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}postgres_exporter on {{ $labels.instance }} ({{ $labels.job }}) cannot reach PostgreSQL{% endraw %}"
+      - alert: PatroniNoLeader
+        expr: sum by (job) (patroni_primary{job=~"patroni-.+"}) == 0
+        for: 1m
+        labels: { severity: critical, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}{{ $labels.job }} has no leader: the cluster does not accept writes{% endraw %}"
+      - alert: PatroniMultipleLeaders
+        expr: sum by (job) (patroni_primary{job=~"patroni-.+"}) > 1
+        for: 1m
+        labels: { severity: critical, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}{{ $labels.job }} reports more than one leader{% endraw %}"
+      - alert: PatroniMemberNotRunning
+        expr: patroni_postgres_running{job=~"patroni-.+"} == 0
+        for: 5m
+        labels: { severity: warning, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}PostgreSQL on {{ $labels.instance }} ({{ $labels.job }}) is not running; the cluster has lost redundancy{% endraw %}"
+      - alert: PatroniDCSUnreachable
+        expr: time() - patroni_dcs_last_seen{job=~"patroni-.+"} > 60
+        for: 2m
+        labels: { severity: critical, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}{{ $labels.instance }} ({{ $labels.job }}) has not reached etcd for over a minute{% endraw %}"
+      - alert: PatroniPendingRestart
+        expr: patroni_pending_restart{job=~"patroni-.+"} == 1
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "{% raw %}{{ $labels.instance }} ({{ $labels.job }}) waits for a restart to apply settings; run playbooks/postgres.yml{% endraw %}"
+      - alert: PostgresReplicationLagHigh
+        # bytes the replica has not replayed yet, against the leader's WAL position
+        expr: >-
+          max by (job) (patroni_xlog_location{job=~"patroni-.+"})
+            - on (job) group_right () patroni_xlog_replayed_location{job=~"patroni-.+"}
+          > 64 * 1024 * 1024
+        for: 5m
+        labels: { severity: warning, checklist: HA-01 }
+        annotations:
+          summary: "{% raw %}Replica {{ $labels.instance }} ({{ $labels.job }}) is more than 64 MiB of WAL behind{% endraw %}"
+      - alert: PostgresTooManyConnections
+        expr: >-
+          sum by (job, instance) (pg_stat_activity_count{job=~"postgres-.+"})
+            / on (job, instance) max by (job, instance) (pg_settings_max_connections{job=~"postgres-.+"})
+          > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{% raw %}{{ $labels.instance }} ({{ $labels.job }}) uses more than 80% of max_connections{% endraw %}"
+      - alert: PostgresWALArchiveFailing
+        expr: increase(pg_stat_archiver_failed_count{job=~"postgres-.+"}[15m]) > 0
+        labels: { severity: critical, checklist: BCK-01 }
+        annotations:
+          summary: "{% raw %}WAL archiving fails on {{ $labels.instance }} ({{ $labels.job }}): point-in-time recovery and the RPO are at risk{% endraw %}"
+      - alert: PostgresWALArchiveStuck
+        # the last failure is newer than the last success for 15 minutes
+        expr: >-
+          pg_stat_archiver_last_archive_age{job=~"postgres-.+"} > 900
+          and on (job, instance) increase(pg_stat_archiver_failed_count{job=~"postgres-.+"}[15m]) > 0
+        labels: { severity: critical, checklist: BCK-01 }
+        annotations:
+          summary: "{% raw %}No WAL segment archived on {{ $labels.instance }} ({{ $labels.job }}) for 15 minutes while archiving fails{% endraw %}"
+      - alert: PostgresFullBackupTooOld
+        expr: time() - postgres_backup_last_full_timestamp_seconds > 8 * 86400
+        labels: { severity: warning, checklist: BCK-01 }
+        annotations:
+          summary: "{% raw %}The newest full backup of {{ $labels.cluster }} ({{ $labels.repo }}) is older than 8 days{% endraw %}"
+      - alert: PostgresBackupRepositoryUnreadable
+        expr: postgres_backup_repo_ok == 0
+        for: 30m
+        labels: { severity: warning, checklist: BCK-01 }
+        annotations:
+          summary: "{% raw %}pgBackRest cannot read the repository of {{ $labels.cluster }} from {{ $labels.instance }}{% endraw %}"
+      - alert: PostgresDataNotEncrypted
+        expr: >-
+          postgres_data_dir_encrypted == 0
+          unless on (instance, cluster) postgres_data_dir_encryption_attested == 1
+        labels: { severity: warning, checklist: SEC-04 }
+        annotations:
+          summary: "{% raw %}The data directory of {{ $labels.cluster }} on {{ $labels.instance }} is not on an encrypted volume{% endraw %}"

@@ -1,0 +1,84 @@
+# {{ ansible_managed }}
+# Patroni for PostgreSQL cluster {{ postgres_cluster_cfg.name }}, member {{ inventory_hostname }}.
+scope: {{ postgres_cluster_cfg.name | to_json }}
+namespace: /service/
+name: {{ inventory_hostname | to_json }}
+
+log:
+  type: json
+  level: INFO
+  static_fields:
+    app: patroni
+    cluster: {{ postgres_cluster_cfg.name | to_json }}
+
+restapi:
+  listen: 0.0.0.0:{{ postgres_cluster_cfg.ports.patroni }}
+  connect_address: {{ (postgres_cluster_node_address ~ ':' ~ postgres_cluster_cfg.ports.patroni) | to_json }}
+  certfile: {{ postgres_cluster_ct_tls }}/tls.crt
+  keyfile: {{ postgres_cluster_ct_tls }}/tls.key
+  cafile: {{ postgres_cluster_ct_tls }}/ca-bundle.crt
+  verify_client: none
+  # Changing endpoints (switchover, restart, reload, configuration) need these credentials.
+  authentication:
+    username: patroni
+    password: {{ postgres_cluster_cfg.patroni_api_password | to_json }}
+
+ctl:
+  insecure: false
+  cacert: {{ postgres_cluster_ct_tls }}/ca-bundle.crt
+
+etcd3:
+  protocol: https
+  hosts: {{ postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_member_address') | map('regex_replace', '$', ':' ~ postgres_cluster_cfg.ports.etcd_client) | list | to_json }}
+  cacert: {{ postgres_cluster_ct_etcd_tls }}/ca.crt
+  cert: {{ postgres_cluster_ct_etcd_tls }}/node.crt
+  key: {{ postgres_cluster_ct_etcd_tls }}/node.key
+
+bootstrap:
+  # Written to the DCS once, when the cluster is created; the role keeps it in sync afterwards
+  # through the REST API (PATCH /config).
+  dcs: {{ postgres_cluster_dynamic | to_json }}
+  initdb:
+    - encoding: UTF8
+    - locale: C.UTF-8
+    - data-checksums
+    - auth-host: scram-sha-256
+    - auth-local: peer
+
+postgresql:
+  listen: 0.0.0.0:{{ postgres_cluster_cfg.ports.postgres }}
+  connect_address: {{ (postgres_cluster_node_address ~ ':' ~ postgres_cluster_cfg.ports.postgres) | to_json }}
+  data_dir: {{ postgres_cluster_ct_data }}
+  bin_dir: /usr/lib/postgresql/{{ postgres_cluster_pg_major }}/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ postgres_cluster_cfg.superuser_password | to_json }}
+      sslmode: require
+    replication:
+      username: replicator
+      password: {{ postgres_cluster_cfg.replication_password | to_json }}
+      sslmode: {{ postgres_cluster_cfg.replication_sslmode }}
+      sslrootcert: {{ postgres_cluster_ct_tls }}/ca-bundle.crt
+    rewind:
+      username: rewind_user
+      password: {{ postgres_cluster_cfg.rewind_password | to_json }}
+      sslmode: {{ postgres_cluster_cfg.replication_sslmode }}
+      sslrootcert: {{ postgres_cluster_ct_tls }}/ca-bundle.crt
+  create_replica_methods: [basebackup]
+  basebackup:
+    checkpoint: fast
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    port: {{ postgres_cluster_cfg.ports.postgres }}
+
+# No /dev/watchdog inside the container; fencing relies on the leader key TTL.
+watchdog:
+  mode: "off"
+
+tags:
+  nofailover: {{ (postgres_cluster_cfg.nofailover | default([])) is contains(inventory_hostname) | to_json }}
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

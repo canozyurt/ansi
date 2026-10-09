@@ -1,0 +1,31 @@
+{#- Difference between Patroni's dynamic configuration (postgres_cluster_dcs_current) and the desired one
+    (postgres_cluster_dynamic), as the body of PATCH /config: changed keys, and null for keys to remove. -#}
+{%- set cur = postgres_cluster_dcs_current -%}
+{%- set want = postgres_cluster_dynamic -%}
+{%- set patch = {} -%}
+{%- for k, v in want.items() if k != 'postgresql' -%}
+{%-   if (cur[k] | default(none) | string) != (v | string) %}{% set _ = patch.update({k: v}) %}{% endif -%}
+{%- endfor -%}
+{%- set cpg = cur.postgresql | default({}) -%}
+{%- set ppg = {} -%}
+{%- for k in ['use_pg_rewind', 'use_slots', 'pg_hba'] -%}
+{%-   if (cpg[k] | default(none) | string) != (want.postgresql[k] | string) %}{% set _ = ppg.update({k: want.postgresql[k]}) %}{% endif -%}
+{%- endfor -%}
+{%- set params = {} -%}
+{%- for k, v in want.postgresql.parameters.items() -%}
+{%-   if ((cpg.parameters | default({}))[k] | default(none) | string) != (v | string) %}{% set _ = params.update({k: v}) %}{% endif -%}
+{%- endfor -%}
+{%- for k in (cpg.parameters | default({})).keys() if k not in want.postgresql.parameters -%}
+{%-   set _ = params.update({k: none}) -%}
+{%- endfor -%}
+{%- if params %}{% set _ = ppg.update({'parameters': params}) %}{% endif -%}
+{%- set rc = {} -%}
+{%- for k, v in want.postgresql.recovery_conf.items() -%}
+{%-   if ((cpg.recovery_conf | default({}))[k] | default(none) | string) != (v | string) %}{% set _ = rc.update({k: v}) %}{% endif -%}
+{%- endfor -%}
+{%- for k in (cpg.recovery_conf | default({})).keys() if k not in want.postgresql.recovery_conf -%}
+{%-   set _ = rc.update({k: none}) -%}
+{%- endfor -%}
+{%- if rc %}{% set _ = ppg.update({'recovery_conf': rc}) %}{% endif -%}
+{%- if ppg %}{% set _ = patch.update({'postgresql': ppg}) %}{% endif -%}
+{{ patch | to_json }}

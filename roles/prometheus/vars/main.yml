@@ -1,5 +1,9 @@
 ---
-# Catalog entries whose inventory group exists and has hosts.
+# Catalog entries whose inventory group exists and has hosts. Services add their own entries in
+# prometheus_scrape_extra_<service> variables (group_vars/monitoring/<service>.yml), collected here.
+prometheus_scrape_extra_all: >-
+  {{ prometheus_scrape_extra + (query('ansible.builtin.varnames', '^prometheus_scrape_extra_.+')
+     | reject('equalto', 'prometheus_scrape_extra_all') | sort | map('extract', vars) | flatten) }}
 prometheus_jobs: >-
-  {{ (prometheus_scrape_catalog + prometheus_scrape_extra)
+  {{ (prometheus_scrape_catalog + prometheus_scrape_extra_all)
      | selectattr('group', 'in', groups | dict2items | selectattr('value') | map(attribute='key') | list) | list }}

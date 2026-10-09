@@ -1,0 +1,273 @@
+---
+# Runbook: PostgreSQL major-version upgrade by logical replication into a new instance
+# (docs/product-playbooks.md). Not covered by Molecule yet; rehearse it on a copy first.
+#
+# Why logical replication and not pg_upgrade: the multi-instance pattern makes a second cluster cheap,
+# the old cluster keeps serving until the cut-over (minutes of read-only time instead of an outage),
+# and rolling back before clients move is just re-enabling writes on the old cluster.
+#
+# Before you start
+#   1. Build and publish the new-major server image (bump versions_postgres in a branch, or build the
+#      recipe with the new packages) and push it to your registry.
+#   2. Add the target entry to postgres_clusters: a new name (e.g. pg-main-19), new hosts or ports,
+#      `image: <registry>/compliant-postgres:<tag>`, `pg_major: 19`, `migrate_from: pg-main`, the same
+#      databases and users (application passwords may stay the same; migrate_from exempts the pair
+#      from the DAT-01 check), new service passwords. Deploy it:
+#        ansible-playbook playbooks/postgres.yml -e postgres_only=pg-main-19
+#   3. Put a password for the migration user in the vault (major_upgrade_password, 16+ characters).
+#
+# Phases (one run each; read the output between them):
+#   -e major_upgrade_phase=prepare   publication on the source, schema copy, subscription on the target
+#   -e major_upgrade_phase=status    initial copy and replication progress
+#   -e major_upgrade_phase=cutover   source read-only, wait for catch-up, copy sequences, drop subscriptions
+#   -e major_upgrade_phase=rollback  source writable again (only before clients moved), subscriptions dropped
+#   -e major_upgrade_phase=finish    after clients moved and checks passed: drop the source publications
+#
+#   ansible-playbook -i inventories/<company> playbooks/postgres_major_upgrade.yml \
+#     -e major_upgrade_source=pg-main -e major_upgrade_target=pg-main-19 -e major_upgrade_phase=prepare
+#
+# Limits of logical replication: DDL is not replicated (freeze schema changes until the cut-over),
+# large objects are not replicated, tables need a primary key or REPLICA IDENTITY FULL for updates.
+
+- name: PostgreSQL major upgrade ({{ major_upgrade_phase | default('?') }})
+  hosts: postgres
+  become: true
+  gather_facts: false
+  vars:
+    mu_src: "{{ postgres_clusters | selectattr('name', 'equalto', major_upgrade_source) | first }}"
+    mu_dst: "{{ postgres_clusters | selectattr('name', 'equalto', major_upgrade_target) | first }}"
+    mu_src_ports: "{{ {'patroni': 8008, 'primary': 5000, 'postgres': 5432} | combine(mu_src.ports | default({})) }}"
+    mu_dst_ports: "{{ {'patroni': 8008, 'primary': 5000, 'postgres': 5432} | combine(mu_dst.ports | default({})) }}"
+    mu_src_first: "{{ groups[mu_src.group] | first }}"
+    mu_dst_first: "{{ groups[mu_dst.group] | first }}"
+    mu_dbs: "{{ mu_src.databases | default([]) | map(attribute='name') | list }}"
+    mu_user: logical_migrator
+    mu_sslmode: "{{ major_upgrade_sslmode | default('verify-full') }}"
+    mu_psql: [psql, -X, -At, -v, ON_ERROR_STOP=1, -h, /var/run/postgresql, -U, postgres]
+  tasks:
+    - name: Check the parameters
+      ansible.builtin.assert:
+        that:
+          - major_upgrade_phase | default('') in ['prepare', 'status', 'cutover', 'rollback', 'finish']
+          - major_upgrade_source | default('') | length > 0
+          - major_upgrade_target | default('') | length > 0
+          - mu_dst.migrate_from | default('') == major_upgrade_source
+          - major_upgrade_phase != 'prepare' or major_upgrade_password | default('') | length >= 16
+        fail_msg: >-
+          Set major_upgrade_source, major_upgrade_target (whose entry has migrate_from: <source>),
+          major_upgrade_phase and, for prepare, major_upgrade_password (16+ characters, from the vault).
+        quiet: true
+      run_once: true
+      tags: [chk_chg_07]
+
+    - name: Find the leaders
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:{{ item.port }}/cluster"
+        validate_certs: false
+      delegate_to: "{{ item.host }}"
+      loop:
+        - { host: "{{ mu_src_first }}", port: "{{ mu_src_ports.patroni }}" }
+        - { host: "{{ mu_dst_first }}", port: "{{ mu_dst_ports.patroni }}" }
+      register: mu_clusters
+      run_once: true
+
+    - name: Note the leaders
+      ansible.builtin.set_fact:
+        mu_src_leader: "{{ mu_clusters.results[0].json.members | selectattr('role', 'equalto', 'leader') | map(attribute='name') | first }}"
+        mu_dst_leader: "{{ mu_clusters.results[1].json.members | selectattr('role', 'equalto', 'leader') | map(attribute='name') | first }}"
+        mu_src_ct: "{{ major_upgrade_source }}-postgres"
+        mu_dst_ct: "{{ major_upgrade_target }}-postgres"
+      run_once: true
+
+    # ------------------------------------------------------------------------------------- prepare
+    - name: Prepare
+      when: major_upgrade_phase == 'prepare'
+      run_once: true
+      tags: [chk_chg_07]
+      block:
+        - name: Create the migration user and publications on the source
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', '-i', mu_src_ct] + mu_psql + ['-d', 'postgres'] }}"
+            stdin: |
+              SET pgaudit.log = 'none';
+              SELECT format('CREATE ROLE %I LOGIN REPLICATION', '{{ mu_user }}')
+               WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ mu_user }}') \gexec
+              ALTER ROLE {{ mu_user }} WITH LOGIN REPLICATION PASSWORD '{{ major_upgrade_password | replace("'", "''") }}';
+              GRANT pg_read_all_data TO {{ mu_user }};
+              {% for db in mu_dbs %}
+              GRANT CONNECT ON DATABASE "{{ db }}" TO {{ mu_user }};
+              \connect "{{ db }}"
+              SET pgaudit.log = 'none';
+              SELECT 'CREATE PUBLICATION migrate_all FOR ALL TABLES'
+               WHERE NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'migrate_all') \gexec
+              {% endfor %}
+          delegate_to: "{{ mu_src_leader }}"
+          changed_when: true
+          no_log: true
+
+        - name: Copy each database's schema to the target (new pg_dump against the old server)
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - -e
+              - PGPASSWORD
+              - "{{ mu_dst_ct }}"
+              - bash
+              - -c
+              - >-
+                set -o pipefail;
+                if [ "$(psql -X -At -h /var/run/postgresql -U postgres -d {{ item }} -c "SELECT count(*) FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')")" != 0 ];
+                then echo "target database {{ item }} already has tables; schema copy skipped"; exit 0; fi;
+                pg_dump --schema-only "host={{ hostvars[mu_src_first].postgres_cluster_node_address | default(mu_src_first) }}
+                port={{ mu_src_ports.primary }} dbname={{ item }} user={{ mu_user }} sslmode={{ mu_sslmode }}
+                sslrootcert=/etc/patroni/tls/ca-bundle.crt"
+                | psql -X -q -v ON_ERROR_STOP=1 -h /var/run/postgresql -U postgres -d {{ item }}
+          environment:
+            PGPASSWORD: "{{ major_upgrade_password }}"
+          loop: "{{ mu_dbs }}"
+          delegate_to: "{{ mu_dst_leader }}"
+          register: mu_schema
+          changed_when: "'skipped' not in mu_schema.stdout"
+
+        - name: Subscribe the target to the source (initial copy, then streaming changes)
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', '-i', mu_dst_ct] + mu_psql + ['-d', item] }}"
+            stdin: |
+              SET pgaudit.log = 'none';
+              SELECT format('CREATE SUBSCRIPTION %I CONNECTION %L PUBLICATION migrate_all WITH (copy_data = true)',
+                            'migrate_{{ item }}',
+                            '{{ mu_conninfo }}')
+               WHERE NOT EXISTS (SELECT FROM pg_subscription WHERE subname = 'migrate_{{ item }}') \gexec
+          vars:
+            mu_conninfo: >-
+              host={{ hostvars[mu_src_first].postgres_cluster_node_address | default(mu_src_first) }}
+              port={{ mu_src_ports.primary }} dbname={{ item }} user={{ mu_user }} password={{ major_upgrade_password }}
+              sslmode={{ mu_sslmode }} sslrootcert=/etc/patroni/tls/ca-bundle.crt
+          loop: "{{ mu_dbs }}"
+          delegate_to: "{{ mu_dst_leader }}"
+          changed_when: true
+          no_log: true
+
+    # -------------------------------------------------------------------------------------- status
+    - name: Show the replication progress
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'exec', mu_dst_ct] + mu_psql + ['-d', item, '-c',
+                   \"SELECT '\" ~ item ~ \"', s.subname, count(*) FILTER (WHERE r.srsubstate = 'r') || '/' || count(*) AS tables_ready,
+                   max(st.latest_end_time) FROM pg_subscription s LEFT JOIN pg_subscription_rel r ON r.srsubid = s.oid
+                   LEFT JOIN pg_stat_subscription st ON st.subid = s.oid GROUP BY s.subname\"] }}"
+      loop: "{{ mu_dbs }}"
+      delegate_to: "{{ mu_dst_leader }}"
+      register: mu_status
+      changed_when: false
+      run_once: true
+      when: major_upgrade_phase in ['status', 'cutover']
+
+    - name: Report the progress
+      ansible.builtin.debug:
+        msg: "{{ mu_status.results | map(attribute='stdout') | list }}"
+      run_once: true
+      when: major_upgrade_phase in ['status', 'cutover']
+
+    # ------------------------------------------------------------------------------------- cutover
+    - name: Cut over
+      when: major_upgrade_phase == 'cutover'
+      run_once: true
+      tags: [chk_chg_07]
+      block:
+        - name: Every table finished its initial copy
+          ansible.builtin.assert:
+            that: mu_status.results | map(attribute='stdout') | select('search', '\|(\d+)/\1\|') | list | length == mu_dbs | length
+            fail_msg: Some tables are still copying; run the status phase until every database shows n/n.
+
+        - name: Make the source read-only and end application sessions
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', '-i', mu_src_ct] + mu_psql + ['-d', 'postgres'] }}"
+            stdin: |
+              {% for db in mu_dbs %}
+              ALTER DATABASE "{{ db }}" SET default_transaction_read_only = on;
+              SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+               WHERE datname = '{{ db }}' AND usename NOT IN ('postgres', '{{ mu_user }}') AND backend_type = 'client backend';
+              {% endfor %}
+          delegate_to: "{{ mu_src_leader }}"
+          changed_when: true
+
+        - name: Wait until the target has every change
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', mu_src_ct] + mu_psql + ['-d', 'postgres', '-c',
+                       \"SELECT bool_and(confirmed_flush_lsn >= pg_current_wal_lsn()) FROM pg_replication_slots WHERE slot_name LIKE 'migrate_%'\"] }}"
+          delegate_to: "{{ mu_src_leader }}"
+          register: mu_caught_up
+          until: mu_caught_up.stdout == 't'
+          retries: 120
+          delay: 5
+          changed_when: false
+
+        - name: Read the sequence positions on the source
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', mu_src_ct] + mu_psql + ['-d', item, '-c',
+                       \"SELECT format('SELECT setval(%L, %s, true);', quote_ident(schemaname) || '.' || quote_ident(sequencename), last_value)
+                        FROM pg_sequences WHERE last_value IS NOT NULL\"] }}"
+          loop: "{{ mu_dbs }}"
+          delegate_to: "{{ mu_src_leader }}"
+          register: mu_sequences
+          changed_when: false
+
+        - name: Set the sequences on the target and drop the subscriptions
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', '-i', mu_dst_ct] + mu_psql + ['-d', item.item] }}"
+            stdin: |
+              {{ item.stdout }}
+              DROP SUBSCRIPTION IF EXISTS "migrate_{{ item.item }}";
+          loop: "{{ mu_sequences.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+          delegate_to: "{{ mu_dst_leader }}"
+          changed_when: true
+
+        - name: Next steps
+          ansible.builtin.debug:
+            msg: >-
+              {{ major_upgrade_target }} now holds all data and accepts writes; {{ major_upgrade_source }} is read-only.
+              Point the applications at {{ major_upgrade_target }} (connection strings or DNS), check them, then run
+              the finish phase. Until clients write to the target, the rollback phase makes the source writable again.
+
+    # ------------------------------------------------------------------------------------ rollback
+    - name: Make the source writable again and stop replicating
+      when: major_upgrade_phase == 'rollback'
+      run_once: true
+      block:
+        - name: Re-enable writes on the source
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', '-i', mu_src_ct] + mu_psql + ['-d', 'postgres'] }}"
+            stdin: |
+              {% for db in mu_dbs %}
+              ALTER DATABASE "{{ db }}" RESET default_transaction_read_only;
+              {% endfor %}
+          delegate_to: "{{ mu_src_leader }}"
+          changed_when: true
+
+        - name: Drop the subscriptions on the target
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'exec', mu_dst_ct] + mu_psql + ['-d', item, '-c', 'DROP SUBSCRIPTION IF EXISTS \"migrate_' ~ item ~ '\"'] }}"
+          loop: "{{ mu_dbs }}"
+          delegate_to: "{{ mu_dst_leader }}"
+          changed_when: true
+
+    # -------------------------------------------------------------------------------------- finish
+    - name: Drop the publications and the migration user on the source
+      ansible.builtin.command:
+        argv: "{{ ['docker', 'exec', '-i', mu_src_ct] + mu_psql + ['-d', 'postgres'] }}"
+        stdin: |
+          {% for db in mu_dbs %}
+          \connect "{{ db }}"
+          DROP PUBLICATION IF EXISTS migrate_all;
+          REVOKE CONNECT ON DATABASE "{{ db }}" FROM {{ mu_user }};
+          {% endfor %}
+          \connect postgres
+          DROP ROLE IF EXISTS {{ mu_user }};
+      delegate_to: "{{ mu_src_leader }}"
+      run_once: true
+      when: major_upgrade_phase == 'finish'
+      changed_when: true

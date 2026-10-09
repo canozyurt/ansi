@@ -1,0 +1,123 @@
+---
+- name: Check the cluster name, group and nodes
+  ansible.builtin.assert:
+    that:
+      - postgres_cluster_cfg.name is match('^[a-z][a-z0-9-]{0,30}$')
+      - postgres_cluster_cfg.group | length > 0
+      - inventory_hostname in postgres_cluster_hosts
+      - postgres_cluster_all | map(attribute='name') | select('equalto', postgres_cluster_cfg.name) | list | length == 1
+    fail_msg: >-
+      Each entry of postgres_clusters needs a unique name ([a-z][a-z0-9-], up to 31 characters) and the
+      inventory group of its nodes (this host must be in it).
+    quiet: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: postgres_cluster_hosts | length >= postgres_cluster_min_nodes or postgres_cluster_allow_single_node | bool
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }} needs at least {{ postgres_cluster_min_nodes }} nodes (etcd and Patroni need a
+      majority); group {{ postgres_cluster_cfg.group }} has {{ postgres_cluster_hosts | length }}. Set postgres_cluster_allow_single_node
+      only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Check the secrets of the cluster
+  ansible.builtin.assert:
+    that:
+      - postgres_cluster_secrets | length >= 5
+      - postgres_cluster_secrets | map('string') | map('length') | min >= 16
+      - postgres_cluster_secrets | unique | length == postgres_cluster_secrets | length
+      - postgres_cluster_secrets | select('match', '^[\x21-\x7e]+$') | list | length == postgres_cluster_secrets | length
+      - not postgres_cluster_backup_enabled or postgres_cluster_cfg.backup.cipher_pass | length >= 32
+      - postgres_cluster_scrape_password | length >= 16
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }}: every password must have 16+ printable ASCII characters (no spaces) and be
+      different from the others, the backup cipher_pass 32+ characters, and monitoring_scrape_password
+      must be set. Keep them in Ansible Vault or OpenBao.
+    quiet: true
+  vars:
+    postgres_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: No secret is shared with another cluster (DAT-01)
+  ansible.builtin.assert:
+    that: >-
+      postgres_cluster_secrets | intersect(postgres_cluster_other_secrets) | length == 0
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }} shares a password or the backup passphrase with another cluster. Each instance
+      must have its own credentials (DAT-01).
+    quiet: true
+  vars:
+    postgres_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+    postgres_cluster_other_secrets: >-
+      {{ query('ansible.builtin.template', 'secrets.json.j2', template_vars={'postgres_cluster_secret_clusters': postgres_cluster_others})
+         | first | from_json }}
+    # The target of a major upgrade (migrate_from) may keep its source's application passwords.
+    postgres_cluster_others: >-
+      {{ postgres_cluster_all | rejectattr('name', 'equalto', postgres_cluster_cfg.name)
+         | rejectattr('name', 'equalto', postgres_cluster_cfg.migrate_from | default('')) | rejectattr('migrate_from', 'defined') | list
+         + postgres_cluster_all | selectattr('migrate_from', 'defined') | rejectattr('migrate_from', 'equalto', postgres_cluster_cfg.name)
+         | rejectattr('name', 'equalto', postgres_cluster_cfg.name) | rejectattr('name', 'equalto', postgres_cluster_cfg.migrate_from | default('')) | list }}
+  no_log: true
+  tags: [chk_dat_01]
+
+- name: Check the databases and users
+  ansible.builtin.assert:
+    that:
+      - postgres_cluster_cfg.databases | map(attribute='name') | unique | length == postgres_cluster_cfg.databases | length
+      - postgres_cluster_cfg.databases | map(attribute='name') | reject('match', '^[a-z_][a-z0-9_]{0,40}$') | list | length == 0
+      - postgres_cluster_cfg.databases | map(attribute='name') | intersect(['postgres', 'template0', 'template1']) | length == 0
+      - postgres_cluster_users | map(attribute='name') | reject('match', '^[a-z_][a-z0-9_]{0,50}$') | list | length == 0
+      - postgres_cluster_users | map(attribute='name') | unique | length == postgres_cluster_users | length
+      - postgres_cluster_users | map(attribute='name') | intersect(postgres_cluster_reserved) | length == 0
+      - postgres_cluster_users | map(attribute='access', default='') | reject('in', ['owner', 'rw', 'ro']) | list | length == 0
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }}: database and user names must be lower-case identifiers and unique, users need
+      access owner, rw or ro, and these names are reserved: {{ postgres_cluster_reserved | join(', ') }}.
+    quiet: true
+  vars:
+    postgres_cluster_users: "{{ postgres_cluster_cfg.databases | map(attribute='users', default=[]) | flatten }}"
+    postgres_cluster_reserved: >-
+      {{ ['postgres', 'replicator', 'rewind_user', 'exporter', 'logical_migrator', postgres_cluster_openbao_admin_user]
+         + postgres_cluster_cfg.databases | map(attribute='name') | product(['_owner', '_rw', '_ro']) | map('join') | list }}
+  tags: [chk_dat_01]
+
+- name: No two clusters on this host use the same port
+  ansible.builtin.assert:
+    that: postgres_cluster_ports | unique | length == postgres_cluster_ports | length
+    fail_msg: "Clusters on {{ inventory_hostname }} share ports: {{ postgres_cluster_ports | sort | join(', ') }}"
+    quiet: true
+  vars:
+    postgres_cluster_ports: "{{ query('ansible.builtin.template', 'ports.json.j2') | first | from_json }}"
+
+- name: Check the backup repositories
+  ansible.builtin.assert:
+    that:
+      - postgres_cluster_repos | length > 0
+      - postgres_cluster_repos | map(attribute='type') | reject('in', ['posix', 's3']) | list | length == 0
+      - postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | map(attribute='path', default='') | select('equalto', '') | list | length == 0
+      - postgres_cluster_repos | selectattr('type', 'equalto', 's3') | map(attribute='bucket') | select('equalto', '') | list | length == 0
+      - postgres_cluster_repos | selectattr('type', 'equalto', 's3') | map(attribute='endpoint') | select('equalto', '') | list | length == 0
+      - postgres_cluster_repos | selectattr('type', 'equalto', 's3') | map(attribute='key_secret') | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }}: backup.repos needs at least one repository of type posix (with a path) or s3
+      (bucket, endpoint, key and key_secret from postgres_backup_s3_* or the entry).
+    quiet: true
+  when: postgres_cluster_backup_enabled | bool
+  no_log: true
+  tags: [chk_bck_01]
+
+- name: Check the OpenBao settings
+  ansible.builtin.assert:
+    that:
+      - postgres_cluster_openbao_addr | length > 0
+      - postgres_cluster_openbao_token | length > 0
+      - postgres_cluster_cfg.openbao.admin_password | length >= 16
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }}: dynamic credentials need postgres_cluster_openbao_addr (pki_openbao_addr),
+      a token (openbao_admin_token) and openbao.admin_password (16+ characters, used once).
+    quiet: true
+  when: postgres_cluster_cfg.openbao.enabled | bool
+  no_log: true
+  tags: [chk_iam_08]

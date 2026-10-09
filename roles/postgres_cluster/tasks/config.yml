@@ -1,0 +1,104 @@
+---
+- name: Work out the PostgreSQL settings and Patroni's dynamic configuration
+  ansible.builtin.set_fact:
+    postgres_cluster_parameters: >-
+      {{ postgres_cluster_base_parameters | combine(postgres_cluster_cfg.parameters)
+         | combine(postgres_cluster_enforced_parameters)
+         | combine({'ssl_min_protocol_version': 'TLSv1.3'}
+                   if (postgres_cluster_cfg.parameters.ssl_min_protocol_version | default('')) == 'TLSv1.3' else {})
+         | combine({'archive_mode': 'on',
+                    'archive_command': 'pgbackrest --stanza=' ~ postgres_cluster_cfg.name ~ ' archive-push "%p"',
+                    'archive_timeout': postgres_cluster_cfg.backup.archive_timeout | int}
+                   if postgres_cluster_backup_enabled | bool else {'archive_mode': 'off'}) }}
+    postgres_cluster_hba: "{{ query('ansible.builtin.template', 'hba.json.j2') | first | from_json }}"
+  tags: [chk_sec_03, chk_log_01]
+
+- name: Assemble Patroni's dynamic configuration
+  ansible.builtin.set_fact:
+    postgres_cluster_dynamic:
+      ttl: "{{ postgres_cluster_cfg.patroni.ttl | int }}"
+      loop_wait: "{{ postgres_cluster_cfg.patroni.loop_wait | int }}"
+      retry_timeout: "{{ postgres_cluster_cfg.patroni.retry_timeout | int }}"
+      maximum_lag_on_failover: "{{ postgres_cluster_cfg.patroni.maximum_lag_on_failover | int }}"
+      synchronous_mode: "{{ postgres_cluster_cfg.patroni.synchronous_mode }}"
+      postgresql:
+        use_pg_rewind: true
+        use_slots: true
+        parameters: "{{ postgres_cluster_parameters }}"
+        pg_hba: "{{ postgres_cluster_hba }}"
+        recovery_conf: >-
+          {{ {'restore_command': 'pgbackrest --stanza=' ~ postgres_cluster_cfg.name ~ ' archive-get %f "%p"'}
+             if postgres_cluster_backup_enabled | bool else {} }}
+
+- name: Write the etcd member settings
+  ansible.builtin.template:
+    src: etcd.env.j2
+    dest: "{{ postgres_cluster_dir }}/etcd.env"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [chk_sec_03]
+
+- name: Write the Patroni configuration (contains secrets)
+  ansible.builtin.template:
+    src: patroni.yml.j2
+    dest: "{{ postgres_cluster_dir }}/patroni/patroni.yml"
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0600"
+  register: postgres_cluster_patroni_config
+  no_log: true
+  tags: [chk_sec_02, chk_sec_03, chk_ha_01]
+
+- name: Write the pgBackRest configuration (contains the repository passphrase)
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: "{{ postgres_cluster_dir }}/pgbackrest/pgbackrest.conf"
+    owner: root
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0640"
+  no_log: true
+  tags: [chk_sec_02, chk_sec_04, chk_bck_01]
+
+- name: Install the CA bundles of S3 repositories with a private CA
+  ansible.builtin.copy:
+    src: "{{ item.ca_file }}"
+    dest: "{{ postgres_cluster_dir }}/pgbackrest/{{ item.key_name }}-ca.crt"
+    remote_src: true
+    owner: root
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0644"
+  loop: "{{ postgres_cluster_repos | selectattr('type', 'equalto', 's3') | rejectattr('ca_file', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.key_name }}"
+  when: postgres_cluster_backup_enabled | bool
+
+- name: Write the HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ postgres_cluster_dir }}/haproxy/haproxy.cfg"
+    owner: root
+    group: root
+    mode: "0644"
+  register: postgres_cluster_haproxy_config
+
+- name: Write the postgres_exporter environment (contains secrets)
+  ansible.builtin.template:
+    src: exporter.env.j2
+    dest: "{{ postgres_cluster_dir }}/exporter.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Write the postgres_exporter web configuration (TLS and basic auth)
+  ansible.builtin.include_role:
+    name: prometheus_web_config
+  vars:
+    prometheus_web_config_path: "{{ postgres_cluster_dir }}/exporter/web.yml"
+    prometheus_web_config_container_tls_dir: /etc/postgres_exporter/tls
+    prometheus_web_config_owner: "{{ postgres_cluster_exporter_uid }}"
+    prometheus_web_config_group: "{{ postgres_cluster_exporter_uid }}"
+    prometheus_web_config_users: "{{ {postgres_cluster_scrape_user: postgres_cluster_scrape_password} }}"
+  tags: [chk_log_05]

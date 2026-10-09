@@ -1,0 +1,28 @@
+{#- OpenBao database roles of this cluster: postgres-<cluster>-<db>-<owner|rw|ro>. -#}
+{%- macro seconds(v) -%}
+{%-   set s = v | string -%}
+{%-   set mult = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400} -%}
+{{-   (s[:-1] | int * mult[s[-1]]) if s[-1] in mult else (s | int) -}}
+{%- endmacro -%}
+{%- set out = [] -%}
+{%- for db in postgres_cluster_cfg.databases -%}
+{%-   for a in ['owner', 'rw', 'ro'] -%}
+{%-     set group = db.name ~ '_' ~ a -%}
+{%-     set create = ['CREATE ROLE "{{name}}" WITH LOGIN PASSWORD \'{{password}}\' VALID UNTIL \'{{expiration}}\' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;',
+                      'GRANT "' ~ group ~ '" TO "{{name}}";'] -%}
+{%-     if a == 'owner' -%}
+{%-       set _ = create.append('ALTER ROLE "{{name}}" SET role = \'' ~ group ~ '\';') -%}
+{%-     endif -%}
+{%-     set _ = out.append({
+          'name': postgres_cluster_metric_name ~ '-' ~ db.name ~ '-' ~ a,
+          'ttl_seconds': seconds(postgres_cluster_cfg.openbao.default_ttl) | int,
+          'max_ttl_seconds': seconds(postgres_cluster_cfg.openbao.max_ttl) | int,
+          'body': {
+            'db_name': postgres_cluster_metric_name,
+            'creation_statements': create,
+            'revocation_statements': ['REVOKE "' ~ group ~ '" FROM "{{name}}";', 'DROP ROLE IF EXISTS "{{name}}";'],
+            'default_ttl': seconds(postgres_cluster_cfg.openbao.default_ttl) | int,
+            'max_ttl': seconds(postgres_cluster_cfg.openbao.max_ttl) | int}}) -%}
+{%-   endfor -%}
+{%- endfor -%}
+{{ out | to_json }}

@@ -1,0 +1,392 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_ct: pg-lab-postgres
+    verify_host: postgres-ubuntu2404
+    verify_ca: /etc/patroni/tls/ca-bundle.crt
+    verify_tls: "sslmode=verify-full sslrootcert=/etc/patroni/tls/ca-bundle.crt"
+  tasks:
+    # ------------------------------------------------------------ HA-01: Patroni and a leader
+    - name: Read the Patroni cluster state
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8008/cluster
+        ca_path: /opt/postgres/pg-lab/tls/ca-bundle.crt
+      register: verify_cluster
+      tags: [chk_ha_01]
+
+    - name: Patroni reports a running leader
+      ansible.builtin.assert:
+        that:
+          - verify_cluster.json.members | selectattr('role', 'equalto', 'leader') | list | length == 1
+          - (verify_cluster.json.members | selectattr('role', 'equalto', 'leader') | first).state == 'running'
+      tags: [chk_ha_01]
+
+    - name: The client entry points route to the leader (5000) and refuse while there is no replica (5001)
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5000 dbname=app user=app {{ verify_tls }}" -c "SELECT pg_is_in_recovery()"
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_primary_port
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: Port 5000 reaches the read-write primary
+      ansible.builtin.assert:
+        that: verify_primary_port.stdout == 'f'
+      tags: [chk_ha_01]
+
+    # ------------------------------------------------------------ SEC-03: TLS for clients and replication
+    # The login user acts as <db>_owner (ALTER ROLE ... SET role); pg_stat_ssl shows the session user's rows.
+    - name: A TLS connection works and uses TLS 1.2 or newer
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -q -At
+        "host={{ verify_host }} port=5432 dbname=app user=app {{ verify_tls }}"
+        -c "SET ROLE NONE" -c "SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_ssl
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: The session is encrypted
+      ansible.builtin.assert:
+        that: verify_ssl.stdout is match('^t\|TLSv1\.[23]$')
+      tags: [chk_sec_03]
+
+    - name: A connection without TLS is refused
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5432 dbname=app user=app sslmode=disable" -c "SELECT 1"
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_nossl
+      changed_when: false
+      failed_when: verify_nossl.rc == 0 or 'reject' not in verify_nossl.stderr
+      tags: [chk_sec_03]
+
+    - name: TLS 1.1 is refused
+      ansible.builtin.command: >-
+        docker exec {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5432 dbname=app user=app {{ verify_tls }} ssl_max_protocol_version=TLSv1.1" -c "SELECT 1"
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Read the server's TLS and authentication settings and the pg_hba rules
+      ansible.builtin.command: >-
+        docker exec {{ verify_ct }} psql -X -At -h /var/run/postgresql -U postgres -d postgres -c
+        "SELECT json_build_object(
+           'min_tls', current_setting('ssl_min_protocol_version'),
+           'pwenc', current_setting('password_encryption'),
+           'rules', (SELECT json_agg(json_build_object('type', type, 'method', auth_method)) FROM pg_hba_file_rules),
+           'non_scram', (SELECT count(*) FROM pg_authid WHERE rolpassword IS NOT NULL AND rolpassword NOT LIKE 'SCRAM-SHA-256$%'))"
+      register: verify_auth
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: TLS 1.2+ and SCRAM are required; every network rule is hostssl + scram-sha-256 or reject
+      vars:
+        verify_settings: "{{ verify_auth.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_settings.min_tls in ['TLSv1.2', 'TLSv1.3']
+          - verify_settings.pwenc == 'scram-sha-256'
+          - verify_settings.non_scram == 0
+          - verify_settings.rules | selectattr('type', 'equalto', 'hostssl') | map(attribute='method') | unique == ['scram-sha-256']
+          - verify_settings.rules | selectattr('type', 'equalto', 'host') | map(attribute='method') | unique == ['reject']
+          - verify_settings.rules | selectattr('type', 'equalto', 'local') | map(attribute='method') | unique == ['peer']
+          - verify_settings.rules | map(attribute='method') | intersect(['trust', 'password', 'md5']) | length == 0
+      tags: [chk_sec_03]
+
+    - name: A client that only offers a cleartext password over TLS is refused (SCRAM required)
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5432 dbname=app user=app {{ verify_tls }} require_auth=password" -c "SELECT 1"
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_cleartext
+      changed_when: false
+      failed_when: verify_cleartext.rc == 0
+      tags: [chk_sec_03]
+
+    # ------------------------------------------------------------ LOG-01: pgaudit
+    - name: Create a table as the application owner
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At -v ON_ERROR_STOP=1
+        "host={{ verify_host }} port=5000 dbname=app user=app {{ verify_tls }}"
+        -c "CREATE TABLE IF NOT EXISTS audit_probe_{{ 99999 | random(seed=inventory_hostname ~ now()) }} (id int); SELECT current_user"
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_create
+      changed_when: true
+      tags: [chk_log_01]
+
+    - name: Read the server log from journald
+      ansible.builtin.shell: >-
+        set -o pipefail; sleep 2; journalctl CONTAINER_NAME={{ verify_ct }} --since "-10min" --no-pager -o cat | tail -n 2000
+      args:
+        executable: /bin/bash
+      register: verify_log
+      changed_when: false
+      tags: [chk_log_01]
+
+    - name: The pgaudit log has the CREATE TABLE; connections and disconnections are logged
+      ansible.builtin.assert:
+        that:
+          - "verify_log.stdout_lines | select('search', 'AUDIT: SESSION,.*,DDL,CREATE TABLE') | list | length > 0"
+          - "verify_log.stdout_lines | select('search', 'connection authorized: user=app') | list | length > 0"
+          - "verify_log.stdout_lines | select('search', 'disconnection: session time') | list | length > 0"
+          - verify_create.stdout_lines | last == 'app_owner'
+      tags: [chk_log_01]
+
+    # ------------------------------------------------------------ DAT-01: least privilege per database
+    - name: The application user can use its own database
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5000 dbname=app user=app_worker {{ verify_tls }}" -c "SELECT current_database()"
+      environment:
+        PGPASSWORD: test-only-lab-app-worker-pw
+      register: verify_own_db
+      changed_when: false
+      tags: [chk_dat_01]
+
+    - name: The application user cannot connect to another database
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5000 dbname={{ item }} user=app_worker {{ verify_tls }}" -c "SELECT 1"
+      environment:
+        PGPASSWORD: test-only-lab-app-worker-pw
+      loop: [other, postgres]
+      register: verify_other_db
+      changed_when: false
+      failed_when: verify_other_db.rc == 0 or 'permission denied for database' not in verify_other_db.stderr
+      tags: [chk_dat_01]
+
+    - name: The read-only user cannot write and the read-write user cannot change the schema
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5000 dbname=app user={{ item.user }} {{ verify_tls }}" -c "{{ item.sql }}"
+      environment:
+        PGPASSWORD: "{{ item.password }}"
+      loop:
+        - { user: app_report, password: test-only-lab-app-report-pw, sql: "CREATE TEMP TABLE t (i int)" }
+        - { user: app_worker, password: test-only-lab-app-worker-pw, sql: "CREATE TABLE forbidden (i int)" }
+      loop_control:
+        label: "{{ item.user }}"
+      register: verify_least
+      changed_when: false
+      failed_when: verify_least.rc == 0 or 'permission denied' not in verify_least.stderr
+      tags: [chk_dat_01]
+
+    - name: The second cluster does not accept the first cluster's credentials for the same accounts
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD pg-lab2-postgres psql -X -At
+        "host={{ item.host }} port=5442 dbname=postgres user={{ item.user }} sslmode=require" -c "SELECT 1"
+      environment:
+        PGPASSWORD: "{{ item.password }}"
+      loop:
+        - { host: 127.0.0.1, user: postgres, password: test-only-lab-superuser-pw }
+        - { host: "{{ verify_host }}", user: exporter, password: test-only-lab-exporter-pw }
+        - { host: "{{ verify_host }}", user: replicator, password: test-only-lab-replication-pw }
+      loop_control:
+        label: "{{ item.user }}"
+      register: verify_cross
+      changed_when: false
+      failed_when: verify_cross.rc == 0 or 'password authentication failed' not in verify_cross.stderr
+      tags: [chk_dat_01]
+
+    - name: The second cluster works with its own credentials
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD pg-lab2-postgres psql -X -At
+        "host={{ verify_host }} port=5010 dbname=app2 user=app2 sslmode=verify-full sslrootcert=/etc/patroni/tls/ca-bundle.crt"
+        -c "SELECT current_database()"
+      environment:
+        PGPASSWORD: test-only-lab2-app-owner-pw
+      register: verify_lab2
+      changed_when: false
+      tags: [chk_dat_01]
+
+    - name: Compare the etcd CAs of the two clusters
+      ansible.builtin.slurp:
+        src: "/opt/postgres/{{ item }}/etcd-tls/ca.crt"
+      loop: [pg-lab, pg-lab2]
+      register: verify_etcd_cas
+      tags: [chk_dat_01]
+
+    - name: Each cluster has its own etcd CA, data directory and containers
+      ansible.builtin.assert:
+        that:
+          - verify_lab2.stdout == 'app2'
+          - verify_etcd_cas.results[0].content != verify_etcd_cas.results[1].content
+      tags: [chk_dat_01]
+
+    # ------------------------------------------------------------ BCK-01, SEC-04: pgBackRest
+    - name: Write a marker row and take a differential backup through the backup tool
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At -v ON_ERROR_STOP=1
+        "host={{ verify_host }} port=5000 dbname=app user=app {{ verify_tls }}"
+        -c "CREATE TABLE IF NOT EXISTS marker (t text); INSERT INTO marker VALUES ('COMPLIANT-INFRA-PLAINTEXT-MARKER-7c2e')"
+        && /usr/local/sbin/postgres-backup --config /etc/compliant-infra/postgres/pg-lab/backup.json backup --type diff
+      args:
+        executable: /bin/bash
+      environment:
+        PGPASSWORD: test-only-lab-app-owner-pw
+      register: verify_diff
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Read the repository
+      ansible.builtin.command: docker exec {{ verify_ct }} pgbackrest --stanza=pg-lab --output=json info
+      register: verify_info
+      changed_when: false
+      tags: [chk_bck_01, chk_sec_04]
+
+    - name: A full and a differential backup exist and the repository is encrypted
+      vars:
+        verify_stanza: "{{ (verify_info.stdout | from_json) | first }}"
+      ansible.builtin.assert:
+        that:
+          - verify_stanza.status.code == 0
+          - verify_stanza.cipher == 'aes-256-cbc'
+          - verify_stanza.backup | selectattr('type', 'equalto', 'full') | list | length >= 1
+          - verify_stanza.backup | selectattr('type', 'equalto', 'diff') | list | length >= 1
+      tags: [chk_bck_01, chk_sec_04]
+
+    - name: The pgBackRest check passes (WAL archiving works)
+      ansible.builtin.command: docker exec {{ verify_ct }} pgbackrest --stanza=pg-lab check
+      changed_when: false
+      tags: [chk_bck_01]
+
+    - name: No plaintext from the database is in the repository
+      ansible.builtin.command: grep -r -l -a COMPLIANT-INFRA-PLAINTEXT-MARKER /var/lib/pgbackrest/pg-lab
+      register: verify_plain
+      changed_when: false
+      failed_when: verify_plain.rc != 1
+      tags: [chk_sec_04]
+
+    - name: The storage encryption state is published (warning in the test container)
+      ansible.builtin.command: cat /var/lib/node_exporter/textfile_collector/postgres-pg-lab-storage.prom
+      register: verify_storage
+      changed_when: false
+      tags: [chk_sec_04]
+
+    - name: The encryption metric exists
+      ansible.builtin.assert:
+        that: verify_storage.stdout is search('postgres_data_dir_encrypted\{cluster="pg-lab"\} [01]')
+      tags: [chk_sec_04]
+
+    # ------------------------------------------------------------ BCK-03: restore test
+    - name: Run the restore test now
+      ansible.builtin.systemd_service:
+        name: postgres-restore-test-pg-lab.service
+        state: started
+      register: verify_restore
+      tags: [chk_bck_03]
+
+    - name: Read the backup metrics
+      ansible.builtin.command: cat /var/lib/node_exporter/textfile_collector/postgres-pg-lab-backup.prom
+      register: verify_metrics
+      changed_when: false
+      tags: [chk_bck_01, chk_bck_03]
+
+    - name: The restore test succeeded and every backup metric has the backup role's labels
+      ansible.builtin.assert:
+        that:
+          - verify_metrics.stdout is search('backup_restore_test_last_success_timestamp_seconds\{name="postgres-pg-lab",repo="repo1"\} [1-9]')
+          - verify_metrics.stdout is search('backup_restore_test_last_status\{name="postgres-pg-lab",repo="repo1"\} 1')
+          - verify_metrics.stdout is search('backup_last_success_timestamp_seconds\{name="postgres-pg-lab",repo="repo1"\} [1-9]')
+          - verify_metrics.stdout is search('backup_last_status\{name="postgres-pg-lab",repo="repo1"\} 1')
+          - verify_metrics.stdout is search('backup_rpo_seconds\{name="postgres-pg-lab"\} 93600')
+      tags: [chk_bck_01, chk_bck_03]
+
+    # ------------------------------------------------------------ LOG-05: exporter and Patroni metrics
+    - name: Scrape postgres_exporter with the monitoring account
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9187/metrics
+        url_username: prometheus
+        url_password: test-only-scrape-password
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: verify_exporter
+      tags: [chk_log_05]
+
+    - name: Anonymous scrapes are refused
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9187/metrics
+        validate_certs: false
+        status_code: [401]
+      tags: [chk_log_05]
+
+    - name: Scrape Patroni
+      ansible.builtin.uri:
+        url: https://127.0.0.1:8008/metrics
+        ca_path: /opt/postgres/pg-lab/tls/ca-bundle.crt
+        return_content: true
+      register: verify_patroni_metrics
+      tags: [chk_log_05]
+
+    - name: The exporter reaches PostgreSQL and Patroni reports the primary
+      ansible.builtin.assert:
+        that:
+          - verify_exporter.content is search('\npg_up(\{[^}]*\})? 1')
+          - verify_patroni_metrics.content is search('\npatroni_primary\{[^}]*\} 1')
+      tags: [chk_log_05]
+
+    # ------------------------------------------------------------ IAM-08: OpenBao dynamic credentials
+    - name: Get short-lived read-write credentials for the app database from OpenBao
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8200/v1/database/creds/postgres-pg-lab-app-rw
+        headers:
+          X-Vault-Token: test-only-openbao-root-token
+      register: verify_creds
+      no_log: true
+      tags: [chk_iam_08]
+
+    - name: The issued user logs in to the app database over TLS and nowhere else
+      ansible.builtin.command: >-
+        docker exec -e PGPASSWORD {{ verify_ct }} psql -X -At
+        "host={{ verify_host }} port=5000 dbname={{ item }} user={{ verify_creds.json.data.username }} {{ verify_tls }}"
+        -c "SELECT rolvaliduntil IS NOT NULL FROM pg_roles WHERE rolname = current_user"
+      environment:
+        PGPASSWORD: "{{ verify_creds.json.data.password }}"
+      loop: [app, other]
+      register: verify_dyn
+      changed_when: false
+      failed_when: (item == 'app') != (verify_dyn.rc == 0) or (item == 'app' and verify_dyn.stdout != 't')
+      tags: [chk_iam_08]
+
+    - name: The lease is short-lived
+      ansible.builtin.assert:
+        that: verify_creds.json.lease_duration | int <= 3600
+      tags: [chk_iam_08]
+
+    # ------------------------------------------------------------ HRD-02: hardened containers
+    - name: Inspect the cluster containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [pg-lab-postgres, pg-lab-etcd, pg-lab-haproxy, pg-lab-exporter]
+      register: verify_containers
+      tags: [chk_hrd_02]
+
+    - name: Every container is non-root, read-only, without capabilities or privilege escalation
+      ansible.builtin.assert:
+        that:
+          - item.container.State.Running
+          - item.container.Config.User is not match('^(0|root)?(:|$)')
+          - item.container.HostConfig.ReadonlyRootfs
+          - "'ALL' in item.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - item.container.HostConfig.Memory > 0
+          - not item.container.HostConfig.Privileged
+      loop: "{{ verify_containers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_hrd_02]

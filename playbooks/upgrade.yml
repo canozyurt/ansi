@@ -112,3 +112,21 @@
   max_fail_percentage: 0
   roles:
     - role: forgejo_runner
+
+- name: Upgrade the PostgreSQL clusters (minor versions; replicas first, then a switchover)
+  hosts: postgres
+  become: true
+  max_fail_percentage: 0
+  vars:
+    # Each cluster's first node takes a differential backup, then replaces one member at a time:
+    # replicas first, a switchover away from the leader, then the former leader (CHG-07, HA-01).
+    postgres_cluster_upgrade: true
+  tasks:
+    - name: Upgrade each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: postgres_cluster
+      loop: "{{ postgres_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: postgres_cluster
+        label: "{{ postgres_cluster.name }}"
+      tags: [chk_chg_07]

@@ -1,0 +1,18 @@
+{#- pg_hba.conf lines (first match wins). Every network line is hostssl + scram-sha-256; the only
+    other accepted line is the superuser over the container's private Unix socket (peer), which
+    pgBackRest needs. Everything else is rejected explicitly. -#}
+{%- set members = postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_member_ip') | map('regex_replace', '$', '/32') | unique | list -%}
+{%- set lines = [
+  'local all postgres peer',
+  'hostssl all postgres 127.0.0.1/32 scram-sha-256',
+  'host all postgres all reject'] -%}
+{%- for m in members -%}
+{%-   set _ = lines.append('hostssl replication replicator ' ~ m ~ ' scram-sha-256') -%}
+{%- endfor -%}
+{%- set _ = lines.append('host replication all all reject') -%}
+{%- set _ = lines.append('hostssl all all 127.0.0.1/32 scram-sha-256') -%}
+{%- for m in members + (postgres_cluster_cfg.hba_extra_cidrs | default([])) -%}
+{%-   set _ = lines.append('hostssl all all ' ~ m ~ ' scram-sha-256') -%}
+{%- endfor -%}
+{%- set _ = lines.append('host all all all reject') -%}
+{{ lines | to_json }}

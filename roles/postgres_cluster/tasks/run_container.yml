@@ -1,0 +1,31 @@
+---
+# Runs one container of the cluster from its specification (postgres_cluster_spec). Used for the first start, for
+# check-mode comparisons and, delegated to another member, by the rolling replacement.
+- name: Run container {{ postgres_cluster_spec.name }}
+  community.docker.docker_container:
+    name: "{{ postgres_cluster_spec.name }}"
+    image: "{{ postgres_cluster_spec.image }}"
+    command: "{{ postgres_cluster_spec.command | default(omit) }}"
+    user: "{{ postgres_cluster_spec.user }}"
+    network_mode: host
+    env_file: "{{ postgres_cluster_spec.env_file | default(omit) }}"
+    volumes: "{{ postgres_cluster_spec.volumes }}"
+    tmpfs: "{{ postgres_cluster_spec.tmpfs | default(omit) }}"
+    read_only: true
+    memory: "{{ postgres_cluster_spec.memory }}"
+    memory_swap: "{{ postgres_cluster_spec.memory }}"
+    shm_size: "{{ postgres_cluster_spec.shm_size | default(omit) }}"
+    pids_limit: "{{ postgres_cluster_spec.pids | default(256) }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    restart_policy: unless-stopped
+    stop_timeout: "{{ postgres_cluster_spec.stop_timeout | default(30) }}"
+    labels:
+      com.compliant-infra.role: postgres_cluster
+      com.compliant-infra.cluster: "{{ postgres_cluster_cfg.name }}"
+    state: started
+    restart: "{{ postgres_cluster_restart | default(false) | bool }}"
+  delegate_to: "{{ postgres_cluster_target | default(inventory_hostname) }}"
+  check_mode: "{{ postgres_cluster_check | default(false) | bool }}"
+  register: postgres_cluster_run
+  tags: [chk_hrd_02]

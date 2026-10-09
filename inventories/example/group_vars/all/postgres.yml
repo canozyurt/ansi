@@ -1,0 +1,44 @@
+---
+# PostgreSQL clusters (playbooks/postgres.yml, docs/product-playbooks.md). Every entry is an
+# independent cluster with its own inventory group, ports, containers, data directories, etcd,
+# certificates, credentials and backups. Defined for all hosts because monitoring derives its scrape
+# targets from this list. Secrets come from Ansible Vault (or OpenBao lookups); no two clusters may
+# share one (DAT-01, checked by the role).
+postgres_clusters:
+  - name: pg-main
+    group: pg_main
+    # ports: { postgres: 5432, patroni: 8008, primary: 5000, replicas: 5001, etcd_client: 2379, etcd_peer: 2380, exporter: 9187 }
+    superuser_password: "{{ vault_pg_main_superuser_password }}"
+    replication_password: "{{ vault_pg_main_replication_password }}"
+    rewind_password: "{{ vault_pg_main_rewind_password }}"
+    patroni_api_password: "{{ vault_pg_main_patroni_api_password }}"
+    exporter_password: "{{ vault_pg_main_exporter_password }}"
+    client_cidrs: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"]
+    resources: { memory: 8g, shm_size: 1g }
+    parameters:
+      max_connections: 300
+      shared_buffers: 2GB
+      effective_cache_size: 6GB
+    databases:
+      # Keycloak's database (keycloak_db_host: data-1.example.internal,data-2...,data-3... port 5000).
+      - name: keycloak
+        users:
+          - { name: keycloak, password: "{{ vault_pg_main_keycloak_password }}", access: owner }
+    backup:
+      cipher_pass: "{{ vault_pg_main_backup_cipher_pass }}"
+      # Off-site, encrypted repository on S3-compatible storage (enable versioning/Object Lock on the
+      # bucket). A second repository can be a posix path mounted from the backup servers' storage.
+      repos:
+        - { type: s3 }
+      # - { type: posix, path: /mnt/backup-nfs/pgbackrest }
+    # Short-lived application credentials from OpenBao (IAM-08): database/creds/postgres-pg-main-<db>-<owner|rw|ro>.
+    openbao:
+      enabled: true
+      admin_password: "{{ vault_pg_main_openbao_admin_password }}"
+
+# S3-compatible storage for pgBackRest repositories of type s3 (each cluster stores under /<name>).
+postgres_backup_s3_endpoint: s3.example.internal
+postgres_backup_s3_region: us-east-1
+postgres_backup_s3_bucket: pgbackrest
+postgres_backup_s3_key: "{{ vault_postgres_backup_s3_key }}"
+postgres_backup_s3_key_secret: "{{ vault_postgres_backup_s3_key_secret }}"

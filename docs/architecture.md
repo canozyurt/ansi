@@ -245,6 +245,22 @@ Operator workflow: [docs/access.md](access.md).
   RPO 24 h, RTO 4 h.
 ```
 
+## PostgreSQL (product playbook)
+- `playbooks/postgres.yml` deploys every entry of `postgres_clusters`; each is an independent cluster on its own
+  inventory group (3 nodes; 1 only with `postgres_cluster_allow_single_node`). Pattern documented in docs/product-playbooks.md.
+- Image built on each host from a pinned recipe: ubuntu:26.04 (date tag) + exact Ubuntu packages (PostgreSQL 18, pgaudit,
+  pgBackRest, python3-etcd) + Patroni 4.1.5 wheel checked by SHA-256. No trustworthy maintained PG18+Patroni image exists.
+- Patroni with a 3-member etcd v3 per cluster (mutual TLS, per-cluster CA) on the same hosts; Patroni Raft mode is deprecated.
+- HAProxy on every node: 5000 -> leader (Patroni /primary), 5001 -> replicas (/replica); TLS passthrough to PostgreSQL.
+- TLS 1.2+ for clients and replication (tls_cert); pg_hba only hostssl + scram-sha-256 (plus local peer for postgres), everything else reject.
+- pgaudit (DDL, role) and connection logging to journald; Patroni/etcd JSON logs.
+- Per database: <db>_owner/_rw/_ro group roles, login users from the inventory; optional OpenBao database engine issues 1-hour users.
+- pgBackRest: WAL archiving, weekly full, daily diff, aes-256-cbc repos (posix or S3), monthly restore test into a scratch container;
+  metrics under the backup role's names.
+- Minor versions roll through playbooks/upgrade.yml (diff backup, replicas, switchover, old leader); majors via logical replication
+  into a new instance (playbooks/postgres_major_upgrade.yml, runbook).
+- Data at rest: LUKS on the data volume is a host prerequisite; the role checks for dm-crypt and warns/fails.
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

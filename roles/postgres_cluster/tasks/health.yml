@@ -1,0 +1,29 @@
+---
+# Waits until this member's PostgreSQL runs under Patroni and the cluster has a leader. Used after
+# deployment, by playbooks/upgrade.yml and playbooks/rolling_reboot.yml (tasks_from: health with
+# postgres_cluster set to the cluster entry).
+- name: Wait until PostgreSQL on this member runs ({{ postgres_cluster_cfg.name | default(postgres_cluster.name) }})
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/health"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  register: postgres_cluster_health
+  until: postgres_cluster_health.status == 200
+  retries: 60
+  delay: 5
+  tags: [chk_ha_01, chk_log_05]
+
+- name: Wait until the cluster has a leader
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/cluster"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  register: postgres_cluster_cluster
+  until: postgres_cluster_cluster.json.members | default([]) | selectattr('role', 'equalto', 'leader') | list | length == 1
+  retries: 60
+  delay: 5
+  tags: [chk_ha_01]
+
+- name: Note whether this member leads
+  ansible.builtin.set_fact:
+    postgres_cluster_is_leader: >-
+      {{ postgres_cluster_cluster.json.members | selectattr('role', 'equalto', 'leader') | map(attribute='name') | first == inventory_hostname }}
+    postgres_cluster_leader: "{{ postgres_cluster_cluster.json.members | selectattr('role', 'equalto', 'leader') | map(attribute='name') | first }}"

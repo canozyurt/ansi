@@ -1,0 +1,11 @@
+---
+# Entry point for other playbooks (rolling_reboot.yml, upgrade.yml preflight):
+#   include_role: { name: postgres_cluster, tasks_from: health_entry }  with postgres_cluster set.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    postgres_cluster_cfg: "{{ postgres_cluster_defaults | combine(postgres_cluster, recursive=true) }}"
+    postgres_cluster_dir: "{{ postgres_cluster_base_dir }}/{{ postgres_cluster.name }}"
+  no_log: true
+
+- name: Wait for the member and the leader
+  ansible.builtin.import_tasks: health.yml

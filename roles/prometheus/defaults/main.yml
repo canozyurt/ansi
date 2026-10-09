@@ -66,7 +66,8 @@ prometheus_scrape_catalog:
   - { name: status_page, group: status_page, port: 8444, path: /metrics, scheme: https }
   # CISO Assistant through its TLS terminator, which allows /metrics/ from monitoring networks only.
   - { name: grc, group: grc, port: 8443, path: /metrics/, scheme: https }
-# Entries for services outside this list, same format.
+# Entries for services outside this list, same format. Service-specific entries go in
+# prometheus_scrape_extra_<service> variables, which are all collected (see vars/main.yml).
 prometheus_scrape_extra: []
 
 # Extra endpoints for the TLS certificate probes (SEC-05): "host:port" strings or

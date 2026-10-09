@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=PostgreSQL cluster {{ postgres_cluster_cfg.name }}: {{ {'full': 'weekly full backup', 'diff': 'daily differential backup', 'metrics': 'backup metrics', 'restore-test': 'monthly restore test'}[postgres_cluster_unit_type] }}
+Wants=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+{% if postgres_cluster_unit_type in ['full', 'diff'] %}
+ExecStart=/usr/local/sbin/postgres-backup --config /etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json backup --type {{ postgres_cluster_unit_type }}
+{% else %}
+ExecStart=/usr/local/sbin/postgres-backup --config /etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json {{ postgres_cluster_unit_type }}
+{% endif %}
+SyslogIdentifier=postgres-backup-{{ postgres_cluster_cfg.name }}
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+TimeoutStartSec={{ '24h' if postgres_cluster_unit_type != 'metrics' else '5min' }}

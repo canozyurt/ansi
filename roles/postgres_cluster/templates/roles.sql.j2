@@ -1,0 +1,162 @@
+{#- Roles, databases and privileges of cluster {{ postgres_cluster_cfg.name }}. Runs on the leader through psql as
+    the superuser over the container's Unix socket. Passwords arrive as SCRAM verifiers computed on the
+    host, so no plaintext password reaches the server or its logs. Every change prints CHANGED. -#}
+\set ON_ERROR_STOP on
+SET client_min_messages = warning;
+SET pgaudit.log = 'none';
+
+CREATE FUNCTION pg_temp.ensure_role(r text, login bool, superuser bool, createrole bool, replication bool,
+                                    verifier text, initial_only bool, groups text[], managed text[], set_role text)
+RETURNS void LANGUAGE plpgsql AS $fn$
+DECLARE
+  cur pg_authid%ROWTYPE;
+  g text;
+  want_cfg text := CASE WHEN set_role IS NULL THEN NULL ELSE 'role=' || set_role END;
+  have_cfg text;
+BEGIN
+  SELECT * INTO cur FROM pg_authid WHERE rolname = r;
+  IF NOT FOUND THEN
+    EXECUTE format('CREATE ROLE %I', r);
+    RAISE WARNING 'CHANGED: created role %', r;
+    SELECT * INTO cur FROM pg_authid WHERE rolname = r;
+  END IF;
+  IF cur.rolcanlogin IS DISTINCT FROM login OR cur.rolsuper IS DISTINCT FROM superuser
+     OR cur.rolcreaterole IS DISTINCT FROM createrole OR cur.rolreplication IS DISTINCT FROM replication
+     OR cur.rolcreatedb OR cur.rolbypassrls OR NOT cur.rolinherit THEN
+    EXECUTE format('ALTER ROLE %I WITH %s %s %s %s NOCREATEDB NOBYPASSRLS INHERIT', r,
+                   CASE WHEN login THEN 'LOGIN' ELSE 'NOLOGIN' END,
+                   CASE WHEN superuser THEN 'SUPERUSER' ELSE 'NOSUPERUSER' END,
+                   CASE WHEN createrole THEN 'CREATEROLE' ELSE 'NOCREATEROLE' END,
+                   CASE WHEN replication THEN 'REPLICATION' ELSE 'NOREPLICATION' END);
+    RAISE WARNING 'CHANGED: attributes of role %', r;
+  END IF;
+  IF verifier IS NOT NULL AND cur.rolpassword IS DISTINCT FROM verifier
+     AND NOT (initial_only AND cur.rolpassword IS NOT NULL) THEN
+    EXECUTE format('ALTER ROLE %I PASSWORD %L', r, verifier);
+    RAISE WARNING 'CHANGED: password of role %', r;
+  END IF;
+  IF verifier IS NULL AND login IS FALSE AND cur.rolpassword IS NOT NULL THEN
+    EXECUTE format('ALTER ROLE %I PASSWORD NULL', r);
+    RAISE WARNING 'CHANGED: removed the password of group role %', r;
+  END IF;
+  FOREACH g IN ARRAY groups LOOP
+    IF NOT EXISTS (
+         SELECT FROM pg_auth_members m JOIN pg_roles gr ON gr.oid = m.roleid JOIN pg_roles mr ON mr.oid = m.member
+         WHERE gr.rolname = g AND mr.rolname = r) THEN
+      EXECUTE format('GRANT %I TO %I', g, r);
+      RAISE WARNING 'CHANGED: granted % to %', g, r;
+    END IF;
+  END LOOP;
+  FOR g IN SELECT gr.rolname FROM pg_auth_members m JOIN pg_roles gr ON gr.oid = m.roleid
+           JOIN pg_roles mr ON mr.oid = m.member
+           WHERE mr.rolname = r AND gr.rolname = ANY(managed) AND NOT gr.rolname = ANY(groups) LOOP
+    EXECUTE format('REVOKE %I FROM %I', g, r);
+    RAISE WARNING 'CHANGED: revoked % from %', g, r;
+  END LOOP;
+  SELECT c INTO have_cfg FROM pg_db_role_setting s, unnest(s.setconfig) c
+   WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = r) AND s.setdatabase = 0 AND c LIKE 'role=%';
+  IF have_cfg IS DISTINCT FROM want_cfg THEN
+    IF want_cfg IS NULL THEN
+      EXECUTE format('ALTER ROLE %I RESET role', r);
+    ELSE
+      EXECUTE format('ALTER ROLE %I SET role = %L', r, set_role);
+    END IF;
+    RAISE WARNING 'CHANGED: default role of %', r;
+  END IF;
+END
+$fn$;
+
+CREATE FUNCTION pg_temp.ensure_admin_option(g text, r text) RETURNS void LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles gr ON gr.oid = m.roleid JOIN pg_roles mr ON mr.oid = m.member
+                 WHERE gr.rolname = g AND mr.rolname = r AND m.admin_option) THEN
+    EXECUTE format('GRANT %I TO %I WITH ADMIN OPTION', g, r);
+    RAISE WARNING 'CHANGED: % may grant %', r, g;
+  END IF;
+END
+$fn$;
+
+{% set managed = [] %}
+{% for db in postgres_cluster_cfg.databases %}{% for a in ['owner', 'rw', 'ro'] %}{% set _ = managed.append(db.name ~ '_' ~ a) %}{% endfor %}{% endfor %}
+{% macro arr(items) %}ARRAY[{% for i in items %}{{ i | to_json | regex_replace('^"|"$', "'") }}{{ ', ' if not loop.last }}{% endfor %}]::text[]{% endmacro %}
+{% macro lit(v) %}{% if v is none %}NULL{% else %}'{{ v | replace("'", "''") }}'{% endif %}{% endmacro %}
+
+-- Service accounts
+SELECT pg_temp.ensure_role('postgres', true, true, true, true, {{ lit(postgres_cluster_verifiers.postgres) }}, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT pg_temp.ensure_role('replicator', true, false, false, true, {{ lit(postgres_cluster_verifiers.replicator) }}, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT pg_temp.ensure_role('rewind_user', true, false, false, false, {{ lit(postgres_cluster_verifiers.rewind_user) }}, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT pg_temp.ensure_role('exporter', true, false, false, false, {{ lit(postgres_cluster_verifiers.exporter) }}, false, ARRAY['pg_monitor']::text[], ARRAY[]::text[], NULL);
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO rewind_user;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text, boolean) TO rewind_user;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO rewind_user;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO rewind_user;
+
+-- Only members of a database's roles may connect to it (DAT-01). pgaudit is off for this
+-- automation session so that no password verifier reaches the log; every change is logged as a
+-- CHANGED warning instead.
+REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT, TEMPORARY ON DATABASE template1 FROM PUBLIC;
+GRANT CONNECT ON DATABASE postgres TO exporter, rewind_user;
+
+{% for db in postgres_cluster_cfg.databases %}
+-- Database {{ db.name }}: group roles <db>_owner (DDL), <db>_rw (DML) and <db>_ro (read)
+SELECT pg_temp.ensure_role('{{ db.name }}_owner', false, false, false, false, NULL, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT pg_temp.ensure_role('{{ db.name }}_rw', false, false, false, false, NULL, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT pg_temp.ensure_role('{{ db.name }}_ro', false, false, false, false, NULL, false, ARRAY[]::text[], ARRAY[]::text[], NULL);
+SELECT 'CHANGED: created database {{ db.name }}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ db.name }}');
+SELECT format('CREATE DATABASE %I OWNER %I TEMPLATE template1', '{{ db.name }}', '{{ db.name }}_owner')
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ db.name }}') \gexec
+SELECT 'CHANGED: owner of database {{ db.name }}' FROM pg_database
+ WHERE datname = '{{ db.name }}' AND pg_get_userbyid(datdba) <> '{{ db.name }}_owner';
+SELECT format('ALTER DATABASE %I OWNER TO %I', '{{ db.name }}', '{{ db.name }}_owner') FROM pg_database
+ WHERE datname = '{{ db.name }}' AND pg_get_userbyid(datdba) <> '{{ db.name }}_owner' \gexec
+REVOKE CONNECT, TEMPORARY ON DATABASE "{{ db.name }}" FROM PUBLIC;
+GRANT CONNECT, TEMPORARY ON DATABASE "{{ db.name }}" TO "{{ db.name }}_owner", "{{ db.name }}_rw";
+GRANT CONNECT ON DATABASE "{{ db.name }}" TO "{{ db.name }}_ro";
+{%   for u in db.users | default([]) %}
+SELECT pg_temp.ensure_role('{{ u.name }}', true, false, false, false, {{ lit(postgres_cluster_verifiers[u.name]) }}, false,
+       ARRAY['{{ db.name }}_{{ u.access }}']::text[], {{ arr(managed) }},
+       {{ lit(db.name ~ '_owner' if u.access == 'owner' else none) }});
+{%   endfor %}
+{% endfor %}
+
+{% if postgres_cluster_cfg.openbao.enabled | bool %}
+-- OpenBao creates short-lived members of the database roles (IAM-08). Its password is set once;
+-- OpenBao rotates it right away, so only OpenBao knows it afterwards.
+SELECT pg_temp.ensure_role('{{ postgres_cluster_openbao_admin_user }}', true, false, true, false, {{ lit(postgres_cluster_verifiers[postgres_cluster_openbao_admin_user]) }}, true,
+       ARRAY[]::text[], ARRAY[]::text[], NULL);
+GRANT CONNECT ON DATABASE postgres TO "{{ postgres_cluster_openbao_admin_user }}";
+{%   for db in postgres_cluster_cfg.databases %}{% for a in ['owner', 'rw', 'ro'] %}
+SELECT pg_temp.ensure_admin_option('{{ db.name }}_{{ a }}', '{{ postgres_cluster_openbao_admin_user }}');
+{%   endfor %}{% endfor %}
+{% endif %}
+
+\connect template1
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pgaudit;
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+\connect postgres
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pgaudit;
+
+{% for db in postgres_cluster_cfg.databases %}
+\connect "{{ db.name }}"
+SET client_min_messages = warning;
+SET pgaudit.log = 'none';
+CREATE EXTENSION IF NOT EXISTS pgaudit;
+{%   for ext in db.extensions | default([]) %}
+CREATE EXTENSION IF NOT EXISTS "{{ ext }}";
+{%   endfor %}
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO "{{ db.name }}_owner";
+GRANT USAGE ON SCHEMA public TO "{{ db.name }}_rw", "{{ db.name }}_ro";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{{ db.name }}_rw";
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{{ db.name }}_rw";
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{{ db.name }}_ro";
+ALTER DEFAULT PRIVILEGES FOR ROLE "{{ db.name }}_owner" IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{{ db.name }}_rw";
+ALTER DEFAULT PRIVILEGES FOR ROLE "{{ db.name }}_owner" IN SCHEMA public
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "{{ db.name }}_rw";
+ALTER DEFAULT PRIVILEGES FOR ROLE "{{ db.name }}_owner" IN SCHEMA public
+  GRANT SELECT ON TABLES TO "{{ db.name }}_ro";
+{% endfor %}

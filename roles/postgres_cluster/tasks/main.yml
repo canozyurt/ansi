@@ -1,0 +1,67 @@
+---
+# Deploys one cluster (postgres_cluster, an entry of postgres_clusters) on this host.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    postgres_cluster_cfg: "{{ postgres_cluster_defaults | combine(postgres_cluster, recursive=true) }}"
+  no_log: true
+
+- name: Work out the cluster layout
+  ansible.builtin.set_fact:
+    postgres_cluster_hosts: "{{ groups[postgres_cluster_cfg.group] | default([]) }}"
+    postgres_cluster_first: "{{ (groups[postgres_cluster_cfg.group] | default([inventory_hostname])) | first }}"
+    postgres_cluster_dir: "{{ postgres_cluster_base_dir }}/{{ postgres_cluster_cfg.name }}"
+    postgres_cluster_data_dir: >-
+      {{ postgres_cluster_cfg.data_dir | default('', true)
+         or (postgres_cluster_base_dir ~ '/' ~ postgres_cluster_cfg.name ~ '/data') }}
+    postgres_cluster_ct:
+      patroni: "{{ postgres_cluster_cfg.name }}-postgres"
+      etcd: "{{ postgres_cluster_cfg.name }}-etcd"
+      haproxy: "{{ postgres_cluster_cfg.name }}-haproxy"
+      exporter: "{{ postgres_cluster_cfg.name }}-exporter"
+    postgres_cluster_metric_name: "postgres-{{ postgres_cluster_cfg.name }}"
+    # A prebuilt image and major version per entry, used by a major upgrade's target cluster.
+    postgres_cluster_server_image: "{{ postgres_cluster_cfg.image | default('', true) or postgres_cluster_image }}"
+    postgres_cluster_pg_major: "{{ postgres_cluster_cfg.pg_major | default(versions_postgres.major, true) }}"
+    postgres_cluster_member_ip: "{{ postgres_cluster_node_ip }}"
+    postgres_cluster_member_address: "{{ postgres_cluster_node_address }}"
+    postgres_cluster_openbao_admin_user: >-
+      {{ postgres_cluster_cfg.openbao.admin_user | default('', true)
+         or ('openbao_' ~ (postgres_cluster_cfg.name | replace('-', '_'))) }}
+    postgres_cluster_backup_enabled: "{{ postgres_cluster_cfg.backup.enabled | bool }}"
+
+- name: Work out the backup repositories
+  ansible.builtin.set_fact:
+    postgres_cluster_repos: "{{ query('ansible.builtin.template', 'repos.json.j2') | first | from_json }}"
+  no_log: true
+
+- name: Check the cluster settings
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Check that the data directory is on encrypted storage
+  ansible.builtin.import_tasks: encryption.yml
+
+- name: Build or pull the images
+  ansible.builtin.import_tasks: image.yml
+
+- name: Issue the certificates
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Write the configuration
+  ansible.builtin.import_tasks: config.yml
+
+- name: Start or roll the containers
+  ansible.builtin.import_tasks: containers.yml
+
+- name: Wait for the cluster to have a leader
+  ansible.builtin.import_tasks: health.yml
+
+- name: Reconcile the cluster-wide settings, roles and databases
+  ansible.builtin.import_tasks: database.yml
+
+- name: Configure backups, WAL archiving and restore tests
+  ansible.builtin.import_tasks: backup.yml
+  when: postgres_cluster_backup_enabled | bool
+
+- name: Configure short-lived credentials in OpenBao
+  ansible.builtin.import_tasks: openbao.yml
+  when: postgres_cluster_cfg.openbao.enabled | bool

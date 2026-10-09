@@ -1,0 +1,104 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Pull the etcd, HAProxy and postgres_exporter images
+  community.docker.docker_image:
+    name: "{{ item }}"
+    source: pull
+  loop:
+    - "{{ postgres_cluster_etcd_image }}"
+    - "{{ postgres_cluster_haproxy_image }}"
+    - "{{ postgres_cluster_exporter_image }}"
+  tags: [chk_chg_05]
+
+- name: Pull the prebuilt server image
+  community.docker.docker_image:
+    name: "{{ postgres_cluster_server_image }}"
+    source: pull
+  when: not postgres_cluster_image_build | bool or postgres_cluster_server_image != postgres_cluster_image
+  tags: [chk_chg_05]
+
+# Built once per host and shared by every cluster on it; the tag changes with any input of the recipe.
+- name: Build the server image from the pinned recipe
+  when: postgres_cluster_image_build | bool
+  tags: [chk_chg_05]
+  block:
+    - name: Check whether the image already exists
+      community.docker.docker_image_info:
+        name: "{{ postgres_cluster_image }}"
+      register: postgres_cluster_image_info
+
+    - name: Create the build directory
+      ansible.builtin.file:
+        path: "{{ postgres_cluster_build_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: postgres_cluster_image_info.images | length == 0
+
+    - name: Write the build recipe
+      ansible.builtin.copy:
+        src: Dockerfile
+        dest: "{{ postgres_cluster_build_dir }}/Dockerfile"
+        owner: root
+        group: root
+        mode: "0644"
+      when: postgres_cluster_image_info.images | length == 0
+
+    - name: Download the pinned Patroni wheel (verified by SHA-256)
+      ansible.builtin.get_url:
+        url: "{{ versions_postgres.patroni.url }}"
+        dest: "{{ postgres_cluster_build_dir }}/patroni.whl"
+        checksum: "sha256:{{ versions_postgres.patroni.sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: postgres_cluster_image_info.images | length == 0
+
+    - name: Add the extra CA bundle for the build
+      ansible.builtin.copy:
+        src: "{{ postgres_cluster_image_build_ca_file }}"
+        dest: "{{ postgres_cluster_build_dir }}/extra-ca.crt"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - postgres_cluster_image_info.images | length == 0
+        - postgres_cluster_image_build_ca_file | length > 0
+
+    - name: Leave the extra CA bundle empty
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ postgres_cluster_build_dir }}/extra-ca.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - postgres_cluster_image_info.images | length == 0
+        - postgres_cluster_image_build_ca_file | length == 0
+
+    - name: Build the image (Ubuntu archive packages are signed; versions are exact)
+      community.docker.docker_image:
+        name: "{{ postgres_cluster_image.rsplit(':', 1) | first }}"
+        tag: "{{ postgres_cluster_image.rsplit(':', 1) | last }}"
+        source: build
+        build:
+          path: "{{ postgres_cluster_build_dir }}"
+          network: host
+          pull: true
+          rm: true
+          args: >-
+            {{ postgres_cluster_image_build_args | combine({
+                 'BASE_IMAGE': postgres_cluster_image_base,
+                 'PG_MAJOR': versions_postgres.major | string,
+                 'PG_PACKAGES': postgres_cluster_build_packages | trim,
+                 'PATRONI_VERSION': versions_postgres.patroni.version,
+                 'PATRONI_SHA256': versions_postgres.patroni.sha256}) }}
+      vars:
+        postgres_cluster_build_packages: "{% for k, v in versions_postgres.packages.items() %}{{ k }}={{ v }} {% endfor %}"
+      when: postgres_cluster_image_info.images | length == 0

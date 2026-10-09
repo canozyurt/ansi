@@ -1,0 +1,162 @@
+---
+# Container specifications. They do not depend on the host (node-specific settings live in files
+# under postgres_cluster_dir), so the first node can apply them to every member during a rolling replacement.
+- name: Describe the containers of the cluster
+  ansible.builtin.set_fact:
+    postgres_cluster_specs:
+      etcd:
+        name: "{{ postgres_cluster_ct.etcd }}"
+        image: "{{ postgres_cluster_etcd_image }}"
+        user: "{{ postgres_cluster_uid }}:{{ postgres_cluster_uid }}"
+        env_file: "{{ postgres_cluster_dir }}/etcd.env"
+        volumes:
+          - "{{ postgres_cluster_dir }}/etcd:/var/lib/etcd"
+          - "{{ postgres_cluster_dir }}/etcd-tls:/etc/etcd/tls:ro"
+        memory: "{{ postgres_cluster_cfg.resources.etcd_memory }}"
+        pids: 256
+      patroni:
+        name: "{{ postgres_cluster_ct.patroni }}"
+        image: "{{ postgres_cluster_server_image }}"
+        command: ["{{ postgres_cluster_ct_config }}"]
+        user: "{{ postgres_cluster_uid }}:{{ postgres_cluster_uid }}"
+        volumes: >-
+          {{ [postgres_cluster_data_dir ~ ':' ~ postgres_cluster_ct_data,
+              postgres_cluster_dir ~ '/patroni:' ~ (postgres_cluster_ct_config | dirname) ~ ':ro',
+              postgres_cluster_dir ~ '/tls:' ~ postgres_cluster_ct_tls ~ ':ro',
+              postgres_cluster_dir ~ '/etcd-tls:' ~ postgres_cluster_ct_etcd_tls ~ ':ro',
+              postgres_cluster_dir ~ '/pgbackrest:' ~ (postgres_cluster_ct_pgbackrest_conf | dirname) ~ ':ro']
+             + (postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | map(attribute='host_path')
+                | zip(postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | map(attribute='ct_path'))
+                | map('join', ':') | list if postgres_cluster_backup_enabled | bool else []) }}
+        tmpfs:
+          - /tmp:rw,noexec,nosuid,size=64m,uid={{ postgres_cluster_uid }},gid={{ postgres_cluster_uid }},mode=0700
+          - /var/run/postgresql:rw,noexec,nosuid,size=16m,uid={{ postgres_cluster_uid }},gid={{ postgres_cluster_uid }},mode=0700
+        memory: "{{ postgres_cluster_cfg.resources.memory }}"
+        shm_size: "{{ postgres_cluster_cfg.resources.shm_size }}"
+        pids: "{{ postgres_cluster_cfg.resources.pids }}"
+        stop_timeout: 120
+      haproxy:
+        name: "{{ postgres_cluster_ct.haproxy }}"
+        image: "{{ postgres_cluster_haproxy_image }}"
+        user: "{{ postgres_cluster_haproxy_uid }}:{{ postgres_cluster_haproxy_uid }}"
+        volumes: ["{{ postgres_cluster_dir }}/haproxy:/usr/local/etc/haproxy:ro"]
+        memory: "{{ postgres_cluster_cfg.resources.haproxy_memory }}"
+      exporter:
+        name: "{{ postgres_cluster_ct.exporter }}"
+        image: "{{ postgres_cluster_exporter_image }}"
+        command:
+          - --web.listen-address=:{{ postgres_cluster_cfg.ports.exporter }}
+          - --web.config.file=/etc/postgres_exporter/web.yml
+        user: "{{ postgres_cluster_exporter_uid }}:{{ postgres_cluster_exporter_uid }}"
+        env_file: "{{ postgres_cluster_dir }}/exporter.env"
+        volumes: ["{{ postgres_cluster_dir }}/exporter:/etc/postgres_exporter:ro"]
+        memory: "{{ postgres_cluster_cfg.resources.exporter_memory }}"
+
+- name: Create the posix backup repository directories
+  ansible.builtin.file:
+    path: "{{ item.host_path }}"
+    state: directory
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0700"
+  loop: "{{ postgres_cluster_repos | selectattr('type', 'equalto', 'posix') | list }}"
+  loop_control:
+    label: "{{ item.host_path }}"
+  when: postgres_cluster_backup_enabled | bool
+  tags: [chk_bck_01]
+
+- name: Read the running server and etcd containers
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  loop: ["{{ postgres_cluster_ct.patroni }}", "{{ postgres_cluster_ct.etcd }}"]
+  register: postgres_cluster_running
+
+- name: Note the running versions
+  ansible.builtin.set_fact:
+    postgres_cluster_exists: "{{ postgres_cluster_running.results[0].exists }}"
+    postgres_cluster_version_change: >-
+      {{ (postgres_cluster_running.results[0].exists and postgres_cluster_running.results[0].container.Config.Image != postgres_cluster_server_image)
+         or (postgres_cluster_running.results[1].exists and postgres_cluster_running.results[1].container.Config.Image != postgres_cluster_etcd_image) }}
+
+- name: Change versions only through playbooks/upgrade.yml (CHG-07)
+  ansible.builtin.assert:
+    that: not postgres_cluster_version_change or postgres_cluster_upgrade | bool
+    fail_msg: >-
+      Cluster {{ postgres_cluster_cfg.name }} on {{ inventory_hostname }} runs
+      {{ postgres_cluster_running.results[0].container.Config.Image | default('?') }} /
+      {{ postgres_cluster_running.results[1].container.Config.Image | default('?') }} but this release pins
+      {{ postgres_cluster_server_image }} / {{ postgres_cluster_etcd_image }}. Run playbooks/upgrade.yml, which backs up
+      first and replaces one member at a time (replicas, then a switchover).
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Compare the etcd container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.etcd }}"
+    postgres_cluster_check: true
+  when: postgres_cluster_exists | bool
+
+- name: Note whether etcd must be replaced
+  ansible.builtin.set_fact:
+    postgres_cluster_etcd_tls_changed: >-
+      {{ postgres_cluster_etcd_cert_written is changed or postgres_cluster_etcd_ca_installed is changed }}
+    postgres_cluster_etcd_change: >-
+      {{ postgres_cluster_exists | bool and (postgres_cluster_run is changed
+         or postgres_cluster_etcd_cert_written is changed or postgres_cluster_etcd_ca_installed is changed) }}
+
+- name: Compare the server container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.patroni }}"
+    postgres_cluster_check: true
+  when: postgres_cluster_exists | bool
+
+- name: Note whether the server must be replaced
+  ansible.builtin.set_fact:
+    postgres_cluster_patroni_change: >-
+      {{ postgres_cluster_exists | bool and (postgres_cluster_run is changed or postgres_cluster_etcd_tls_changed | bool) }}
+    postgres_cluster_patroni_restart: >-
+      {{ postgres_cluster_exists | bool and postgres_cluster_run is not changed and postgres_cluster_etcd_tls_changed | bool }}
+
+# First start of a new cluster or member: every node starts at once (etcd needs its peers).
+- name: Start etcd on a new member
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.etcd }}"
+  when: not postgres_cluster_exists | bool
+  tags: [chk_ha_01]
+
+- name: Start Patroni and PostgreSQL on a new member
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.patroni }}"
+  when: not postgres_cluster_exists | bool
+  tags: [chk_ha_01]
+
+# Existing members whose containers change are replaced one at a time by the first node: replicas
+# first, then a switchover, then the former leader (HA-01, CHG-07).
+- name: Replace changed members one at a time
+  ansible.builtin.include_tasks: rolling.yml
+  when:
+    - inventory_hostname == postgres_cluster_first
+    - postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_etcd_change') | select | list | length > 0
+      or postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_patroni_change') | select | list | length > 0
+
+- name: Run HAProxy (read-write and read-only client ports)
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.haproxy }}"
+
+- name: Reload HAProxy when only its configuration changed
+  ansible.builtin.command: docker kill --signal USR2 {{ postgres_cluster_ct.haproxy }}
+  when:
+    - postgres_cluster_haproxy_config is changed
+    - postgres_cluster_run is not changed
+  changed_when: true
+
+# The exporter re-reads its web configuration and certificate on every connection.
+- name: Run postgres_exporter
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.exporter }}"

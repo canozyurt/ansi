@@ -1,0 +1,13 @@
+{#- Backup repositories of this cluster with pgBackRest keys, host paths and merged S3 settings. -#}
+{%- set out = [] -%}
+{%- for r in postgres_cluster_cfg.backup.repos -%}
+{%-   set i = loop.index -%}
+{%-   if r.type == 's3' -%}
+{%-     set _ = out.append(postgres_cluster_backup_s3 | combine(r, {'key_name': 'repo' ~ i, 'index': i, 's3_path': r.s3_path | default('/' ~ postgres_cluster_cfg.name)})) -%}
+{%-   else -%}
+{%-     set _ = out.append(r | combine({'key_name': 'repo' ~ i, 'index': i,
+                                      'host_path': (r.path | default('')) ~ '/' ~ postgres_cluster_cfg.name,
+                                      'ct_path': postgres_cluster_ct_repo ~ '/repo' ~ i})) -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ out | to_json }}

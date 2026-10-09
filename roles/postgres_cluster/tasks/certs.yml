@@ -1,0 +1,221 @@
+---
+- name: Create the cluster directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ postgres_cluster_dir }}", mode: "0755" }
+    - { path: "{{ postgres_cluster_dir }}/patroni", owner: "{{ postgres_cluster_uid }}", group: "{{ postgres_cluster_uid }}", mode: "0700" }
+    - { path: "{{ postgres_cluster_dir }}/etcd", owner: "{{ postgres_cluster_uid }}", group: "{{ postgres_cluster_uid }}", mode: "0700" }
+    - { path: "{{ postgres_cluster_dir }}/etcd-tls", owner: "{{ postgres_cluster_uid }}", group: "{{ postgres_cluster_uid }}", mode: "0700" }
+    - { path: "{{ postgres_cluster_dir }}/haproxy", mode: "0755" }
+    - { path: "{{ postgres_cluster_dir }}/pgbackrest", owner: root, group: "{{ postgres_cluster_uid }}", mode: "0750" }
+    - { path: "{{ postgres_cluster_dir }}/exporter", owner: "{{ postgres_cluster_exporter_uid }}", group: "{{ postgres_cluster_exporter_uid }}", mode: "0700" }
+    - { path: "/etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}", mode: "0700" }
+
+# ---------------------------------------------------------------- server certificate (SEC-03)
+- name: Get the server certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "postgres-{{ postgres_cluster_cfg.name }}"
+    tls_cert_dir: "{{ postgres_cluster_dir }}/tls"
+    tls_cert_owner: "{{ postgres_cluster_uid }}"
+    tls_cert_group: "{{ postgres_cluster_uid }}"
+    tls_cert_dir_mode: "0700"
+    # PostgreSQL refuses a key readable by anyone but its owner.
+    tls_cert_key_mode: "0600"
+    tls_cert_common_name: "{{ postgres_cluster_node_address }}"
+    tls_cert_alt_names: "{{ ([postgres_cluster_node_address, inventory_hostname, 'localhost'] + (postgres_cluster_cfg.tls_alt_names | default([]))) | unique }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1', postgres_cluster_member_ip] | unique }}"
+    tls_cert_src_cert: "{{ postgres_cluster_cfg.tls_cert_file | default('') }}"
+    tls_cert_src_key: "{{ postgres_cluster_cfg.tls_key_file | default('') }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the server certificate changed
+  ansible.builtin.set_fact:
+    postgres_cluster_server_cert_changed: "{{ tls_cert_changed | bool }}"
+    postgres_cluster_server_cert_source: "{{ tls_cert_source }}"
+
+- name: Get the postgres_exporter certificate
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "postgres-{{ postgres_cluster_cfg.name }}-exporter"
+    tls_cert_dir: "{{ postgres_cluster_dir }}/exporter/tls"
+    tls_cert_owner: "{{ postgres_cluster_exporter_uid }}"
+    tls_cert_group: "{{ postgres_cluster_exporter_uid }}"
+    tls_cert_common_name: "{{ postgres_cluster_node_address }}"
+    tls_cert_alt_names: "{{ [postgres_cluster_node_address, inventory_hostname] | unique }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1', postgres_cluster_member_ip] | unique }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the exporter certificate changed
+  ansible.builtin.set_fact:
+    postgres_cluster_exporter_cert_changed: "{{ tls_cert_changed | bool }}"
+
+# Members verify each other (replication, Patroni REST, HAProxy checks) against this bundle: the
+# organisation CA, the internal PKI CA, or, with temporary self-signed certificates, every member's
+# certificate.
+- name: Check that a CA is known for organisation-supplied certificates
+  ansible.builtin.assert:
+    that: postgres_cluster_server_cert_source != 'file' or (postgres_cluster_cfg.tls_ca_file | default('')) | length > 0
+    fail_msg: Cluster {{ postgres_cluster_cfg.name }} uses supplied certificate files; set tls_ca_file (the CA bundle on the hosts) in its entry.
+    quiet: true
+
+- name: Read the member certificates
+  ansible.builtin.slurp:
+    src: "{{ postgres_cluster_dir }}/tls/tls.crt"
+  delegate_to: "{{ item }}"
+  loop: "{{ postgres_cluster_hosts }}"
+  register: postgres_cluster_member_certs
+  when: postgres_cluster_server_cert_source == 'selfsigned'
+
+- name: Read the CA certificate
+  ansible.builtin.slurp:
+    src: >-
+      {{ postgres_cluster_cfg.tls_ca_file if postgres_cluster_server_cert_source == 'file'
+         else (postgres_cluster_ca_file | default('', true) or pki_openbao_ca_file | default('', true)
+               or '/usr/local/share/ca-certificates/compliant-infra-ca.crt') }}
+  register: postgres_cluster_ca_cert
+  when: postgres_cluster_server_cert_source != 'selfsigned'
+
+- name: Write the CA bundle for the server and HAProxy
+  ansible.builtin.copy:
+    content: >-
+      {{ (postgres_cluster_member_certs.results | map(attribute='content') | map('b64decode') | join('\n'))
+         if postgres_cluster_server_cert_source == 'selfsigned' else (postgres_cluster_ca_cert.content | b64decode) }}
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "0644"
+  loop:
+    - { dest: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt", owner: "{{ postgres_cluster_uid }}" }
+    - { dest: "{{ postgres_cluster_dir }}/haproxy/ca-bundle.crt", owner: root }
+  loop_control:
+    label: "{{ item.dest }}"
+  register: postgres_cluster_bundle
+  tags: [chk_sec_03]
+
+# ---------------------------------------------------------------- etcd (mutual TLS, per-cluster CA)
+# etcd peers and clients authenticate with certificates from a CA that exists only for this cluster,
+# so no other cluster or service can reach its DCS (DAT-01).
+- name: Create the cluster's etcd CA on the first node
+  when: inventory_hostname == postgres_cluster_first
+  tags: [chk_sec_03, chk_dat_01]
+  block:
+    - name: Create the etcd CA directory
+      ansible.builtin.file:
+        path: "{{ postgres_cluster_dir }}/etcd-ca"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Generate the etcd CA key
+      community.crypto.openssl_privatekey:
+        path: "{{ postgres_cluster_dir }}/etcd-ca/ca.key"
+        type: ECC
+        curve: secp256r1
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Generate the etcd CA signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ postgres_cluster_dir }}/etcd-ca/ca.key"
+        common_name: "etcd CA {{ postgres_cluster_cfg.name }}"
+        basic_constraints: ["CA:TRUE", "pathlen:0"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+      register: postgres_cluster_etcd_ca_csr
+      changed_when: false
+
+    - name: Self-sign the etcd CA
+      community.crypto.x509_certificate:
+        path: "{{ postgres_cluster_dir }}/etcd-ca/ca.crt"
+        csr_content: "{{ postgres_cluster_etcd_ca_csr.csr }}"
+        privatekey_path: "{{ postgres_cluster_dir }}/etcd-ca/ca.key"
+        provider: selfsigned
+        selfsigned_not_after: "+3650d"
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Read the etcd CA certificate
+  ansible.builtin.slurp:
+    src: "{{ postgres_cluster_dir }}/etcd-ca/ca.crt"
+  delegate_to: "{{ postgres_cluster_first }}"
+  register: postgres_cluster_etcd_ca
+
+- name: Install the etcd CA certificate
+  ansible.builtin.copy:
+    content: "{{ postgres_cluster_etcd_ca.content | b64decode }}"
+    dest: "{{ postgres_cluster_dir }}/etcd-tls/ca.crt"
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0644"
+  register: postgres_cluster_etcd_ca_installed
+  tags: [chk_sec_03]
+
+- name: Generate the node's etcd key
+  community.crypto.openssl_privatekey:
+    path: "{{ postgres_cluster_dir }}/etcd-tls/node.key"
+    type: ECC
+    curve: secp256r1
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0600"
+
+- name: Generate the node's etcd signing request (server and client use)
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ postgres_cluster_dir }}/etcd-tls/node.key"
+    common_name: "{{ postgres_cluster_node_address }}"
+    subject_alt_name: >-
+      {{ ([postgres_cluster_node_address, inventory_hostname, 'localhost'] | unique | map('regex_replace', '^', 'DNS:') | list)
+         + (['127.0.0.1', postgres_cluster_member_ip] | unique | map('regex_replace', '^', 'IP:') | list) }}
+    extended_key_usage: [serverAuth, clientAuth]
+    key_usage: [digitalSignature, keyAgreement]
+  register: postgres_cluster_etcd_csr
+  changed_when: false
+
+- name: Read the node's etcd certificate
+  community.crypto.x509_certificate_info:
+    path: "{{ postgres_cluster_dir }}/etcd-tls/node.crt"
+    valid_at:
+      renew: "+30d"
+  register: postgres_cluster_etcd_cert_info
+  failed_when: false
+
+- name: Read the node's current etcd certificate
+  ansible.builtin.slurp:
+    src: "{{ postgres_cluster_dir }}/etcd-tls/node.crt"
+  register: postgres_cluster_etcd_cert_current
+  failed_when: false
+
+- name: Sign the node's etcd certificate with the cluster CA
+  community.crypto.x509_certificate_pipe:
+    content: "{{ (postgres_cluster_etcd_cert_current.content | b64decode) if postgres_cluster_etcd_cert_current.content is defined else omit }}"
+    csr_content: "{{ postgres_cluster_etcd_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ postgres_cluster_dir }}/etcd-ca/ca.crt"
+    ownca_privatekey_path: "{{ postgres_cluster_dir }}/etcd-ca/ca.key"
+    ownca_not_after: "+730d"
+    force: "{{ postgres_cluster_etcd_cert_info.valid_at.renew is defined and not postgres_cluster_etcd_cert_info.valid_at.renew }}"
+  delegate_to: "{{ postgres_cluster_first }}"
+  register: postgres_cluster_etcd_cert
+  tags: [chk_sec_03]
+
+- name: Write the node's etcd certificate
+  ansible.builtin.copy:
+    content: "{{ postgres_cluster_etcd_cert.certificate }}"
+    dest: "{{ postgres_cluster_dir }}/etcd-tls/node.crt"
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0644"
+  register: postgres_cluster_etcd_cert_written
+  tags: [chk_sec_03]

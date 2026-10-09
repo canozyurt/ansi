@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=PostgreSQL cluster {{ postgres_cluster_cfg.name }}: {{ postgres_cluster_unit_type }} schedule
+
+[Timer]
+{% if postgres_cluster_unit_type == 'full' %}
+OnCalendar={{ postgres_cluster_cfg.backup.full_on_calendar }}
+{% elif postgres_cluster_unit_type == 'diff' %}
+OnCalendar={{ postgres_cluster_cfg.backup.diff_on_calendar }}
+{% elif postgres_cluster_unit_type == 'restore-test' %}
+OnCalendar={{ postgres_cluster_cfg.backup.restore_test_on_calendar }}
+RandomizedDelaySec=1h
+{% else %}
+OnCalendar=*:0/15
+{% endif %}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

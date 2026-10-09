@@ -1,0 +1,8 @@
+{#- Every port used on this host by the clusters it belongs to. -#}
+{%- set out = [] -%}
+{%- for c in postgres_cluster_all if c.group in group_names -%}
+{%-   for p in (postgres_cluster_defaults.ports | combine(c.ports | default({}))).values() -%}
+{%-     set _ = out.append(p | int) -%}
+{%-   endfor -%}
+{%- endfor -%}
+{{ out | to_json }}

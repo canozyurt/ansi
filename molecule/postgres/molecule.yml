@@ -1,0 +1,103 @@
+---
+# Two independent PostgreSQL clusters on one node (lab mode): pg-lab (Patroni + single-member etcd,
+# HAProxy, pgBackRest to a local encrypted repository, postgres_exporter, OpenBao dynamic
+# credentials against a throwaway OpenBao dev server) and pg-lab2 (other ports, no backup) to prove
+# that instances share no credentials (DAT-01).
+driver:
+  name: docker
+platforms:
+  - name: postgres-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [postgres, pg_lab, pg_lab2, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        monitoring_scrape_password: test-only-scrape-password
+        postgres_cluster_allow_single_node: true
+        # Behind the test proxy: the image build downloads Patroni through it and trusts its CA.
+        postgres_cluster_image_build_args:
+          HTTPS_PROXY: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+        postgres_cluster_image_build_ca_file: >-
+          {{ '/usr/local/share/ca-certificates/molecule-proxy.crt'
+             if lookup('ansible.builtin.env', 'MOLECULE_PROXY_CA') | length > 0 else '' }}
+        # Throwaway OpenBao dev server started by converge.yml (plain HTTP on loopback, test only).
+        postgres_cluster_openbao_addr: http://127.0.0.1:8200
+        postgres_cluster_openbao_token: test-only-openbao-root-token
+        postgres_clusters:
+          - name: pg-lab
+            group: pg_lab
+            superuser_password: test-only-lab-superuser-pw
+            replication_password: test-only-lab-replication-pw
+            rewind_password: test-only-lab-rewind-pw
+            patroni_api_password: test-only-lab-patroni-api-pw
+            exporter_password: test-only-lab-exporter-pw
+            resources: { memory: 768m, shm_size: 128m }
+            parameters: { max_connections: 50, shared_buffers: 128MB, effective_cache_size: 256MB }
+            databases:
+              - name: app
+                users:
+                  - { name: app, password: test-only-lab-app-owner-pw, access: owner }
+                  - { name: app_worker, password: test-only-lab-app-worker-pw, access: rw }
+                  - { name: app_report, password: test-only-lab-app-report-pw, access: ro }
+              - name: other
+                users:
+                  - { name: other_user, password: test-only-lab-other-user-pw, access: owner }
+            backup:
+              cipher_pass: test-only-lab-backup-cipher-passphrase-0123456789
+              repos: [{ type: posix, path: /var/lib/pgbackrest }]
+              verify_sql: SELECT count(*) >= 3 FROM pg_database
+            openbao:
+              enabled: true
+              admin_password: test-only-lab-openbao-admin-pw
+              host: 127.0.0.1
+              sslmode: require
+          - name: pg-lab2
+            group: pg_lab2
+            ports: { postgres: 5442, patroni: 8018, primary: 5010, replicas: 5011, etcd_client: 2389, etcd_peer: 2390, exporter: 9197 }
+            superuser_password: test-only-lab2-superuser-pw
+            replication_password: test-only-lab2-replication-pw
+            rewind_password: test-only-lab2-rewind-pw
+            patroni_api_password: test-only-lab2-patroni-api-pw
+            exporter_password: test-only-lab2-exporter-pw
+            resources: { memory: 512m, shm_size: 64m }
+            parameters: { max_connections: 30, shared_buffers: 64MB, effective_cache_size: 128MB }
+            databases:
+              - name: app2
+                users:
+                  - { name: app2, password: test-only-lab2-app-owner-pw, access: owner }
+            backup:
+              enabled: false
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves gigabytes over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

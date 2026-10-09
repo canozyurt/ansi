@@ -1,0 +1,78 @@
+---
+- name: Prepare the container host and a throwaway OpenBao
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,{{ inventory_hostname }}"
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+    - name: Load the pinned versions
+      ansible.builtin.include_role:
+        name: versions
+        public: true
+
+    - name: Start a throwaway OpenBao dev server (test fixture for dynamic credentials)
+      community.docker.docker_container:
+        name: openbao-dev
+        image: "{{ versions_images.openbao }}"
+        command: [server, -dev, -dev-root-token-id=test-only-openbao-root-token, -dev-listen-address=127.0.0.1:8200]
+        network_mode: host
+        memory: 256m
+        cap_drop: [ALL]
+        security_opts: [no-new-privileges:true]
+        state: started
+
+    - name: Wait for OpenBao
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8200/v1/sys/health
+      register: converge_bao
+      until: converge_bao.status == 200
+      retries: 30
+      delay: 2
+
+# Same as playbooks/postgres.yml, plus the test proxy for the Patroni download.
+- name: Deploy the PostgreSQL clusters
+  hosts: postgres
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,{{ inventory_hostname }}"
+  tasks:
+    - name: Deploy each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: postgres_cluster
+      loop: "{{ postgres_clusters | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: postgres_cluster
+        label: "{{ postgres_cluster.name }}"

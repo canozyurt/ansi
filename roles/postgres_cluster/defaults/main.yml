@@ -1,0 +1,172 @@
+---
+# One PostgreSQL cluster (Patroni + etcd + HAProxy + pgBackRest + postgres_exporter) per call.
+# playbooks/postgres.yml includes this role once for every entry of postgres_clusters whose
+# inventory group contains the host, with the entry in the variable postgres_cluster.
+# The entry is merged over postgres_cluster_defaults (below), so it only needs what differs.
+# See docs/product-playbooks.md for the pattern and the full schema.
+
+# Every cluster of the inventory; used to check that no two clusters share a secret (DAT-01) or a
+# port on the same host.
+postgres_cluster_all: "{{ postgres_clusters | default([]) }}"
+
+# High availability (HA-01): 3 nodes (etcd needs a majority). One node only in lab mode.
+postgres_cluster_min_nodes: 3
+postgres_cluster_allow_single_node: false
+
+# Images. The server image is built on each host from the pinned recipe in roles/versions
+# (versions_postgres); set postgres_cluster_image_build false and postgres_cluster_image to pull a
+# prebuilt copy from your registry instead.
+postgres_cluster_image_build: true
+postgres_cluster_image_recipe_hash: >-
+  {{ ((lookup('ansible.builtin.file', 'Dockerfile') ~ (versions_postgres | to_json) ~ versions_images.postgres_base)
+     | hash('sha256'))[:8] }}
+postgres_cluster_image: >-
+  localhost/compliant-postgres:{{ versions_postgres.packages['postgresql-' ~ versions_postgres.major] }}-patroni{{
+  versions_postgres.patroni.version }}-r{{ postgres_cluster_image_recipe_hash }}
+postgres_cluster_image_base: "{{ versions_images.postgres_base }}"
+# Build-time proxy settings and an extra CA bundle (file on the host) for the build.
+postgres_cluster_image_build_args: {}
+postgres_cluster_image_build_ca_file: ""
+postgres_cluster_build_dir: /opt/postgres/.build
+postgres_cluster_etcd_image: "{{ versions_images.etcd }}"
+postgres_cluster_haproxy_image: "{{ versions_images.haproxy }}"
+postgres_cluster_exporter_image: "{{ versions_images.postgres_exporter }}"
+
+# Container users: PostgreSQL/Patroni/etcd run as 999 (fixed in the image), HAProxy as 99 and
+# postgres_exporter as 65534 (their upstream images).
+postgres_cluster_uid: 999
+postgres_cluster_haproxy_uid: 99
+postgres_cluster_exporter_uid: 65534
+
+postgres_cluster_base_dir: /opt/postgres
+postgres_cluster_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# How other members reach this node (DNS name in every certificate). Defaults to the inventory name.
+postgres_cluster_node_address: "{{ inventory_hostname }}"
+# This node's address on the data network; pg_hba allows the members by these addresses.
+postgres_cluster_node_ip: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+
+# Data at rest (SEC-04): the data directory must sit on an encrypted block device (LUKS) or on a
+# volume the provider encrypts. The role checks for a dm-crypt device below the data directory and
+# warns when there is none; set require to fail instead, or attested when the provider encrypts the
+# volume (which the host cannot see).
+postgres_cluster_require_encrypted_storage: false
+postgres_cluster_storage_encryption_attested: false
+
+# Run version changes (new image) only through playbooks/upgrade.yml (CHG-07).
+postgres_cluster_upgrade: false
+# Take a differential backup before a rolling version change.
+postgres_cluster_upgrade_backup: true
+
+# Monitoring account for postgres_exporter's web endpoint (same as node_exporter).
+postgres_cluster_scrape_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+postgres_cluster_scrape_password: "{{ monitoring_scrape_password | default('') }}"
+
+# OpenBao database secrets engine (IAM-08). Connection used to configure it.
+postgres_cluster_openbao_addr: "{{ pki_openbao_addr | default('') }}"
+postgres_cluster_openbao_token: "{{ openbao_admin_token | default('') }}"
+postgres_cluster_openbao_ca_file: "{{ pki_openbao_ca_file | default('') }}"
+postgres_cluster_openbao_mount: database
+
+# S3 settings shared by every cluster that adds a repository with type s3 (an entry may override
+# each one). Inventory: postgres_backup_s3_* (e.g. in group_vars/all/postgres.yml).
+postgres_cluster_backup_s3:
+  endpoint: "{{ postgres_backup_s3_endpoint | default('') }}"
+  region: "{{ postgres_backup_s3_region | default('us-east-1') }}"
+  bucket: "{{ postgres_backup_s3_bucket | default('') }}"
+  key: "{{ postgres_backup_s3_key | default('') }}"
+  key_secret: "{{ postgres_backup_s3_key_secret | default('') }}"
+  uri_style: "{{ postgres_backup_s3_uri_style | default('path') }}"
+  verify_tls: "{{ postgres_backup_s3_verify_tls | default(true) }}"
+  ca_file: "{{ postgres_backup_s3_ca_file | default('') }}"
+
+# ---------------------------------------------------------------- per-cluster defaults
+# Every key can be set per entry of postgres_clusters (merged recursively).
+postgres_cluster_defaults:
+  name: ""                 # [a-z][a-z0-9-]*; prefixes containers, directories, units and metrics
+  group: ""                # inventory group of the nodes (3+)
+  # PostgreSQL data directory on the host; put it on the encrypted data volume (SEC-04).
+  data_dir: ""             # default: <postgres_cluster_base_dir>/<name>/data
+  ports:
+    postgres: 5432
+    patroni: 8008          # Patroni REST API (HTTPS) and its /metrics
+    primary: 5000          # HAProxy: read-write, always the leader
+    replicas: 5001         # HAProxy: read-only, round robin over healthy replicas
+    etcd_client: 2379
+    etcd_peer: 2380
+    exporter: 9187         # postgres_exporter (HTTPS, basic auth)
+  # Secrets (16+ characters each, from Ansible Vault or OpenBao). No two clusters may share one (DAT-01).
+  superuser_password: ""
+  replication_password: ""
+  rewind_password: ""
+  patroni_api_password: ""
+  exporter_password: ""
+  # Networks that may use the client ports (HAProxy 5000/5001). Used for documentation and the
+  # firewall rules in the inventory; PostgreSQL itself sees HAProxy's address.
+  client_cidrs: []
+  # Extra networks allowed by pg_hba besides the cluster members and loopback (direct connections
+  # to the PostgreSQL port, e.g. for OpenBao when it does not go through HAProxy).
+  hba_extra_cidrs: []
+  # Replicas verify the primary's certificate (verify-full with the internal CA or the bundle of
+  # member certificates).
+  replication_sslmode: verify-full
+  resources:
+    memory: 2g
+    shm_size: 256m
+    pids: 1024
+    etcd_memory: 512m
+    haproxy_memory: 128m
+    exporter_memory: 128m
+  # PostgreSQL settings; merged over the hardened defaults in vars/main.yml (cluster-wide, through
+  # Patroni's dynamic configuration).
+  parameters:
+    max_connections: 200
+    shared_buffers: 512MB
+    effective_cache_size: 1536MB
+  # Patroni dynamic settings.
+  patroni:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    synchronous_mode: false
+  # Databases, each with owner/rw/ro group roles and login users that are members of one of them:
+  #   - name: app
+  #     extensions: []
+  #     users:
+  #       - { name: app, password: "{{ vault_pg_main_app_password }}", access: owner }   # DDL + DML
+  #       - { name: app_worker, password: "...", access: rw }                            # DML only
+  #       - { name: app_report, password: "...", access: ro }                            # SELECT only
+  databases: []
+  backup:
+    enabled: true
+    cipher_pass: ""        # repository encryption passphrase (aes-256-cbc), 32+ characters
+    # Repositories. posix: a path on the host (a mount of shared backup storage, e.g. NFS from the
+    # backup servers; every member must see the same path). s3: keys from postgres_cluster_backup_s3.
+    repos:
+      - { type: posix, path: /var/lib/pgbackrest }
+    retention_full: 4      # full backups kept per repository (4 weekly = about a month)
+    full_on_calendar: "Sun *-*-* 01:30:00"
+    diff_on_calendar: "Mon..Sat *-*-* 01:30:00"
+    restore_test_on_calendar: "*-*-01 04:30:00"
+    archive_timeout: 60    # seconds; a WAL segment is archived at least this often (RPO minutes)
+    rpo_hours: 26          # for the base backups (daily); WAL archiving gives an RPO of minutes
+    rto_hours: 4
+    process_max: 2
+    # Extra SQL run against the restored copy by the monthly restore test; must return one row with true.
+    verify_sql: ""
+  openbao:
+    enabled: false
+    # Login role OpenBao uses to create and drop short-lived users; its password is rotated by
+    # OpenBao right after the first configuration (only OpenBao knows it afterwards).
+    admin_user: ""         # default: openbao_<cluster>
+    admin_password: ""
+    # How OpenBao reaches the primary (every member's HAProxy primary port by default) and the TLS
+    # mode it uses. verify-full needs the internal CA inside the OpenBao container (sslrootcert).
+    host: ""               # default: all members
+    port: 0                # default: ports.primary
+    sslmode: verify-full
+    sslrootcert: ""        # CA file path inside the OpenBao container
+    rotate_root: true
+    default_ttl: 1h
+    max_ttl: 24h

@@ -1,0 +1,56 @@
+---
+# Paths inside the server container (the same on every node, so container definitions do not depend
+# on the host they run on).
+postgres_cluster_ct_data: /var/lib/postgresql/data
+postgres_cluster_ct_tls: /etc/patroni/tls
+postgres_cluster_ct_etcd_tls: /etc/patroni/etcd-tls
+postgres_cluster_ct_config: /etc/patroni-config/patroni.yml
+postgres_cluster_ct_pgbackrest_conf: /etc/pgbackrest/pgbackrest.conf
+postgres_cluster_ct_repo: /var/lib/pgbackrest
+
+# Hardened PostgreSQL settings applied to every cluster (cluster-wide through Patroni's dynamic
+# configuration). Entries in postgres_clusters[].parameters override them; a few are enforced again
+# afterwards (postgres_cluster_enforced_parameters).
+postgres_cluster_base_parameters:
+  # TLS for clients and replication (SEC-03)
+  ssl: "on"
+  ssl_cert_file: /etc/patroni/tls/tls.crt
+  ssl_key_file: /etc/patroni/tls/tls.key
+  ssl_min_protocol_version: TLSv1.2
+  ssl_ciphers: "HIGH:!aNULL:!MD5:!3DES:!RC4:!SHA1"
+  ssl_prefer_server_ciphers: "on"
+  password_encryption: scram-sha-256
+  # Audit and connection logging to stderr, i.e. the container log in journald (LOG-01)
+  shared_preload_libraries: pgaudit,pg_stat_statements
+  pgaudit.log: ddl,role
+  pgaudit.log_catalog: "off"
+  pgaudit.log_relation: "off"
+  pgaudit.log_parameter: "off"
+  pgaudit.log_level: log
+  log_destination: stderr
+  logging_collector: "off"
+  log_connections: "on"
+  log_disconnections: "on"
+  log_line_prefix: "%m [%p] %q%u@%d %h %a "
+  log_min_duration_statement: 5000
+  log_lock_waits: "on"
+  log_temp_files: 0
+  log_checkpoints: "on"
+  # Replication and failover
+  wal_level: replica
+  hot_standby: "on"
+  wal_log_hints: "on"
+  max_wal_senders: 10
+  max_replication_slots: 10
+  wal_keep_size: 1GB
+  # Timeouts that protect the cluster from abandoned sessions
+  idle_in_transaction_session_timeout: 10min
+  tcp_keepalives_idle: 60
+
+# Settings no entry may override.
+postgres_cluster_enforced_parameters:
+  ssl: "on"
+  ssl_min_protocol_version: TLSv1.2
+  password_encryption: scram-sha-256
+  log_connections: "on"
+  log_disconnections: "on"

@@ -1,0 +1,155 @@
+---
+# ---------------------------------------------------------------- Patroni dynamic configuration
+- name: Read Patroni's dynamic configuration
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/config"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  register: postgres_cluster_dcs
+  when: postgres_cluster_is_leader | bool
+
+- name: Apply changed settings cluster-wide (PATCH /config)
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/config"
+    method: PATCH
+    url_username: patroni
+    url_password: "{{ postgres_cluster_cfg.patroni_api_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ postgres_cluster_dcs_patch }}"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  vars:
+    postgres_cluster_dcs_current: "{{ postgres_cluster_dcs.json }}"
+    postgres_cluster_dcs_patch: "{{ query('ansible.builtin.template', 'dcs_patch.json.j2') | first | from_json }}"
+  when:
+    - postgres_cluster_is_leader | bool
+    - postgres_cluster_dcs_patch | length > 0
+  register: postgres_cluster_dcs_patched
+  changed_when: true
+  no_log: true
+  tags: [chk_sec_03, chk_log_01]
+
+- name: Share whether the settings changed
+  ansible.builtin.set_fact:
+    postgres_cluster_settings_changed: >-
+      {{ postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_dcs_patched') | selectattr('changed', 'defined')
+         | selectattr('changed') | list | length > 0 }}
+
+- name: Let Patroni apply the new settings
+  ansible.builtin.wait_for:
+    timeout: "{{ (postgres_cluster_cfg.patroni.loop_wait | int) + 5 }}"
+  when: postgres_cluster_settings_changed | bool
+
+- name: Reload Patroni when its file or the server certificate changed
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/reload"
+    method: POST
+    url_username: patroni
+    url_password: "{{ postgres_cluster_cfg.patroni_api_password }}"
+    force_basic_auth: true
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+    status_code: [200, 202]
+  when:
+    - postgres_cluster_exists | bool
+    - postgres_cluster_patroni_config is changed or postgres_cluster_server_cert_changed | bool or postgres_cluster_bundle is changed
+    - not postgres_cluster_patroni_change | bool
+  changed_when: true
+  no_log: true
+
+# Settings that need a restart (e.g. shared_preload_libraries): replicas one at a time, then the leader.
+- name: Restart replicas with pending settings, one at a time
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/restart"
+    method: POST
+    url_username: patroni
+    url_password: "{{ postgres_cluster_cfg.patroni_api_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { restart_pending: true }
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+    status_code: [200, 503]
+    timeout: 300
+  register: postgres_cluster_restart_replica
+  changed_when: postgres_cluster_restart_replica.status == 200
+  throttle: 1
+  when:
+    - postgres_cluster_settings_changed | bool or postgres_cluster_patroni_config is changed
+    - not postgres_cluster_is_leader | bool
+  no_log: true
+  tags: [chk_ha_01]
+
+- name: Restart the leader if it has pending settings
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/restart"
+    method: POST
+    url_username: patroni
+    url_password: "{{ postgres_cluster_cfg.patroni_api_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { restart_pending: true }
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+    status_code: [200, 503]
+    timeout: 300
+  register: postgres_cluster_restart_leader
+  changed_when: postgres_cluster_restart_leader.status == 200
+  when:
+    - postgres_cluster_settings_changed | bool or postgres_cluster_patroni_config is changed
+    - postgres_cluster_is_leader | bool
+  no_log: true
+
+- name: Wait for the member after a restart
+  ansible.builtin.import_tasks: health.yml
+
+# ---------------------------------------------------------------- roles, databases, privileges
+- name: Compute the SCRAM verifiers of the managed passwords
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import base64, hashlib, hmac, json, sys
+        req = json.load(sys.stdin)
+        out = {}
+        for user, password in req["users"].items():
+            pw = password.encode()
+            # Deterministic salt per cluster, user and password, so reruns produce the same verifier.
+            salt = hmac.new(pw, ("compliant-infra:%s:%s" % (req["cluster"], user)).encode(), hashlib.sha256).digest()[:16]
+            salted = hashlib.pbkdf2_hmac("sha256", pw, salt, 4096)
+            client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+            stored_key = hashlib.sha256(client_key).digest()
+            server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+            b64 = lambda b: base64.b64encode(b).decode()
+            out[user] = "SCRAM-SHA-256$4096:%s$%s:%s" % (b64(salt), b64(stored_key), b64(server_key))
+        print(json.dumps(out))
+    stdin: "{{ {'cluster': postgres_cluster_cfg.name, 'users': postgres_cluster_passwords} | to_json }}"
+  vars:
+    postgres_cluster_passwords: >-
+      {{ {'postgres': postgres_cluster_cfg.superuser_password, 'replicator': postgres_cluster_cfg.replication_password,
+          'rewind_user': postgres_cluster_cfg.rewind_password, 'exporter': postgres_cluster_cfg.exporter_password}
+         | combine(postgres_cluster_cfg.databases | map(attribute='users', default=[]) | flatten
+                   | items2dict(key_name='name', value_name='password'))
+         | combine({postgres_cluster_openbao_admin_user: postgres_cluster_cfg.openbao.admin_password} if postgres_cluster_cfg.openbao.enabled | bool else {}) }}
+  register: postgres_cluster_verifier_result
+  when: postgres_cluster_is_leader | bool
+  changed_when: false
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Create the roles, databases and privileges (least privilege per database)
+  ansible.builtin.command:
+    argv: [docker, exec, -i, "{{ postgres_cluster_ct.patroni }}", psql, -X, -q, -At, -v, ON_ERROR_STOP=1,
+           -h, /var/run/postgresql, -p, "{{ postgres_cluster_cfg.ports.postgres }}", -U, postgres, -d, postgres]
+    stdin: "{{ query('ansible.builtin.template', 'roles.sql.j2') | first }}"
+  vars:
+    postgres_cluster_verifiers: "{{ postgres_cluster_verifier_result.stdout | from_json }}"
+  register: postgres_cluster_sql
+  changed_when: "'CHANGED' in postgres_cluster_sql.stdout or 'CHANGED' in postgres_cluster_sql.stderr"
+  when: postgres_cluster_is_leader | bool
+  no_log: true
+  tags: [chk_dat_01, chk_sec_02, chk_log_01]
+
+- name: Report the role and database changes
+  ansible.builtin.debug:
+    msg: "{{ (postgres_cluster_sql.stdout_lines + postgres_cluster_sql.stderr_lines) | select('search', 'CHANGED') | list }}"
+  when:
+    - postgres_cluster_is_leader | bool
+    - postgres_cluster_sql is changed

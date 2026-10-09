@@ -1,0 +1,70 @@
+---
+- name: Switch the leader role over to another member before replacing {{ postgres_cluster_member }}
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/switchover"
+    method: POST
+    url_username: patroni
+    url_password: "{{ postgres_cluster_cfg.patroni_api_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { leader: "{{ postgres_cluster_member }}" }
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+    status_code: [200]
+    timeout: 120
+  when:
+    - postgres_cluster_member == postgres_cluster_leader
+    - postgres_cluster_hosts | length > 1
+  changed_when: true
+  no_log: true
+
+- name: Wait until another member leads
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/cluster"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  register: postgres_cluster_after_switch
+  until: >-
+    postgres_cluster_after_switch.json.members | default([]) | selectattr('role', 'equalto', 'leader')
+    | rejectattr('name', 'equalto', postgres_cluster_member) | list | length > 0
+  retries: 30
+  delay: 2
+  when:
+    - postgres_cluster_member == postgres_cluster_leader
+    - postgres_cluster_hosts | length > 1
+
+- name: Replace etcd on {{ postgres_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.etcd }}"
+    postgres_cluster_target: "{{ postgres_cluster_member }}"
+    postgres_cluster_restart: "{{ hostvars[postgres_cluster_member].postgres_cluster_etcd_change | bool }}"
+  when: hostvars[postgres_cluster_member].postgres_cluster_etcd_change | bool
+
+- name: Wait until etcd is healthy on {{ postgres_cluster_member }}
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ postgres_cluster_ct.etcd }}", etcdctl, "--endpoints=https://127.0.0.1:{{ postgres_cluster_cfg.ports.etcd_client }}",
+           --cacert=/etc/etcd/tls/ca.crt, --cert=/etc/etcd/tls/node.crt, --key=/etc/etcd/tls/node.key, endpoint, health]
+  delegate_to: "{{ postgres_cluster_member }}"
+  register: postgres_cluster_etcd_health
+  until: postgres_cluster_etcd_health.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+  when: hostvars[postgres_cluster_member].postgres_cluster_etcd_change | bool
+
+- name: Replace Patroni and PostgreSQL on {{ postgres_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    postgres_cluster_spec: "{{ postgres_cluster_specs.patroni }}"
+    postgres_cluster_target: "{{ postgres_cluster_member }}"
+    postgres_cluster_restart: "{{ hostvars[postgres_cluster_member].postgres_cluster_patroni_restart | bool }}"
+  when: hostvars[postgres_cluster_member].postgres_cluster_patroni_change | bool
+
+- name: Wait until PostgreSQL runs and follows the leader on {{ postgres_cluster_member }}
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/health"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  delegate_to: "{{ postgres_cluster_member }}"
+  register: postgres_cluster_member_health
+  until: postgres_cluster_member_health.status == 200
+  retries: 60
+  delay: 5

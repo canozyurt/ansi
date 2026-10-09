@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: postgres_cluster
+  author: compliant-infra-ansible contributors
+  description: >-
+    One highly available PostgreSQL cluster (Patroni, etcd, HAProxy, pgBackRest, postgres_exporter);
+    included once per entry of postgres_clusters
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

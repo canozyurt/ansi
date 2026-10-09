@@ -1,0 +1,135 @@
+---
+# OpenBao database secrets engine (IAM-08): one connection per cluster and one role per database and
+# access level, issuing short-lived PostgreSQL users that are members of <db>_owner|rw|ro. Configured
+# through the HTTP API with read-compare-write, once per cluster (from the first node).
+- name: Configure short-lived database credentials in OpenBao
+  when: inventory_hostname == postgres_cluster_first
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ postgres_cluster_openbao_token }}"
+      ca_path: "{{ postgres_cluster_openbao_ca_file | default(omit, true) }}"
+      body_format: json
+  tags: [chk_iam_08]
+  block:
+    - name: Read the secrets engines
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/sys/mounts"
+      register: postgres_cluster_bao_mounts
+      no_log: true
+
+    - name: Enable the database secrets engine
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/sys/mounts/{{ postgres_cluster_openbao_mount }}"
+        method: POST
+        body:
+          type: database
+          description: Short-lived database credentials (roles/postgres_cluster)
+        status_code: [200, 204]
+      when: (postgres_cluster_openbao_mount ~ '/') not in postgres_cluster_bao_mounts.json.data | default(postgres_cluster_bao_mounts.json)
+      changed_when: true
+      no_log: true
+
+    - name: Read the connection of this cluster
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/{{ postgres_cluster_openbao_mount }}/config/{{ postgres_cluster_metric_name }}"
+        status_code: [200, 404]
+      register: postgres_cluster_bao_conn
+      no_log: true
+
+    - name: Configure the connection (OpenBao rotates the password right after)
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/{{ postgres_cluster_openbao_mount }}/config/{{ postgres_cluster_metric_name }}"
+        method: POST
+        body:
+          plugin_name: postgresql-database-plugin
+          connection_url: "{{ postgres_cluster_bao_url }}"
+          username: "{{ postgres_cluster_openbao_admin_user }}"
+          password: "{{ postgres_cluster_cfg.openbao.admin_password }}"
+          password_authentication: scram-sha-256
+          allowed_roles: "{{ postgres_cluster_bao_roles | join(',') }}"
+          verify_connection: true
+        status_code: [200, 204]
+      vars:
+        postgres_cluster_bao_url: >-
+          postgresql://{{ '{{username}}' }}:{{ '{{password}}' }}@{{
+          ([postgres_cluster_cfg.openbao.host] if postgres_cluster_cfg.openbao.host | default('', true) | length > 0
+           else postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_member_address') | list)
+          | map('regex_replace', '$', ':' ~ (postgres_cluster_cfg.openbao.port | int or postgres_cluster_cfg.ports.primary)) | join(',')
+          }}/postgres?sslmode={{ postgres_cluster_cfg.openbao.sslmode }}{{
+          ('&sslrootcert=' ~ postgres_cluster_cfg.openbao.sslrootcert) if postgres_cluster_cfg.openbao.sslrootcert | default('') | length > 0 else '' }}
+        postgres_cluster_bao_roles: "{{ query('ansible.builtin.template', 'openbao_roles.json.j2') | first | from_json | map(attribute='name') | list }}"
+        postgres_cluster_bao_current: "{{ postgres_cluster_bao_conn.json.data | default({}) }}"
+      when: >-
+        postgres_cluster_bao_conn.status == 404
+        or postgres_cluster_bao_current.connection_details.connection_url | default('') != postgres_cluster_bao_url
+        or postgres_cluster_bao_current.connection_details.username | default('') != postgres_cluster_openbao_admin_user
+        or (postgres_cluster_bao_current.allowed_roles | default([]) | sort) != (postgres_cluster_bao_roles | sort)
+      register: postgres_cluster_bao_configured
+      changed_when: true
+      no_log: true
+
+    - name: Rotate the connection password so only OpenBao knows it
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/{{ postgres_cluster_openbao_mount }}/rotate-root/{{ postgres_cluster_metric_name }}"
+        method: POST
+        status_code: [200, 204]
+      when:
+        - postgres_cluster_bao_configured is changed
+        - postgres_cluster_cfg.openbao.rotate_root | default(true) | bool
+      changed_when: true
+      no_log: true
+
+    - name: Read the roles of this cluster
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/{{ postgres_cluster_openbao_mount }}/roles/{{ item.name }}"
+        status_code: [200, 404]
+      loop: "{{ query('ansible.builtin.template', 'openbao_roles.json.j2') | first | from_json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: postgres_cluster_bao_roles_current
+
+    - name: Create or update one role per database and access level
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/{{ postgres_cluster_openbao_mount }}/roles/{{ item.item.name }}"
+        method: POST
+        body: "{{ item.item.body }}"
+        status_code: [200, 204]
+      loop: "{{ postgres_cluster_bao_roles_current.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: >-
+        item.status == 404
+        or item.json.data.db_name != item.item.body.db_name
+        or item.json.data.creation_statements != item.item.body.creation_statements
+        or item.json.data.revocation_statements != item.item.body.revocation_statements
+        or item.json.data.default_ttl | int != item.item.ttl_seconds | int
+        or item.json.data.max_ttl | int != item.item.max_ttl_seconds | int
+      changed_when: true
+
+    - name: Read the application policies
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/sys/policies/acl/{{ item.name }}"
+        status_code: [200, 404]
+      loop: "{{ query('ansible.builtin.template', 'openbao_roles.json.j2') | first | from_json }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: postgres_cluster_bao_policies
+
+    - name: Write a policy per role that lets an application read its credentials
+      ansible.builtin.uri:
+        url: "{{ postgres_cluster_openbao_addr }}/v1/sys/policies/acl/{{ item.item.name }}"
+        method: PUT
+        body:
+          policy: "{{ postgres_cluster_bao_policy }}"
+        status_code: [200, 204]
+      vars:
+        postgres_cluster_bao_policy: |
+          path "{{ postgres_cluster_openbao_mount }}/creds/{{ item.item.name }}" {
+            capabilities = ["read"]
+          }
+      loop: "{{ postgres_cluster_bao_policies.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.status == 404 or item.json.data.policy | default('') != postgres_cluster_bao_policy
+      changed_when: true

@@ -1,0 +1,10 @@
+---
+# Cluster pg-main (postgres_clusters in group_vars/all/postgres.yml). Each cluster declares its own
+# firewall rules (NET-01, NET-03, DAT-01): clients reach only HAProxy; PostgreSQL, Patroni and etcd
+# only from the data zone (the other members), metrics only from the monitoring hosts.
+firewall_rules_postgres_pg_main:
+  - { name: pg-main-clients, port: 5000-5001, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }
+  - { name: pg-main-postgres, port: 5432, sources: ["{{ network_zones.data }}"] }
+  - { name: pg-main-patroni-api, port: 8008, sources: ["{{ network_zones.data }}", "{{ network_zones.mgmt }}"] }
+  - { name: pg-main-etcd, port: 2379-2380, sources: ["{{ network_zones.data }}"] }
+  - { name: pg-main-exporter, port: 9187, sources: "{{ monitoring_source_cidrs }}" }

@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+# Client entry points of PostgreSQL cluster {{ postgres_cluster_cfg.name }} on this node. TCP passthrough: the TLS
+# session is between the client and PostgreSQL. Patroni's REST API decides who is primary.
+global
+    maxconn {{ postgres_cluster_cfg.haproxy_maxconn | default(2000) }}
+    log stdout format raw local0 info
+
+defaults
+    mode tcp
+    log global
+    option tcplog
+    option dontlognull
+    timeout connect 4s
+    timeout client 30m
+    timeout server 30m
+    timeout check 4s
+
+listen primary
+    bind :{{ postgres_cluster_cfg.ports.primary }}
+    option httpchk
+    http-check send meth GET uri /primary
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions check check-ssl port {{ postgres_cluster_cfg.ports.patroni }} verify required ca-file /usr/local/etc/haproxy/ca-bundle.crt
+{% for h in postgres_cluster_hosts %}
+{%   set addr = hostvars[h].postgres_cluster_member_address %}
+    server {{ h }} {{ addr }}:{{ postgres_cluster_cfg.ports.postgres }} check-sni {{ addr }} verifyhost {{ addr }}
+{% endfor %}
+
+listen replicas
+    bind :{{ postgres_cluster_cfg.ports.replicas }}
+    balance roundrobin
+    option httpchk
+    http-check send meth GET uri /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions check check-ssl port {{ postgres_cluster_cfg.ports.patroni }} verify required ca-file /usr/local/etc/haproxy/ca-bundle.crt
+{% for h in postgres_cluster_hosts %}
+{%   set addr = hostvars[h].postgres_cluster_member_address %}
+    server {{ h }} {{ addr }}:{{ postgres_cluster_cfg.ports.postgres }} check-sni {{ addr }} verifyhost {{ addr }}
+{% endfor %}

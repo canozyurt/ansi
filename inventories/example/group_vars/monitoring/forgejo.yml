@@ -1,7 +1,8 @@
 ---
 # Forgejo alert rules for Prometheus (collected from prometheus_rules_* variables, LOG-05).
 # Annotations use Prometheus templates, wrapped in raw blocks so Ansible leaves them alone.
-# Scrape entry for prometheus_scrape_extra (group_vars/monitoring):
+# Scrape entry; uncomment once vault_forgejo_metrics_token is in the vault:
+# prometheus_scrape_extra_forgejo:
 #   - { name: forgejo, group: forgejo, port: 3443, path: /metrics, scheme: https,
 #       bearer_token: "{{ vault_forgejo_metrics_token }}" }
 prometheus_rules_forgejo:

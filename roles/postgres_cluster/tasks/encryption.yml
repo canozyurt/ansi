@@ -1,0 +1,74 @@
+---
+# SEC-04: PostgreSQL files are not encrypted by PostgreSQL itself; the data directory must sit on an
+# encrypted block device (LUKS/dm-crypt) or on a volume the provider encrypts.
+- name: Create the data directory
+  ansible.builtin.file:
+    path: "{{ postgres_cluster_data_dir }}"
+    state: directory
+    owner: "{{ postgres_cluster_uid }}"
+    group: "{{ postgres_cluster_uid }}"
+    mode: "0700"
+
+- name: Find the block devices under the data directory
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      src=$(findmnt -n -o SOURCE --target {{ postgres_cluster_data_dir | quote }} | head -n1 | sed 's/\[.*\]$//');
+      echo "source=$src";
+      lsblk -n -s -o TYPE "$src" 2>/dev/null | tr -d ' ' | sort -u | tr '\n' ' ' || true
+    executable: /bin/bash
+  register: postgres_cluster_storage
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [chk_sec_04]
+
+- name: Note whether the data directory is encrypted
+  ansible.builtin.set_fact:
+    postgres_cluster_data_encrypted: "{{ 'crypt' in (postgres_cluster_storage.stdout_lines | last | default('')).split() }}"
+  tags: [chk_sec_04]
+
+- name: Require encrypted storage for the data directory
+  ansible.builtin.assert:
+    that: postgres_cluster_data_encrypted | bool or postgres_cluster_storage_encryption_attested | bool
+    fail_msg: >-
+      {{ postgres_cluster_data_dir }} ({{ postgres_cluster_storage.stdout_lines | first | default('unknown source') }}) is not on a
+      dm-crypt (LUKS) device. Move it to an encrypted volume, or set postgres_cluster_storage_encryption_attested
+      when the provider encrypts the volume.
+    quiet: true
+  when: postgres_cluster_require_encrypted_storage | bool
+  tags: [chk_sec_04]
+
+- name: Warn when the data directory is not on encrypted storage
+  ansible.builtin.debug:
+    msg: >-
+      WARNING (SEC-04): {{ postgres_cluster_data_dir }} ({{ postgres_cluster_storage.stdout_lines | first | default('unknown source') }})
+      is not on a dm-crypt (LUKS) device and encryption is not attested. Disk encryption is a host
+      prerequisite; the PostgresDataNotEncrypted alert fires until this is fixed.
+  when:
+    - not postgres_cluster_data_encrypted | bool
+    - not postgres_cluster_storage_encryption_attested | bool
+  tags: [chk_sec_04]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ postgres_cluster_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Publish the storage encryption state as a metric
+  ansible.builtin.copy:
+    content: |
+      # HELP postgres_data_dir_encrypted 1 if the PostgreSQL data directory is on a dm-crypt (LUKS) device.
+      # TYPE postgres_data_dir_encrypted gauge
+      postgres_data_dir_encrypted{cluster="{{ postgres_cluster_cfg.name }}"} {{ 1 if postgres_cluster_data_encrypted | bool else 0 }}
+      # HELP postgres_data_dir_encryption_attested 1 if the operator attests provider-side volume encryption.
+      # TYPE postgres_data_dir_encryption_attested gauge
+      postgres_data_dir_encryption_attested{cluster="{{ postgres_cluster_cfg.name }}"} {{ 1 if postgres_cluster_storage_encryption_attested | bool else 0 }}
+    dest: "{{ postgres_cluster_textfile_dir }}/postgres-{{ postgres_cluster_cfg.name }}-storage.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_sec_04]

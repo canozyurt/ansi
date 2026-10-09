@@ -1,0 +1,50 @@
+---
+# Runs on the first node of the cluster and replaces the changed members one at a time, delegating to
+# each: replicas first, then a switchover away from the leader, then the former leader.
+- name: Read the cluster state
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ postgres_cluster_cfg.ports.patroni }}/cluster"
+    ca_path: "{{ postgres_cluster_dir }}/tls/ca-bundle.crt"
+  register: postgres_cluster_cluster_state
+  failed_when: false
+
+- name: Order the members (replicas first, the leader last)
+  ansible.builtin.set_fact:
+    postgres_cluster_leader: "{{ postgres_cluster_leader_names | first | default('') }}"
+    postgres_cluster_roll_order: >-
+      {{ postgres_cluster_changed | reject('in', postgres_cluster_leader_names) | list
+         + postgres_cluster_changed | select('in', postgres_cluster_leader_names) | list }}
+  vars:
+    postgres_cluster_leader_names: >-
+      {{ (postgres_cluster_cluster_state.json | default({})).members | default([])
+         | selectattr('role', 'in', ['leader', 'standby_leader']) | map(attribute='name') | list }}
+    postgres_cluster_changed: >-
+      {{ postgres_cluster_hosts | select('in', postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_etcd_change') | zip(postgres_cluster_hosts)
+                     | selectattr(0) | map(attribute=1) | list
+                     + postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_patroni_change') | zip(postgres_cluster_hosts)
+                     | selectattr(0) | map(attribute=1) | list) | list }}
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      Cluster {{ postgres_cluster_cfg.name }}: replacing {{ postgres_cluster_roll_order | join(', ') }} one at a time
+      (leader {{ postgres_cluster_leader | default('unknown', true) }}).
+
+- name: Back up before a version change (CHG-07)
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/postgres-backup, --config, "/etc/compliant-infra/postgres/{{ postgres_cluster_cfg.name }}/backup.json", backup, --type, diff]
+  delegate_to: "{{ postgres_cluster_leader }}"
+  when:
+    - postgres_cluster_backup_enabled | bool
+    - postgres_cluster_upgrade_backup | bool
+    - postgres_cluster_leader | length > 0
+    - postgres_cluster_hosts | map('extract', hostvars, 'postgres_cluster_version_change') | select | list | length > 0
+  changed_when: true
+  tags: [chk_chg_07, chk_bck_01]
+
+- name: Replace each changed member
+  ansible.builtin.include_tasks: rolling_member.yml
+  loop: "{{ postgres_cluster_roll_order }}"
+  loop_control:
+    loop_var: postgres_cluster_member
+  tags: [chk_ha_01, chk_chg_07]

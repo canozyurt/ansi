@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""pgBackRest backups, metrics and restore tests for one PostgreSQL cluster (roles/postgres_cluster).
+
+  postgres-backup --config FILE backup --type full|diff|incr [--if-none]
+  postgres-backup --config FILE metrics
+  postgres-backup --config FILE restore-test
+
+Backups run on every member's timer but only the Patroni leader takes them. Every member writes
+textfile metrics for node_exporter; the designated member (the first node of the cluster) reports the
+repository state (last good backup per repository, read from the repository itself, so it does not
+depend on who took it), the declared RPO/RTO and the monthly restore test, using the metric names and
+labels of roles/backup so the BackupRPOExceeded, BackupNeverRan and RestoreTest* alerts apply.
+"""
+import argparse
+import fcntl
+import json
+import os
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+HELP = {
+    "backup_last_success_timestamp_seconds": "Unix time of the last successful backup.",
+    "backup_last_run_timestamp_seconds": "Unix time of the last backup attempt.",
+    "backup_last_status": "1 if the last backup attempt succeeded, 0 if it failed.",
+    "backup_last_duration_seconds": "Duration of the last backup attempt.",
+    "backup_rpo_seconds": "Recovery point objective declared by the service.",
+    "backup_rto_seconds": "Recovery time objective declared by the service.",
+    "backup_restore_test_last_success_timestamp_seconds": "Unix time of the last successful restore test.",
+    "backup_restore_test_last_status": "1 if the last restore test succeeded, 0 if it failed.",
+    "backup_restore_test_duration_seconds":
+        "Duration of the last restore test (restore and verify); compare with backup_rto_seconds.",
+    "postgres_backup_last_full_timestamp_seconds": "Unix time of the newest full pgBackRest backup.",
+    "postgres_backup_repo_ok": "1 if pgBackRest could read the repository (info) at the last metrics run.",
+}
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def load_config(path: str) -> dict:
+    with open(path) as fh:
+        return json.load(fh)
+
+
+class State:
+    """Last results per repository, kept across runs so the metrics survive failed runs and reboots."""
+
+    def __init__(self, cfg: dict):
+        self.path = cfg["state_file"]
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        self.lock = open(self.path + ".lock", "w")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+        try:
+            with open(self.path) as fh:
+                self.data = json.load(fh)
+        except (OSError, ValueError):
+            self.data = {}
+        for key in ("backup", "restore_test"):
+            self.data.setdefault(key, {})
+        return self
+
+    def __exit__(self, *exc):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(self.data, fh, indent=1, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+        fcntl.flock(self.lock, fcntl.LOCK_UN)
+        self.lock.close()
+
+
+def is_leader(cfg: dict) -> bool:
+    # Loopback call to this member's Patroni; the certificate is checked against the cluster bundle.
+    ctx = ssl.create_default_context(cafile=cfg["ca_bundle"])
+    try:
+        with urllib.request.urlopen(cfg["patroni_url"] + "/primary", context=ctx, timeout=10) as resp:
+            return resp.status == 200
+    except Exception:  # 503 or unreachable: not the leader
+        return False
+
+
+def pgbackrest(cfg: dict, args: list, capture: bool = False) -> subprocess.CompletedProcess:
+    cmd = ["docker", "exec", cfg["container"], "pgbackrest", "--stanza=" + cfg["stanza"]] + args
+    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None)
+
+
+def repo_info(cfg: dict):
+    res = pgbackrest(cfg, ["--output=json", "info"], capture=True)
+    if res.returncode != 0:
+        log("ERROR pgbackrest info failed: " + (res.stderr or "").strip())
+        return None
+    try:
+        stanzas = json.loads(res.stdout)
+    except ValueError:
+        return None
+    return stanzas[0] if stanzas else {}
+
+
+def write_metrics(cfg: dict, state: dict, info) -> None:
+    name = cfg["metric_name"]
+    samples = {k: [] for k in HELP}
+    for repo, v in sorted(state["backup"].items()):
+        lab = {"name": name, "repo": repo}
+        samples["backup_last_run_timestamp_seconds"].append((lab, v.get("last_run", 0)))
+        samples["backup_last_status"].append((lab, 1 if v.get("last_ok") else 0))
+        samples["backup_last_duration_seconds"].append((lab, round(v.get("duration", 0), 3)))
+    if cfg["designated"]:
+        samples["backup_rpo_seconds"].append(({"name": name}, int(cfg["rpo_hours"]) * 3600))
+        samples["backup_rto_seconds"].append(({"name": name}, int(cfg["rto_hours"]) * 3600))
+        samples["postgres_backup_repo_ok"].append(({"cluster": cfg["stanza"]}, 1 if info is not None else 0))
+        last = {}
+        last_full = {}
+        for b in (info or {}).get("backup", []):
+            if b.get("error"):
+                continue
+            repo = "repo%s" % b.get("database", {}).get("repo-key", 1)
+            stop = b.get("timestamp", {}).get("stop", 0)
+            last[repo] = max(last.get(repo, 0), stop)
+            if b.get("type") == "full":
+                last_full[repo] = max(last_full.get(repo, 0), stop)
+        for repo in sorted(last):
+            samples["backup_last_success_timestamp_seconds"].append(({"name": name, "repo": repo}, last[repo]))
+        for repo in sorted(last_full):
+            samples["postgres_backup_last_full_timestamp_seconds"].append(
+                ({"cluster": cfg["stanza"], "repo": repo}, last_full[repo]))
+        for repo, v in sorted(state["restore_test"].items()):
+            lab = {"name": name, "repo": repo}
+            samples["backup_restore_test_last_success_timestamp_seconds"].append((lab, v.get("last_success", 0)))
+            samples["backup_restore_test_last_status"].append((lab, 1 if v.get("last_ok") else 0))
+            samples["backup_restore_test_duration_seconds"].append((lab, round(v.get("duration", 0), 3)))
+    lines = []
+    for metric, items in samples.items():
+        if not items:
+            continue
+        lines.append("# HELP %s %s" % (metric, HELP[metric]))
+        lines.append("# TYPE %s gauge" % metric)
+        for labels, value in items:
+            lab = ",".join('%s="%s"' % (k, str(val).replace("\\", "\\\\").replace('"', '\\"'))
+                           for k, val in sorted(labels.items()))
+            lines.append("%s{%s} %s" % (metric, lab, value))
+    out_dir = cfg["textfile_dir"]
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=".postgres-backup.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(out_dir, "postgres-%s-backup.prom" % cfg["stanza"]))
+
+
+def cmd_backup(cfg: dict, args) -> int:
+    rc = 0
+    with State(cfg) as st:
+        if not is_leader(cfg):
+            log("This member is not the leader of %s; the leader takes the backup." % cfg["stanza"])
+            st.data["backup"] = {}
+        else:
+            info = repo_info(cfg)
+            have = {"repo%s" % b.get("database", {}).get("repo-key", 1)
+                    for b in (info or {}).get("backup", []) if not b.get("error")}
+            for repo in cfg["repos"]:
+                if args.if_none and repo in have:
+                    log("%s already holds a backup of %s; skipping." % (repo, cfg["stanza"]))
+                    continue
+                start = time.time()
+                log("Taking a %s backup of %s into %s" % (args.type, cfg["stanza"], repo))
+                res = pgbackrest(cfg, ["--repo=" + repo[4:], "--type=" + args.type, "backup"])
+                ok = res.returncode == 0
+                entry = st.data["backup"].setdefault(repo, {})
+                entry.update({"last_run": int(start), "last_ok": ok, "duration": time.time() - start})
+                if ok:
+                    entry["last_success"] = int(time.time())
+                else:
+                    log("ERROR %s backup of %s into %s failed (exit %s)" % (args.type, cfg["stanza"], repo, res.returncode))
+                    rc = 1
+        write_metrics(cfg, st.data, repo_info(cfg) if cfg["designated"] else None)
+    return rc
+
+
+def cmd_metrics(cfg: dict, _args) -> int:
+    with State(cfg) as st:
+        write_metrics(cfg, st.data, repo_info(cfg) if cfg["designated"] else None)
+    return 0
+
+
+RESTORE_SCRIPT = r"""
+set -euo pipefail
+rm -rf /restore/data /restore/sock
+mkdir -m 0700 /restore/data /restore/sock
+pgbackrest --stanza="$STANZA" --repo="$REPO_KEY" --pg1-path=/restore/data --type=immediate \
+  --target-action=promote --archive-mode=off restore
+echo 'local all postgres peer' > /restore/hba.conf
+postgres -D /restore/data -c listen_addresses='' -c unix_socket_directories=/restore/sock \
+  -c hba_file=/restore/hba.conf -c ssl=off -c archive_mode=off -c hot_standby=off \
+  -c shared_buffers=128MB -c log_connections=off -c log_disconnections=off -c pgaudit.log=none &
+pid=$!
+ready=no
+for i in $(seq 1 900); do
+  if [ "$(psql -X -h /restore/sock -U postgres -d postgres -Atc 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ]; then
+    ready=yes; break
+  fi
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 1
+done
+[ "$ready" = yes ] || { echo "restored copy did not finish recovery"; exit 1; }
+for db in $DATABASES; do
+  psql -X -h /restore/sock -U postgres -d "$db" -v ON_ERROR_STOP=1 -Atc 'SELECT 1' >/dev/null
+done
+n=$(psql -X -h /restore/sock -U postgres -d postgres -Atc "SELECT count(*) FROM pg_database WHERE datname = ANY(string_to_array('$DATABASES', ' '))")
+[ "$n" = "$(echo $DATABASES | wc -w)" ] || { echo "restored copy lacks databases: found $n of $DATABASES"; exit 1; }
+if [ -n "$VERIFY_SQL" ]; then
+  [ "$(psql -X -h /restore/sock -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc "$VERIFY_SQL")" = t ] || { echo "verify_sql failed"; exit 1; }
+fi
+echo "restore test of $STANZA from repo $REPO_KEY: verified ($DATABASES)"
+pg_ctl -D /restore/data -m fast -w stop >/dev/null
+"""
+
+
+def cmd_restore_test(cfg: dict, _args) -> int:
+    if not cfg["designated"]:
+        log("Restore tests of %s run on %s." % (cfg["stanza"], cfg["designated_host"]))
+        return 0
+    rc = 0
+    with State(cfg) as st:
+        for repo in cfg["repos"]:
+            scratch = os.path.join(cfg["restore_dir"], repo)
+            subprocess.run(["rm", "-rf", scratch], check=False)
+            os.makedirs(scratch, mode=0o700)
+            os.chown(scratch, cfg["uid"], cfg["uid"])
+            cmd = ["docker", "run", "--rm", "--name", "%s-restore-test" % cfg["stanza"],
+                   "--network", "host" if cfg["network"] else "none",
+                   "--user", "%d:%d" % (cfg["uid"], cfg["uid"]), "--read-only",
+                   "--tmpfs", "/tmp:rw,size=64m,uid=%d,gid=%d" % (cfg["uid"], cfg["uid"]),
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                   "--memory", cfg["memory"], "--shm-size", "256m", "--pids-limit", "512",
+                   "-v", "%s:/restore" % scratch,
+                   "-v", "%s:/etc/pgbackrest:ro" % cfg["pgbackrest_conf_dir"],
+                   "-e", "STANZA=" + cfg["stanza"], "-e", "REPO_KEY=" + repo[4:],
+                   "-e", "DATABASES=" + " ".join(cfg["databases"] or ["postgres"]),
+                   "-e", "VERIFY_SQL=" + cfg.get("verify_sql", "")]
+            for host_path, ct_path in cfg["repo_mounts"]:
+                cmd += ["-v", "%s:%s:ro" % (host_path, ct_path)]
+            cmd += ["--entrypoint", "bash", cfg["image"], "-c", RESTORE_SCRIPT]
+            start = time.time()
+            res = subprocess.run(cmd)
+            duration = time.time() - start
+            ok = res.returncode == 0
+            entry = st.data["restore_test"].setdefault(repo, {})
+            entry.update({"last_run": int(start), "last_ok": ok, "duration": duration})
+            if ok:
+                entry["last_success"] = int(time.time())
+                log("Restore test of %s from %s succeeded in %.0f s (RTO %s h)" % (cfg["stanza"], repo, duration, cfg["rto_hours"]))
+            else:
+                log("ERROR restore test of %s from %s failed" % (cfg["stanza"], repo))
+                rc = 1
+            subprocess.run(["rm", "-rf", scratch], check=False)
+        write_metrics(cfg, st.data, repo_info(cfg))
+    return rc
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--config", required=True)
+    sub = parser.add_subparsers(dest="command", required=True)
+    b = sub.add_parser("backup")
+    b.add_argument("--type", choices=["full", "diff", "incr"], required=True)
+    b.add_argument("--if-none", action="store_true", help="only into repositories without any backup")
+    sub.add_parser("metrics")
+    sub.add_parser("restore-test")
+    args = parser.parse_args()
+    cfg = load_config(args.config)
+    return {"backup": cmd_backup, "metrics": cmd_metrics, "restore-test": cmd_restore_test}[args.command](cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# pgBackRest for PostgreSQL cluster {{ postgres_cluster_cfg.name }}. Every repository is encrypted (aes-256-cbc).
+[global]
+{% for r in postgres_cluster_repos %}
+{{ r.key_name }}-type={{ r.type }}
+{%   if r.type == 's3' %}
+{{ r.key_name }}-path={{ r.s3_path }}
+{{ r.key_name }}-s3-bucket={{ r.bucket }}
+{{ r.key_name }}-s3-endpoint={{ r.endpoint }}
+{{ r.key_name }}-s3-region={{ r.region }}
+{{ r.key_name }}-s3-key={{ r.key }}
+{{ r.key_name }}-s3-key-secret={{ r.key_secret }}
+{{ r.key_name }}-s3-uri-style={{ r.uri_style }}
+{{ r.key_name }}-storage-verify-tls={{ 'y' if r.verify_tls | bool else 'n' }}
+{%     if r.ca_file | length > 0 %}
+{{ r.key_name }}-storage-ca-file=/etc/pgbackrest/{{ r.key_name }}-ca.crt
+{%     endif %}
+{%   else %}
+{{ r.key_name }}-path={{ r.ct_path }}
+{%   endif %}
+{{ r.key_name }}-cipher-type=aes-256-cbc
+{{ r.key_name }}-cipher-pass={{ postgres_cluster_cfg.backup.cipher_pass }}
+{{ r.key_name }}-retention-full-type=count
+{{ r.key_name }}-retention-full={{ r.retention_full | default(postgres_cluster_cfg.backup.retention_full) }}
+{{ r.key_name }}-bundle=y
+{{ r.key_name }}-block=y
+{% endfor %}
+start-fast=y
+process-max={{ postgres_cluster_cfg.backup.process_max }}
+compress-type=zst
+log-level-console=info
+log-level-stderr=off
+log-level-file=off
+lock-path=/tmp/pgbackrest
+
+[{{ postgres_cluster_cfg.name }}]
+pg1-path={{ postgres_cluster_ct_data }}
+pg1-port={{ postgres_cluster_cfg.ports.postgres }}
+pg1-socket-path=/var/run/postgresql
+pg1-user=postgres
