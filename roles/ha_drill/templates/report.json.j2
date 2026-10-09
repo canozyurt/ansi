@@ -1,0 +1,30 @@
+{#- HA drill report (HA-01). Written by the probing node; reads the other nodes' state through hostvars. -#}
+{%- set errors = (ha_drill_nodes | map('extract', hostvars, 'ha_drill_error') | select | list) -%}
+{%- set restore_errors = (ha_drill_nodes | map('extract', hostvars, 'ha_drill_restore_error') | select | list) -%}
+{%- set probes = ha_drill_nodes | map('extract', hostvars, 'ha_drill_probe_log') | flatten -%}
+{%- set report = {
+  'kind': 'ha-drill',
+  'checklist': ['HA-01'],
+  'run_id': ha_drill_run_id,
+  'service': ha_drill_service,
+  'instance': ha_drill_instance.name | default(''),
+  'group': ha_drill_def.group,
+  'nodes': ha_drill_nodes,
+  'stopped_node': ha_drill_victim,
+  'stopped_node_selected_by': ('operator' if (ha_drill_node | default('')) | length > 0 else 'leader check' if ha_drill_def.leader is defined else 'last node'),
+  'probing_node': ha_drill_prober,
+  'precheck_passed': ha_drill_precheck_ok | bool,
+  'started_at': '%Y-%m-%dT%H:%M:%SZ' | strftime(ha_drill_t0 | int, utc=true),
+  'node_stopped_at': ('%Y-%m-%dT%H:%M:%SZ' | strftime(ha_drill_t_stop | int, utc=true)) if ha_drill_t_stop | int > 0 else none,
+  'finished_at': '%Y-%m-%dT%H:%M:%SZ' | strftime(utc=true),
+  'probes': probes,
+  'probes_declared': ha_drill_def.probes | selectattr('enabled', 'undefined') | map(attribute='name') | list
+                     + ha_drill_def.probes | selectattr('enabled', 'defined') | selectattr('enabled') | map(attribute='name') | list,
+  'writes_proven': probes | selectattr('write') | map(attribute='name') | unique | list,
+  'node_restored': restore_errors | length == 0 and ha_drill_precheck_ok | bool,
+  'errors': errors + restore_errors,
+  'result': 'passed' if (errors + restore_errors) | length == 0 else 'failed',
+  'operator': lookup('ansible.builtin.env', 'USER') | default('unknown', true),
+  'repository_commit': lookup('ansible.builtin.pipe', 'git -C ' ~ (playbook_dir | quote) ~ ' rev-parse HEAD 2>/dev/null || echo unknown'),
+} -%}
+{{ report | to_nice_json }}

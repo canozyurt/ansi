@@ -1,0 +1,15 @@
+{#- One entry per (service, instance). Instances come from the definition's "instances" key
+    (product playbooks); other services have one drill. -#}
+{%- set plan = [] -%}
+{%- for svc in ha_drill_selected -%}
+{%-   set def = lookup('ansible.builtin.vars', 'ha_drill_' ~ svc) -%}
+{%-   set instances = def.instances | default(none) -%}
+{%-   if instances is none -%}
+{%-     set _ = plan.append({'service': svc, 'instance': {}, 'label': svc}) -%}
+{%-   else -%}
+{%-     for inst in instances if (ha_drill_instance_filter | length == 0 or inst.name in ha_drill_instance_filter) -%}
+{%-       set _ = plan.append({'service': svc, 'instance': inst, 'label': svc ~ '/' ~ inst.name}) -%}
+{%-     endfor -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ plan | to_json }}

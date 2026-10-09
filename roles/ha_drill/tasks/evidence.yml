@@ -1,0 +1,68 @@
+---
+# Evidence (HA-01, EVD-02): the probing node writes one JSON report per drill and the drill's metrics;
+# the other nodes drop older metrics of the same drill so only the latest result is exported.
+- name: Note the drill file names
+  ansible.builtin.set_fact:
+    ha_drill_slug: "{{ ha_drill_item.label | regex_replace('[^A-Za-z0-9_.-]', '-') }}"
+    ha_drill_metric_file: "{{ ha_drill_textfile_dir }}/ha-drill-{{ ha_drill_item.label | regex_replace('[^A-Za-z0-9_.-]', '-') }}.prom"
+
+- name: Write the report and metrics on the probing node
+  when: inventory_hostname == ha_drill_prober
+  block:
+    - name: Create the evidence directory
+      ansible.builtin.file:
+        path: "{{ ha_drill_evidence_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write the drill report
+      ansible.builtin.template:
+        src: report.json.j2
+        dest: "{{ ha_drill_evidence_dir }}/{{ ha_drill_run_id }}-{{ ha_drill_slug }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      register: ha_drill_report
+      tags: [chk_ha_01]
+
+    - name: Copy the report to the controller
+      ansible.builtin.fetch:
+        src: "{{ ha_drill_report.dest }}"
+        dest: "{{ ha_drill_local_report_dir }}/"
+        flat: true
+      when: ha_drill_local_report_dir | length > 0
+
+    - name: Create the node_exporter textfile directory
+      ansible.builtin.file:
+        path: "{{ ha_drill_textfile_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Publish the drill result as metrics
+      ansible.builtin.template:
+        src: ha_drill.prom.j2
+        dest: "{{ ha_drill_metric_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+      tags: [chk_ha_01]
+
+    - name: Keep the reports in the backups
+      ansible.builtin.include_role:
+        name: backup_register
+      vars:
+        backup_register_name: ha-drill-evidence
+        backup_register_paths: ["{{ ha_drill_evidence_dir }}"]
+        backup_register_rpo_hours: "{{ ha_drill_backup_rpo_hours }}"
+        backup_register_rto_hours: "{{ ha_drill_backup_rto_hours }}"
+      tags: [chk_ha_01]
+
+- name: Drop older metrics of this drill on the other nodes
+  ansible.builtin.file:
+    path: "{{ ha_drill_metric_file }}"
+    state: absent
+  when: inventory_hostname != ha_drill_prober

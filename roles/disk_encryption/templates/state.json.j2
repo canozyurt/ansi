@@ -1,0 +1,14 @@
+{#- One entry per existing required path: its source device, whether dm-crypt is below it, and
+    whether it counts as protected (dm-crypt, or the provider encrypts every volume). -#}
+{%- set out = [] -%}
+{%- for r in disk_encryption_probe.results -%}
+{%-   set lines = r.stdout_lines | default([]) -%}
+{%-   if lines | length > 0 and lines[0] != 'absent' -%}
+{%-     set types = (lines[1] | default('')).split() if lines | length > 1 else [] -%}
+{%-     set dmcrypt = 'crypt' in types -%}
+{%-     set _ = out.append({'path': r.item, 'source': lines[0] | regex_replace('^source=', ''),
+                            'dmcrypt': dmcrypt,
+                            'protected': dmcrypt or disk_encryption_provider | length > 0}) -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ out | to_json }}

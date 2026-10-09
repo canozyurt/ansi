@@ -1,0 +1,14 @@
+---
+# The service role's own health tasks (the same ones upgrade.yml and rolling_reboot.yml use).
+# Product playbook roles read their cluster entry from <role>; Forgejo needs the node list.
+- name: Run the health tasks of {{ ha_drill_def.health.role }}
+  ansible.builtin.include_role:
+    name: "{{ ha_drill_def.health.role }}"
+    tasks_from: "{{ ha_drill_def.health.tasks_from | default('health') }}"
+  vars:
+    postgres_cluster: "{{ ha_drill_instance }}"
+    valkey_cluster: "{{ ha_drill_instance }}"
+    rabbitmq_cluster: "{{ ha_drill_instance }}"
+    garage_cluster: "{{ ha_drill_instance }}"
+    forgejo_cluster_hosts: "{{ ha_drill_nodes }}"
+  tags: [chk_ha_01]
