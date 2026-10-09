@@ -1,0 +1,41 @@
+# {{ ansible_managed }}
+server.host: 0.0.0.0
+server.port: {{ wazuh_dashboard_port }}
+server.name: {{ inventory_hostname | to_json }}
+server.ssl.enabled: true
+server.ssl.certificate: {{ wazuh_dashboard_home }}/certs/tls/tls.crt
+server.ssl.key: {{ wazuh_dashboard_home }}/certs/tls/tls.key
+server.ssl.supportedProtocols: ["TLSv1.2", "TLSv1.3"]
+
+opensearch.hosts: {{ wazuh_dashboard_indexer_urls | to_json }}
+opensearch.ssl.verificationMode: full
+opensearch.ssl.certificateAuthorities: ["{{ wazuh_dashboard_home }}/certs/ca.pem"]
+opensearch.requestHeadersAllowlist: ["securitytenant", "Authorization"]
+
+opensearch_security.multitenancy.enabled: false
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+opensearch_security.cookie.secure: true
+opensearch_security.cookie.ttl: {{ wazuh_dashboard_cookie_ttl_ms }}
+opensearch_security.session.ttl: {{ wazuh_dashboard_session_ttl_ms }}
+opensearch_security.session.keepalive: true
+{% if wazuh_dashboard_oidc_enabled | bool %}
+# SSO (IAM-01): Keycloak first; the basic form remains for the break-glass admin only.
+opensearch_security.auth.type: ["openid", "basicauth"]
+opensearch_security.auth.multiple_auth_enabled: true
+opensearch_security.openid.connect_url: {{ wazuh_dashboard_oidc_connect_url | trim | to_json }}
+opensearch_security.openid.client_id: {{ wazuh_dashboard_oidc_client_id | to_json }}
+opensearch_security.openid.client_secret: {{ wazuh_dashboard_oidc_client_secret | to_json }}
+opensearch_security.openid.scope: {{ wazuh_dashboard_oidc_scope | to_json }}
+opensearch_security.openid.base_redirect_url: {{ wazuh_dashboard_public_url | to_json }}
+opensearch_security.openid.logout_url: ""
+opensearch_security.openid.verify_hostnames: true
+{% if wazuh_dashboard_oidc_ca_file | length > 0 %}
+opensearch_security.openid.root_ca: {{ wazuh_dashboard_oidc_ca_file | to_json }}
+{% endif %}
+opensearch_security.ui.openid.login.buttonname: "Log in with single sign-on"
+opensearch_security.ui.basicauth.login.title: "Break-glass login"
+opensearch_security.ui.basicauth.login.brandimage: ""
+{% else %}
+opensearch_security.auth.type: "basicauth"
+{% endif %}
+uiSettings.overrides.defaultRoute: /app/wz-home

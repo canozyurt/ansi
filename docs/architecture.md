@@ -261,6 +261,22 @@ Operator workflow: [docs/access.md](access.md).
   into a new instance (playbooks/postgres_major_upgrade.yml, runbook).
 - Data at rest: LUKS on the data volume is a host prerequisite; the role checks for dm-crypt and warns/fails.
 
+## Central logging and SIEM (Wazuh)
+- Wazuh 4.x (GPLv2): indexer and dashboard are OpenSearch forks, so SSO, audit logs and clustering are free.
+- Indexer: 3 nodes on the `siem` group, 1 replica per index, heap as a variable; TLS between nodes and to
+  clients with a dedicated SIEM CA (OpenSearch identifies nodes and the admin by certificate DN).
+- Retention (LOG-02): ISM keeps alerts, archives and the security audit log searchable 90 days and deletes
+  them after 365; optional nightly snapshots to S3.
+- Manager: a cluster of one master and workers with a shared key from Vault; agents enroll over TLS with a
+  password (authd); Filebeat writes alerts (and archives when enabled) to the indexer.
+- Agent on every host: journald (all containers), auditd and auth logs; FIM, rootcheck, CIS SCA,
+  syscollector inventory and vulnerability detection; remote commands and active response off.
+- Alerts of level 10+ go to Alertmanager through a custom integration; `logger compliant-infra-siem-test x`
+  is the end-to-end test (LOG-04). A silent agent raises rule 100110 and a textfile metric (LOG-06).
+- Dashboard on every SIEM node behind the edge: OIDC via the security plugin, the "roles" claim mapped
+  (admins all_access, auditor readall, operator alerts read-only); login form only for break-glass.
+- Upgrades: indexer, manager, dashboard one node at a time, then agents in 20% batches (playbooks/upgrade.yml).
+
 ## Compliance as code
 
 1. `compliance/checklist.yml` is the source of truth for requirements and their control mappings.

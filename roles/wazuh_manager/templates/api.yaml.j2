@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+host: ["0.0.0.0"]
+port: {{ wazuh_manager_api_port }}
+drop_privileges: yes
+https:
+  enabled: yes
+  # Files in api/configuration/ssl (copied there with the configuration; names only).
+  key: "server.key"
+  cert: "server.crt"
+  use_ca: False
+  ca: "ca.crt"
+  ssl_protocol: "auto"
+  ssl_ciphers: ""
+logs:
+  level: "info"
+cors:
+  enabled: no
+access:
+  max_login_attempts: 50
+  block_time: 300
+  max_request_per_minute: 300

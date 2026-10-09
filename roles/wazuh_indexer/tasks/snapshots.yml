@@ -1,0 +1,129 @@
+---
+# BCK-01 / LOG-02: daily snapshots of every index to S3-compatible object storage, kept as long as logs.
+- name: Check that the S3 repository plugin is installed
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ wazuh_indexer_container_name }}", "{{ wazuh_indexer_home }}/bin/opensearch-plugin", list]
+  register: wazuh_indexer_plugins
+  changed_when: false
+
+- name: Require the repository-s3 plugin
+  ansible.builtin.assert:
+    that: "'repository-s3' in wazuh_indexer_plugins.stdout_lines"
+    fail_msg: >-
+      The indexer image has no repository-s3 plugin. Build a derived image with it (pinned in
+      roles/versions) or unset wazuh_s3_bucket.
+    quiet: true
+
+- name: Check the S3 credentials
+  ansible.builtin.assert:
+    that:
+      - wazuh_indexer_s3_access_key | length > 0
+      - wazuh_indexer_s3_secret_key | length > 0
+    fail_msg: Set wazuh_s3_access_key and wazuh_s3_secret_key (from the secrets manager) with wazuh_s3_bucket.
+    quiet: true
+
+- name: Read the keystore entries
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ wazuh_indexer_container_name }}", "{{ wazuh_indexer_home }}/bin/opensearch-keystore", list]
+  register: wazuh_indexer_keystore
+  changed_when: false
+  failed_when: false
+
+- name: Fingerprint the S3 credentials
+  ansible.builtin.copy:
+    content: "{{ (wazuh_indexer_s3_access_key ~ ':' ~ wazuh_indexer_s3_secret_key) | hash('sha256') }}\n"
+    dest: "{{ wazuh_indexer_data_dir }}/hashes/s3-credentials"
+    owner: root
+    group: root
+    mode: "0600"
+  register: wazuh_indexer_s3_fingerprint
+  no_log: true
+
+- name: Store the S3 credentials in the keystore
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --interactive
+      - "{{ wazuh_indexer_container_name }}"
+      - "{{ wazuh_indexer_home }}/bin/opensearch-keystore"
+      - add
+      - --stdin
+      - --force
+      - "{{ item.key }}"
+    stdin: "{{ item.value }}"
+  loop:
+    - { key: s3.client.default.access_key, value: "{{ wazuh_indexer_s3_access_key }}" }
+    - { key: s3.client.default.secret_key, value: "{{ wazuh_indexer_s3_secret_key }}" }
+  when: >-
+    wazuh_indexer_s3_fingerprint is changed
+    or item.key not in wazuh_indexer_keystore.stdout_lines | default([])
+  register: wazuh_indexer_keystore_added
+  changed_when: true
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Reload secure settings
+  ansible.builtin.uri:
+    url: "{{ wazuh_indexer_api }}/_nodes/_local/reload_secure_settings"
+    method: POST
+    client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+    client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+    ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+  when: wazuh_indexer_keystore_added is changed  # noqa: no-handler -- the repository registration below needs the keys now
+  changed_when: true
+
+- name: Register the repository and the snapshot policy
+  run_once: true
+  module_defaults:
+    ansible.builtin.uri:
+      client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+      client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+      ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+      body_format: json
+  tags: [chk_bck_01, chk_log_02]
+  block:
+    - name: Register the S3 snapshot repository
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_snapshot/{{ wazuh_indexer_s3_repository }}"
+        method: PUT
+        body:
+          type: s3
+          settings:
+            bucket: "{{ wazuh_indexer_s3_bucket }}"
+            base_path: "{{ wazuh_indexer_s3_base_path }}"
+            server_side_encryption: true
+      changed_when: false
+
+    - name: Read the snapshot policy
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_plugins/_sm/policies/daily-to-s3"
+        status_code: [200, 404]
+      register: wazuh_indexer_sm_current
+
+    - name: Create the daily snapshot policy
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_plugins/_sm/policies/daily-to-s3"
+        method: POST
+        body:
+          description: compliant-infra daily snapshot of all SIEM indices
+          creation:
+            schedule:
+              cron:
+                expression: "{{ wazuh_indexer_snapshot_cron }}"
+                timezone: "{{ wazuh_indexer_snapshot_timezone }}"
+          deletion:
+            schedule:
+              cron:
+                expression: "{{ wazuh_indexer_snapshot_cron }}"
+                timezone: "{{ wazuh_indexer_snapshot_timezone }}"
+            condition:
+              max_age: "{{ wazuh_indexer_snapshot_max_age }}"
+              min_count: "{{ wazuh_indexer_snapshot_min_count }}"
+          snapshot_config:
+            indices: "*"
+            repository: "{{ wazuh_indexer_s3_repository }}"
+            include_global_state: true
+        status_code: [200, 201]
+      when: wazuh_indexer_sm_current.status == 404
+      changed_when: true

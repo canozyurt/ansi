@@ -1,0 +1,62 @@
+---
+- name: Read the SIEM CA certificate
+  ansible.builtin.slurp:
+    src: "{{ wazuh_agent_ca_file }}"
+  delegate_to: "{{ wazuh_agent_ca_host }}"
+  run_once: true
+  register: wazuh_agent_ca_slurp
+  when: wazuh_agent_server_ca_pem | length == 0
+
+- name: Install the SIEM CA (verifies the manager during enrollment)
+  ansible.builtin.copy:
+    content: "{{ (wazuh_agent_server_ca_pem if wazuh_agent_server_ca_pem | length > 0 else (wazuh_agent_ca_slurp.content | b64decode)) | trim }}\n"
+    dest: /var/ossec/etc/siem-ca.pem
+    owner: root
+    group: wazuh
+    mode: "0640"
+  notify: Restart wazuh-agent
+  tags: [chk_sec_03]
+
+- name: Write the enrollment password
+  ansible.builtin.copy:
+    content: "{{ wazuh_agent_enrollment_password }}\n"
+    dest: /var/ossec/etc/authd.pass
+    owner: root
+    group: wazuh
+    mode: "0640"
+  no_log: true
+  notify: Restart wazuh-agent
+  tags: [chk_sec_02]
+
+- name: Write the agent configuration
+  ansible.builtin.template:
+    src: ossec.conf.j2
+    dest: /var/ossec/etc/ossec.conf
+    owner: root
+    group: wazuh
+    mode: "0640"
+  notify: Restart wazuh-agent
+  tags: [chk_log_01, chk_hrd_06, chk_iam_07, chk_evd_03]
+
+- name: Refuse commands pushed from the manager
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (roles/wazuh_agent).
+      # Remote (agent.conf) commands could run anything on this host; keep them off.
+      wazuh_command.remote_commands=0
+      logcollector.remote_commands=0
+      sca.remote_commands=0
+    dest: /var/ossec/etc/local_internal_options.conf
+    owner: root
+    group: wazuh
+    mode: "0640"
+  notify: Restart wazuh-agent
+  tags: [chk_hrd_06]
+
+- name: Start the agent
+  ansible.builtin.systemd_service:
+    name: wazuh-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_hrd_06, chk_log_01]

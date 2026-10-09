@@ -1,0 +1,110 @@
+---
+wazuh_manager_image: "{{ versions_images.wazuh_manager }}"
+wazuh_manager_container_name: wazuh-manager
+
+# High availability (HA-01): a Wazuh cluster of one master and at least two workers. Agents list every
+# node (or a load-balanced VIP) and fail over; any node accepts enrollments and forwards them to the master.
+wazuh_manager_min_nodes: 3
+wazuh_manager_allow_single_node: false
+wazuh_manager_cluster_hosts: "{{ ansible_play_hosts_all }}"
+wazuh_manager_master_host: "{{ wazuh_manager_cluster_hosts[0] }}"
+wazuh_manager_cluster_name: compliant-infra
+wazuh_manager_node_name: "{{ inventory_hostname_short }}"
+wazuh_manager_node_address: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+# Shared cluster key: exactly 32 characters, from Ansible Vault or OpenBao.
+wazuh_manager_cluster_key: ""
+wazuh_manager_cluster_port: 1516
+
+# Agent connection and enrollment (authd). The enrollment password comes from the secrets manager; the
+# same password enrolls servers and laptops (docs/siem-endpoints.md).
+wazuh_manager_agent_port: 1514
+wazuh_manager_enrollment_port: 1515
+wazuh_manager_enrollment_password: ""
+# Remove an agent's old key when it enrolls again with the same name (reinstalled hosts).
+wazuh_manager_enrollment_force_replace: true
+
+# Wazuh API (55000, TLS with the SIEM CA). The dashboard uses this account; people never log in to it.
+wazuh_manager_api_port: 55000
+wazuh_manager_api_user: wazuh-wui
+# 8-64 characters with upper and lower case letters, a digit and a symbol (Wazuh API policy).
+wazuh_manager_api_password: ""
+
+# Indexer cluster (Filebeat for alerts/archives and the vulnerability detector's state indices).
+wazuh_manager_indexer_group: siem
+wazuh_manager_indexer_urls: >-
+  {{ (groups[wazuh_manager_indexer_group] | default([]))
+     | map('regex_replace', '^', 'https://')
+     | map('regex_replace', '$', ':' ~ (wazuh_indexer_http_port | default(9200) | string))
+     | list }}
+wazuh_manager_indexer_user: "{{ wazuh_indexer_manager_user | default('wazuh-manager') }}"
+wazuh_manager_indexer_password: "{{ wazuh_indexer_manager_password | default('') }}"
+
+wazuh_manager_data_dir: /opt/wazuh-manager
+wazuh_manager_memory_limit: 4g
+
+# ---------------------------------------------------------------- detection
+# Archives keep every event (not only alerts) in wazuh-archives-*; useful for investigations, costly in disk.
+wazuh_manager_archives_enabled: false
+# Alerts with this level or above are sent to the on-call (LOG-04).
+wazuh_manager_alert_forward_level: 10
+# Agents not heard from for this long are "disconnected"; rule 100110 (level 10) then alerts (LOG-06).
+wazuh_manager_agents_disconnection_time: 10m
+# Active response (blocking IPs, disabling accounts) is off by default: it acts on production without review.
+wazuh_manager_active_response_enabled: false
+wazuh_manager_active_response_rules: []   # e.g. [{command: firewall-drop, rules_id: "5763", timeout: 600}]
+# Vulnerability detection (HRD-05) against Wazuh's CTI feed (needs outbound HTTPS to cti.wazuh.com).
+wazuh_manager_vulnerability_detection: true
+wazuh_manager_vulnerability_feed_interval: 60m
+
+# Central agent policy (agent.conf, group "default") pushed to every agent (HRD-06, EVD-03).
+wazuh_manager_fim_directories: [/etc, /usr/bin, /usr/sbin, /boot]
+wazuh_manager_fim_realtime_directories: [/etc]
+# Service configuration of the roles in this repository (/opt/<service>/...): attributes and hashes only,
+# never content diffs, because these files hold secrets.
+wazuh_manager_fim_service_config_dir: /opt
+wazuh_manager_fim_service_config_restrict: '\.(env|ya?ml|conf|cfg|json|xml|toml|ini|pem|crt|properties)$'
+wazuh_manager_fim_ignore:
+  - /etc/mtab
+  - /etc/hosts.deny
+  - /etc/random-seed
+  - /etc/adjtime
+  - /etc/cups/certs
+wazuh_manager_fim_ignore_regex: '\.log$|\.swp$|/data/|/logs?/|/queue/|/tmp/'
+wazuh_manager_fim_frequency: 43200
+wazuh_manager_rootcheck_frequency: 43200
+wazuh_manager_sca_interval: 12h
+wazuh_manager_syscollector_interval: 1h
+
+# ---------------------------------------------------------------- alert delivery (LOG-04)
+# Alertmanager webhook (custom integration). Empty disables it.
+wazuh_manager_alertmanager_url: "{{ monitoring_alertmanager_url | default('') }}"
+wazuh_manager_alertmanager_user: "{{ monitoring_alertmanager_user | default('') }}"
+wazuh_manager_alertmanager_password: "{{ monitoring_alertmanager_password | default('') }}"
+# CA file on the manager host that signs Alertmanager's certificate; empty uses the system store.
+wazuh_manager_alertmanager_ca_file: ""
+# Optional e-mail delivery through the manager (in addition to or instead of Alertmanager).
+wazuh_manager_email_to: []
+wazuh_manager_email_from: wazuh@example.internal
+wazuh_manager_smtp_server: ""
+wazuh_manager_email_alert_level: 12
+
+# Upgrades: one node at a time through playbooks/upgrade.yml, after a copy of the manager's state.
+wazuh_manager_upgrade_allow_parallel: false
+wazuh_manager_upgrade_backup_dir: /var/backups/wazuh-manager
+
+# Extra names in the manager certificate (e.g. the agents' VIP or load balancer name).
+wazuh_manager_cert_extra_names: []
+# uid/gid of the "wazuh" user inside the upstream image (owns the API's key).
+wazuh_manager_container_uid: 999
+
+# Wazuh API roles for people who open the Wazuh pages of the dashboard (run_as): IdP role -> API role.
+# Roles not listed have no access to the manager API.
+wazuh_manager_api_role_mapping:
+  platform-admin: administrator
+  security-admin: administrator
+  auditor: readonly
+
+# node_exporter textfile collector (LOG-06): manager status and agent counts by status.
+wazuh_manager_textfile_dir: /var/lib/node_exporter/textfile_collector
+# Open files per container (upstream recommendation; one per agent connection plus queues).
+wazuh_manager_nofile: 655360

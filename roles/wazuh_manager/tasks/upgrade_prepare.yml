@@ -1,0 +1,44 @@
+---
+- name: Read the running manager container
+  community.docker.docker_container_info:
+    name: "{{ wazuh_manager_container_name }}"
+  register: wazuh_manager_current
+
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    wazuh_manager_needs_upgrade: >-
+      {{ wazuh_manager_current.exists and wazuh_manager_current.container.Config.Image != wazuh_manager_image }}
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: >-
+      not wazuh_manager_needs_upgrade
+      or ansible_play_batch | length == 1
+      or wazuh_manager_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ wazuh_manager_current.container.Config.Image | default('') }} but this
+      release pins {{ wazuh_manager_image }}. Run playbooks/upgrade.yml, which upgrades one node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Back up the manager state before a version change
+  when: wazuh_manager_needs_upgrade | bool
+  tags: [chk_chg_07, chk_bck_01]
+  block:
+    - name: Create the backup directory
+      ansible.builtin.file:
+        path: "{{ wazuh_manager_upgrade_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Archive configuration, agent keys and the agent database
+      community.general.archive:
+        path:
+          - "{{ wazuh_manager_data_dir }}/ossec/etc"
+          - "{{ wazuh_manager_data_dir }}/ossec/api-configuration"
+          - "{{ wazuh_manager_data_dir }}/ossec/queue/db/global.db"
+        dest: "{{ wazuh_manager_upgrade_backup_dir }}/wazuh-manager-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.tar.gz"
+        format: gz
+        mode: "0600"

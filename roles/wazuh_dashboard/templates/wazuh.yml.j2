@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# The id is the one the image expects (it appends a default host otherwise).
+# The dashboard calls the manager API "run as" the signed-in user (wazuh_manager_api_role_mapping).
+hosts:
+  - 1513629884013:
+      url: {{ wazuh_dashboard_api_url | to_json }}
+      port: {{ wazuh_dashboard_api_port }}
+      username: {{ wazuh_dashboard_api_user | to_json }}
+      password: {{ wazuh_dashboard_api_password | to_json }}
+      run_as: true

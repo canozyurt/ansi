@@ -1,0 +1,11 @@
+---
+- name: Wait until the dashboard serves its login page
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ wazuh_dashboard_port }}/app/login"
+    validate_certs: false
+    status_code: 200
+  register: wazuh_dashboard_ready
+  until: wazuh_dashboard_ready.status == 200
+  retries: 60
+  delay: 5
+  tags: [chk_log_05]

@@ -1,0 +1,59 @@
+---
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ wazuh_manager_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the manager metrics script
+  ansible.builtin.template:
+    src: wazuh-manager-textfile.sh.j2
+    dest: /usr/local/sbin/wazuh-manager-textfile
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_log_06]
+
+- name: Install the metrics service and timer
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: wazuh-manager-textfile.service
+      content: |
+        [Unit]
+        Description=Wazuh manager metrics for node_exporter
+        After=docker.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/wazuh-manager-textfile
+    - name: wazuh-manager-textfile.timer
+      content: |
+        [Unit]
+        Description=Refresh Wazuh manager metrics every minute
+
+        [Timer]
+        OnBootSec=1min
+        OnUnitActiveSec=1min
+        AccuracySec=5s
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: wazuh_manager_units
+  tags: [chk_log_06]
+
+- name: Enable the metrics timer
+  ansible.builtin.systemd_service:
+    name: wazuh-manager-textfile.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ wazuh_manager_units is changed }}"
+  tags: [chk_log_06]

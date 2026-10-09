@@ -92,7 +92,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [keycloak, keycloak-upgrade, monitoring, edge, backup, openbao, openbao-upgrade, access, security_scanning, governance, forgejo, postgres]
+        scenario:
+          - keycloak
+          - keycloak-upgrade
+          - monitoring
+          - edge
+          - backup
+          - openbao
+          - openbao-upgrade
+          - access
+          - security_scanning
+          - governance
+          - forgejo
+          - postgres
+          - siem
     steps:
       - uses: actions/checkout@v4
 

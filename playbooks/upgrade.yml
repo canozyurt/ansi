@@ -130,3 +130,46 @@
         loop_var: postgres_cluster
         label: "{{ postgres_cluster.name }}"
       tags: [chk_chg_07]
+
+- name: Check the SIEM is healthy before upgrading
+  hosts: siem
+  become: true
+  gather_facts: false
+  tasks:
+    - name: The indexer cluster is available
+      ansible.builtin.include_role:
+        name: wazuh_indexer
+        tasks_from: health
+      when: not (upgrade_skip_preflight | default(false) | bool)
+      tags: [chk_chg_07]
+
+- name: Upgrade the SIEM indexer one node at a time
+  hosts: siem
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: wazuh_indexer
+
+- name: Upgrade the SIEM manager one node at a time
+  hosts: siem
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: wazuh_manager
+
+- name: Upgrade the SIEM dashboard one node at a time
+  hosts: siem
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: wazuh_dashboard
+
+- name: Upgrade the SIEM agents in batches (after the managers)
+  hosts: all
+  become: true
+  serial: "20%"
+  roles:
+    - role: wazuh_agent

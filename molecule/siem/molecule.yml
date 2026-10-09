@@ -1,0 +1,86 @@
+---
+# The whole SIEM on one node (lab mode): indexer, manager and dashboard containers run in Docker inside
+# the test container, and the agent runs on the test container itself. Memory heavy (about 4 GB).
+# A small local service stands in for Keycloak's discovery document and for Alertmanager.
+#
+# The agent comes from the official apt repository unless WAZUH_AGENT_DEB names a .deb on the
+# controller (molecule/siem/build-agent-deb.sh builds one from the official agent image).
+driver:
+  name: docker
+platforms:
+  - name: siem-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [siem, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          auditors: [auditor]
+        # Lab mode: one node of everything, small memory.
+        wazuh_indexer_allow_single_node: true
+        wazuh_manager_allow_single_node: true
+        wazuh_dashboard_allow_single_node: true
+        wazuh_indexer_heap: 512m
+        wazuh_indexer_memory_limit: 1536m
+        wazuh_manager_memory_limit: 1536m
+        wazuh_dashboard_memory_limit: 1g
+        # The test container's own open-files limit is 20000.
+        wazuh_indexer_nofile: 16384
+        # The test host's disk is shared and often above the watermarks.
+        wazuh_indexer_disk_threshold_enabled: false
+        wazuh_manager_nofile: 16384
+        wazuh_indexer_admin_password: test-only-admin-password
+        wazuh_indexer_dashboard_password: test-only-dashboard-password
+        wazuh_indexer_manager_password: test-only-manager-password
+        wazuh_manager_cluster_key: 0123456789abcdef0123456789abcdef
+        wazuh_manager_enrollment_password: test-only-enrollment-password
+        wazuh_manager_api_password: Test-only-API-pass1!
+        wazuh_manager_indexer_urls: [https://127.0.0.1:9200]
+        wazuh_dashboard_indexer_urls: [https://127.0.0.1:9200]
+        wazuh_dashboard_api_url: https://127.0.0.1
+        wazuh_dashboard_public_url: https://siem.test.internal:5601
+        wazuh_dashboard_oidc_client_secret: test-only-oidc-client-secret-0123456789
+        wazuh_dashboard_oidc_register_client: false
+        wazuh_dashboard_oidc_connect_url: http://127.0.0.1:19093/realms/org/.well-known/openid-configuration
+        wazuh_indexer_oidc_connect_url: http://127.0.0.1:19093/realms/org/.well-known/openid-configuration
+        # Keep every event so the test can find its journald marker in wazuh-archives-*.
+        wazuh_manager_archives_enabled: true
+        wazuh_manager_alertmanager_url: http://127.0.0.1:19093
+        wazuh_agent_manager_addresses: [127.0.0.1]
+        wazuh_agent_install_method: "{{ 'deb' if lookup('ansible.builtin.env', 'WAZUH_AGENT_DEB') | length > 0 else 'apt' }}"
+        wazuh_agent_deb_src: "{{ lookup('ansible.builtin.env', 'WAZUH_AGENT_DEB') }}"
+        asset_owner: test-team
+        # Docker Hub rate-limits anonymous pulls here.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # The inner /var/lib/docker is a volume, so overlay2 works and keeps the large images small on disk.
+          storage-driver: overlay2
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

@@ -1,0 +1,37 @@
+---
+# Internal: not meant to be overridden.
+wazuh_manager_is_master: "{{ inventory_hostname == wazuh_manager_master_host }}"
+wazuh_manager_master_address: >-
+  {{ hostvars[wazuh_manager_master_host].wazuh_manager_node_address
+     | default(hostvars[wazuh_manager_master_host].ansible_facts.default_ipv4.address | default('127.0.0.1')) }}
+wazuh_manager_api: "https://127.0.0.1:{{ wazuh_manager_api_port }}"
+# Container paths of files rendered by this role.
+wazuh_manager_cert_path: /etc/compliant-infra/certs
+wazuh_manager_volumes:
+  - "{{ wazuh_manager_data_dir }}/ossec/api-configuration:/var/ossec/api/configuration"
+  - "{{ wazuh_manager_data_dir }}/ossec/etc:/var/ossec/etc"
+  - "{{ wazuh_manager_data_dir }}/ossec/logs:/var/ossec/logs"
+  - "{{ wazuh_manager_data_dir }}/ossec/queue:/var/ossec/queue"
+  - "{{ wazuh_manager_data_dir }}/ossec/multigroups:/var/ossec/var/multigroups"
+  - "{{ wazuh_manager_data_dir }}/ossec/integrations:/var/ossec/integrations"
+  - "{{ wazuh_manager_data_dir }}/ossec/active-response:/var/ossec/active-response/bin"
+  - "{{ wazuh_manager_data_dir }}/ossec/agentless:/var/ossec/agentless"
+  - "{{ wazuh_manager_data_dir }}/ossec/wodles:/var/ossec/wodles"
+  - "{{ wazuh_manager_data_dir }}/ossec/filebeat-etc:/etc/filebeat"
+  - "{{ wazuh_manager_data_dir }}/ossec/filebeat-var:/var/lib/filebeat"
+  - "{{ wazuh_manager_data_dir }}/config-mount:/wazuh-config-mount:ro"
+  - "{{ wazuh_manager_data_dir }}/entrypoint-scripts:/entrypoint-scripts:ro"
+  - "{{ wazuh_manager_data_dir }}/compliant-infra:/etc/compliant-infra/config:ro"
+  - "{{ wazuh_manager_data_dir }}/certs:{{ wazuh_manager_cert_path }}:ro"
+wazuh_manager_persistent_dirs:
+  - api-configuration
+  - etc
+  - logs
+  - queue
+  - multigroups
+  - integrations
+  - active-response
+  - agentless
+  - wodles
+  - filebeat-etc
+  - filebeat-var

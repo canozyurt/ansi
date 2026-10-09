@@ -1,0 +1,23 @@
+---
+# {{ ansible_managed }}
+# Backend roles are the default organisation roles from the IdP's "roles" claim (rbac_model).
+# Roles not mapped here (developer, member, ...) get no access.
+_meta:
+  type: "rolesmapping"
+  config_version: 2
+{% set fixed_users = {
+     'all_access': [wazuh_indexer_admin_user],
+     'kibana_server': [wazuh_indexer_dashboard_user],
+     'wazuh_ui_admin': [wazuh_indexer_dashboard_user],
+     'manage_ism': [wazuh_indexer_dashboard_user],
+     'wazuh_manager_writer': [wazuh_indexer_manager_user],
+   } %}
+{% set names = (wazuh_indexer_role_mapping.keys() | list + fixed_users.keys() | list) | unique | sort %}
+{% for name in names %}
+
+{{ name }}:
+  reserved: false
+  backend_roles: {{ wazuh_indexer_role_mapping.get(name, []) | to_json }}
+  users: {{ fixed_users.get(name, []) | to_json }}
+  hosts: []
+{% endfor %}

@@ -1,0 +1,26 @@
+---
+# Central logging and SIEM (Wazuh): indexer, then manager, then dashboard on the siem hosts, then the
+# agent on every host (LOG-01, HRD-06).
+- name: Deploy the SIEM indexer cluster
+  hosts: siem
+  become: true
+  roles:
+    - role: wazuh_indexer
+
+- name: Deploy the SIEM manager cluster
+  hosts: siem
+  become: true
+  roles:
+    - role: wazuh_manager
+
+- name: Deploy the SIEM dashboard
+  hosts: siem
+  become: true
+  roles:
+    - role: wazuh_dashboard
+
+- name: Deploy the SIEM agent on every host
+  hosts: all
+  become: true
+  roles:
+    - role: wazuh_agent

@@ -1,0 +1,5 @@
+---
+# Every host runs the Wazuh agent (playbooks/siem.yml) and enrolls with this password (Vault/OpenBao).
+wazuh_manager_enrollment_password: "{{ vault_wazuh_enrollment_password }}"
+# Asset owner reported by each agent (EVD-03); override per group or host.
+asset_owner: platform-team

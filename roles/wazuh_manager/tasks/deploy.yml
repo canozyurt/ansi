@@ -1,0 +1,238 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create manager directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop: >-
+    {{ [{'path': wazuh_manager_data_dir, 'mode': '0755'},
+        {'path': wazuh_manager_data_dir ~ '/ossec', 'mode': '0755'},
+        {'path': wazuh_manager_data_dir ~ '/certs', 'mode': '0755'},
+        {'path': wazuh_manager_data_dir ~ '/compliant-infra', 'mode': '0755'},
+        {'path': wazuh_manager_data_dir ~ '/entrypoint-scripts', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount/etc/shared/default', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount/etc/rules', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount/integrations', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount/api/configuration', 'mode': '0700'},
+        {'path': wazuh_manager_data_dir ~ '/config-mount/api/configuration/ssl', 'mode': '0700'}] }}
+  loop_control:
+    label: "{{ item.path }}"
+
+# The image fills these from its own copy on first start; afterwards they hold the manager's state
+# (agent keys, queues, logs). Ownership inside is managed by the container.
+- name: Create persistent data directories
+  ansible.builtin.file:
+    path: "{{ wazuh_manager_data_dir }}/ossec/{{ item }}"
+    state: directory
+    mode: "0750"
+  loop: "{{ wazuh_manager_persistent_dirs }}"
+
+# The image's init copies its defaults into empty data directories from a staging copy it deletes
+# after the first start; an empty directory would make every later restart fail. multigroups starts
+# empty, so it gets a marker file.
+- name: Keep the multigroups directory non-empty
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ wazuh_manager_data_dir }}/ossec/multigroups/.keep"
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Make sure the SIEM CA exists
+  ansible.builtin.include_role:
+    name: wazuh_certs
+  tags: [chk_sec_03]
+
+- name: Issue the manager certificate (enrollment, API and indexer client)
+  ansible.builtin.include_role:
+    name: wazuh_certs
+    tasks_from: issue
+  vars:
+    wazuh_certs_dir: "{{ wazuh_manager_data_dir }}/certs"
+    wazuh_certs_name: manager
+    wazuh_certs_common_name: "{{ inventory_hostname }}"
+    wazuh_certs_org_unit: siem-managers
+    wazuh_certs_dns_names: >-
+      {{ [inventory_hostname, ansible_facts['fqdn'] | default(inventory_hostname), 'localhost']
+         + wazuh_manager_cert_extra_names }}
+    wazuh_certs_ip_addresses: "{{ [wazuh_manager_node_address, '127.0.0.1'] }}"
+    wazuh_certs_owner: root
+    wazuh_certs_file_group: "{{ wazuh_manager_container_uid }}"
+    wazuh_certs_key_mode: "0440"
+  tags: [chk_sec_03]
+
+- name: Note whether the certificate changed
+  ansible.builtin.set_fact:
+    wazuh_manager_cert_changed: "{{ wazuh_certs_changed }}"
+
+- name: Read the internal PKI root, when this host trusts one
+  ansible.builtin.slurp:
+    src: /usr/local/share/ca-certificates/compliant-infra-ca.crt
+  register: wazuh_manager_internal_ca
+  failed_when: false
+
+- name: Write the CA bundle used to verify the indexer
+  ansible.builtin.copy:
+    content: "{{ wazuh_manager_ca_parts | join('\n') }}\n"
+    dest: "{{ wazuh_manager_data_dir }}/certs/ca.pem"
+    owner: root
+    group: root
+    mode: "0444"
+  vars:
+    wazuh_manager_ca_parts: >-
+      {{ [wazuh_certs_ca_pem | trim]
+         + ([(wazuh_manager_internal_ca.content | b64decode) | trim] if wazuh_manager_internal_ca.content is defined else []) }}
+  register: wazuh_manager_ca_bundle
+  tags: [chk_sec_03]
+
+- name: Give the API its certificate (the API accepts only file names in api/configuration/ssl)
+  ansible.builtin.copy:
+    src: "{{ wazuh_manager_data_dir }}/certs/{{ item.src }}"
+    dest: "{{ wazuh_manager_data_dir }}/config-mount/api/configuration/ssl/{{ item.dest }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - { src: manager.pem, dest: server.crt }
+    - { src: manager-key.pem, dest: server.key }
+    - { src: ca.pem, dest: ca.crt }
+  notify: Restart wazuh-manager
+  tags: [chk_sec_03]
+
+- name: Restart the manager when its certificates changed
+  ansible.builtin.debug:
+    msg: A certificate changed; the manager restarts to load it.
+  changed_when: (wazuh_manager_cert_changed | bool) or (wazuh_manager_ca_bundle is changed)
+  notify: Restart wazuh-manager
+
+- name: Write the manager configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ wazuh_manager_data_dir }}/{{ item.dest }}"
+    owner: root
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0600') }}"
+  loop:
+    - { src: ossec.conf.j2, dest: config-mount/etc/ossec.conf }
+    - { src: agent.conf.j2, dest: config-mount/etc/shared/default/agent.conf }
+    - { src: compliant_infra_rules.xml.j2, dest: config-mount/etc/rules/compliant_infra_rules.xml }
+    - { src: api.yaml.j2, dest: config-mount/api/configuration/api.yaml }
+    - { src: filebeat.yml.j2, dest: compliant-infra/filebeat.yml, mode: "0644" }
+    - { src: 50-compliant-infra.sh.j2, dest: entrypoint-scripts/50-compliant-infra.sh, mode: "0700" }
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart wazuh-manager
+  tags: [chk_hrd_06, chk_hrd_05, chk_evd_03, chk_log_01, chk_log_04, chk_log_06, chk_ha_01]
+
+- name: Install the Alertmanager integration
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ wazuh_manager_data_dir }}/config-mount/integrations/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [custom-alertmanager, custom-alertmanager.py]
+  notify: Restart wazuh-manager
+  tags: [chk_log_04]
+
+- name: Write the Alertmanager credentials for the integration
+  ansible.builtin.copy:
+    content: >-
+      {{ {'username': wazuh_manager_alertmanager_user, 'password': wazuh_manager_alertmanager_password,
+          'ca_file': ('/etc/compliant-infra/config/alertmanager-ca.pem' if wazuh_manager_alertmanager_ca_file | length > 0 else '')}
+         | to_nice_json }}
+    dest: "{{ wazuh_manager_data_dir }}/compliant-infra/alertmanager.json"
+    owner: root
+    group: "{{ wazuh_manager_container_uid }}"
+    mode: "0640"
+  no_log: true
+  tags: [chk_log_04, chk_sec_02]
+
+- name: Install the Alertmanager CA
+  ansible.builtin.copy:
+    src: "{{ wazuh_manager_alertmanager_ca_file }}"
+    dest: "{{ wazuh_manager_data_dir }}/compliant-infra/alertmanager-ca.pem"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: wazuh_manager_alertmanager_ca_file | length > 0
+
+- name: Write the enrollment password
+  ansible.builtin.copy:
+    content: "{{ wazuh_manager_enrollment_password }}\n"
+    dest: "{{ wazuh_manager_data_dir }}/config-mount/etc/authd.pass"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart wazuh-manager
+  tags: [chk_sec_02, chk_hrd_06]
+
+- name: Write the manager environment (contains secrets)
+  ansible.builtin.template:
+    src: wazuh-manager.env.j2
+    dest: "{{ wazuh_manager_data_dir }}/wazuh-manager.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart wazuh-manager
+  tags: [chk_sec_02]
+
+- name: Prepare a version change
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
+- name: Run the manager container
+  community.docker.docker_container:
+    name: "{{ wazuh_manager_container_name }}"
+    image: "{{ wazuh_manager_image }}"
+    network_mode: host
+    env_file: "{{ wazuh_manager_data_dir }}/wazuh-manager.env"
+    volumes: "{{ wazuh_manager_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_manager_memory_limit }}"
+    pids_limit: 4096
+    ulimits: ["nofile:{{ wazuh_manager_nofile }}:{{ wazuh_manager_nofile }}"]
+    # The image's init (s6) starts as root and the Wazuh daemons drop to the "wazuh" user, so it keeps:
+    # CHOWN/FOWNER/DAC_OVERRIDE to fix ownership of its state, SETUID/SETGID to drop privileges,
+    # KILL to stop its own daemons running as another user, SYS_CHROOT because analysisd and remoted
+    # confine themselves to /var/ossec.
+    cap_drop: [ALL]
+    capabilities: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL, SYS_CHROOT]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: wazuh-manager
+    state: started
+  register: wazuh_manager_container
+  tags: [chk_hrd_02, chk_log_01, chk_ha_01]
+
+- name: Apply configuration changes now (rolling restart)
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml
+
+- name: Declare what to back up (agent keys, configuration, agent database)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: wazuh-manager
+    backup_register_paths:
+      - "{{ wazuh_manager_data_dir }}/ossec/etc"
+      - "{{ wazuh_manager_data_dir }}/ossec/api-configuration"
+      - "{{ wazuh_manager_data_dir }}/ossec/queue/db"
+      - "{{ wazuh_manager_data_dir }}/certs"
+    backup_register_rpo_hours: 24
+    backup_register_rto_hours: 4
+  tags: [chk_bck_01]

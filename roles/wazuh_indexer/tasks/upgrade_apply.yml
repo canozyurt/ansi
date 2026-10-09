@@ -1,0 +1,17 @@
+---
+- name: Re-enable shard allocation after the upgraded node joined
+  ansible.builtin.uri:
+    url: "{{ wazuh_indexer_api }}/_cluster/settings"
+    method: PUT
+    client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+    client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+    ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+    body_format: json
+    body:
+      persistent:
+        cluster.routing.allocation.enable: null
+  when:
+    - wazuh_indexer_needs_upgrade | bool
+    - wazuh_indexer_cluster_hosts | length > 1
+  changed_when: true
+  tags: [chk_chg_07]

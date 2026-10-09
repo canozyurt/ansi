@@ -1,0 +1,107 @@
+---
+wazuh_indexer_image: "{{ versions_images.wazuh_indexer }}"
+wazuh_indexer_container_name: wazuh-indexer
+
+# High availability (HA-01): at least 3 indexer nodes, every one master-eligible and data, with one
+# replica of every index. A single node is allowed only for labs and tests.
+wazuh_indexer_min_nodes: 3
+wazuh_indexer_allow_single_node: false
+wazuh_indexer_cluster_hosts: "{{ ansible_play_hosts_all }}"
+wazuh_indexer_cluster_name: compliant-infra-siem
+wazuh_indexer_node_name: "{{ inventory_hostname }}"
+# Address this node publishes to the others; must be in the certificate (it is added automatically).
+wazuh_indexer_node_address: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+wazuh_indexer_http_port: 9200
+wazuh_indexer_transport_port: 9300
+# Replicas per index: 1 in a cluster (one node may fail), 0 on a single lab node.
+wazuh_indexer_replicas: "{{ 1 if wazuh_indexer_cluster_hosts | length > 1 else 0 }}"
+
+# Memory: the JVM heap is at most half of the container limit and never above 31g.
+wazuh_indexer_heap: 4g
+wazuh_indexer_memory_limit: 8g
+
+wazuh_indexer_data_dir: /opt/wazuh-indexer
+# The upstream image runs as uid/gid 1000.
+wazuh_indexer_uid: 1000
+
+# ------------------------------------------------------------------ TLS (SEC-03)
+# Node-to-node (9300) and the super-admin use certificates from the dedicated SIEM CA (roles/wazuh_certs),
+# because OpenSearch identifies nodes and the admin by certificate DN. The HTTP layer (9200) uses a
+# certificate from tls_cert when the internal PKI (pki_openbao_addr) or organisation files are set,
+# otherwise the SIEM CA certificate of the node. Clients trust both CAs (certs/ca.pem).
+wazuh_indexer_tls_cert_file: ""
+wazuh_indexer_tls_key_file: ""
+wazuh_indexer_http_cert_from_tls_cert: "{{ wazuh_indexer_tls_cert_file | length > 0 or (pki_openbao_addr | default('')) | length > 0 }}"
+wazuh_indexer_cert_org_unit: siem-indexer-nodes
+wazuh_indexer_admin_cert_org_unit: siem-admin
+wazuh_indexer_cert_dns_names: "{{ [inventory_hostname, ansible_facts['fqdn'] | default(inventory_hostname), 'localhost'] }}"
+wazuh_indexer_transport_hostname_verification: true
+
+# ------------------------------------------------------------------ security plugin (IAM-01, LOG-02)
+# Internal users: one break-glass admin (alert on its use), the dashboard server user and the
+# manager's writer user. Passwords come from Ansible Vault or OpenBao (16+ characters).
+wazuh_indexer_admin_user: break-glass-admin
+wazuh_indexer_admin_password: ""
+wazuh_indexer_dashboard_user: kibanaserver
+wazuh_indexer_dashboard_password: ""
+wazuh_indexer_manager_user: wazuh-manager
+wazuh_indexer_manager_password: ""
+
+# OIDC (Keycloak) for people; the dashboard sends the ID token and the indexer maps the "roles" claim.
+wazuh_indexer_oidc_enabled: true
+wazuh_indexer_oidc_connect_url: >-
+  {{ (keycloak_hostname | default('https://sso.example.internal')) ~ '/realms/'
+     ~ (keycloak_realm | default('org')) ~ '/.well-known/openid-configuration' }}
+wazuh_indexer_oidc_subject_key: preferred_username
+wazuh_indexer_oidc_roles_key: roles
+# CA bundle inside the container used to verify the IdP; empty uses the JVM default trust store.
+wazuh_indexer_oidc_ca_file: ""
+# Default role model (rbac_model) to OpenSearch security roles. Roles not listed get no access.
+wazuh_indexer_role_mapping:
+  all_access: [platform-admin, security-admin]
+  security_rest_api_access: [platform-admin, security-admin]
+  readall: [auditor]
+  wazuh_alerts_read: [operator]
+  kibana_user: [auditor, operator]
+  kibana_read_only: [auditor, operator]
+  wazuh_ui_user: [auditor, operator]
+  wazuh_ui_admin: [platform-admin, security-admin]
+
+# Audit log of the security plugin (logins, denied requests, security config changes) in the
+# security-auditlog-* indices, kept as long as the other logs.
+wazuh_indexer_audit_enabled: true
+wazuh_indexer_audit_ignore_users: ["{{ wazuh_indexer_dashboard_user }}"]
+
+# ------------------------------------------------------------------ retention (LOG-02)
+# Indices are searchable (hot) for wazuh_indexer_ism_hot_days, then made read-only and force-merged,
+# and deleted after wazuh_indexer_ism_delete_days (12 months).
+wazuh_indexer_ism_policy_id: compliant-infra-log-retention
+wazuh_indexer_ism_hot_days: 90
+wazuh_indexer_ism_delete_days: 365
+# After the hot phase: read_only (still searchable) or close (kept on disk, reopen to search).
+wazuh_indexer_ism_after_hot: read_only
+wazuh_indexer_ism_index_patterns: [wazuh-alerts-*, wazuh-archives-*, security-auditlog-*]
+
+# ------------------------------------------------------------------ snapshots to S3 (BCK-01)
+# Enabled when a bucket is set. Credentials go into the OpenSearch keystore, never into files.
+wazuh_indexer_s3_bucket: "{{ wazuh_s3_bucket | default('') }}"
+wazuh_indexer_s3_endpoint: "{{ wazuh_s3_endpoint | default('') }}"
+wazuh_indexer_s3_region: "{{ wazuh_s3_region | default('us-east-1') }}"
+wazuh_indexer_s3_base_path: "{{ wazuh_s3_base_path | default('wazuh-indexer') }}"
+wazuh_indexer_s3_path_style_access: "{{ wazuh_s3_path_style_access | default(true) }}"
+wazuh_indexer_s3_access_key: "{{ wazuh_s3_access_key | default('') }}"
+wazuh_indexer_s3_secret_key: "{{ wazuh_s3_secret_key | default('') }}"
+wazuh_indexer_s3_repository: compliant-infra-s3
+wazuh_indexer_snapshot_cron: "0 2 * * *"
+wazuh_indexer_snapshot_timezone: UTC
+# Keep snapshots as long as logs must be kept.
+wazuh_indexer_snapshot_max_age: "{{ wazuh_indexer_ism_delete_days }}d"
+wazuh_indexer_snapshot_min_count: 7
+
+# Upgrades (docs/upgrades.md): a version change runs only through playbooks/upgrade.yml, one node at a time.
+wazuh_indexer_upgrade_allow_parallel: false
+
+# Open files per container (OpenSearch requires 65535+ in a multi-node cluster).
+wazuh_indexer_nofile: 65536
+# Disk watermarks protect the cluster from a full disk; labs on shared disks may turn them off.
+wazuh_indexer_disk_threshold_enabled: true

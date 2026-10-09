@@ -1,0 +1,25 @@
+---
+- name: Restart wazuh-manager
+  community.docker.docker_container:
+    name: "{{ wazuh_manager_container_name }}"
+    image: "{{ wazuh_manager_image }}"
+    network_mode: host
+    env_file: "{{ wazuh_manager_data_dir }}/wazuh-manager.env"
+    volumes: "{{ wazuh_manager_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_manager_memory_limit }}"
+    pids_limit: 4096
+    ulimits: ["nofile:{{ wazuh_manager_nofile }}:{{ wazuh_manager_nofile }}"]
+    cap_drop: [ALL]
+    capabilities: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL, SYS_CHROOT]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: wazuh-manager
+    state: started
+    restart: true
+  throttle: 1  # rolling restart keeps agents connected to the other nodes
+  when: not (wazuh_manager_container.changed | default(false))
+  notify: Wait for wazuh-manager
+
+- name: Wait for wazuh-manager
+  ansible.builtin.include_tasks: health.yml

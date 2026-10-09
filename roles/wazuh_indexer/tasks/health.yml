@@ -1,0 +1,15 @@
+---
+- name: Wait until the indexer cluster is available (green or yellow)
+  ansible.builtin.uri:
+    url: "{{ wazuh_indexer_api }}/_cluster/health"
+    client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+    client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+    ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+    status_code: 200
+  register: wazuh_indexer_health
+  until: >-
+    wazuh_indexer_health.status == 200
+    and wazuh_indexer_health.json.status | default('red') in ['green', 'yellow']
+  retries: 60
+  delay: 5
+  tags: [chk_log_05, chk_ha_01]

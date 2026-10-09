@@ -1,0 +1,49 @@
+---
+# {{ ansible_managed }}
+_meta:
+  type: "config"
+  config_version: 2
+
+config:
+  dynamic:
+    http:
+      anonymous_auth_enabled: false
+      xff:
+        enabled: false
+    authc:
+      # Internal users: the break-glass admin and service accounts. No browser challenge (IAM-01):
+      # people sign in through the IdP; the break-glass account uses the dashboard's login form.
+      basic_internal_auth_domain:
+        description: "Internal users: break-glass admin and service accounts"
+        http_enabled: true
+        transport_enabled: true
+        order: 0
+        http_authenticator:
+          type: basic
+          challenge: false
+        authentication_backend:
+          type: intern
+{% if wazuh_indexer_oidc_enabled | bool %}
+      # Keycloak (OIDC). The "roles" claim carries the default organisation roles (rbac_model) and
+      # becomes the backend roles mapped in roles_mapping.yml.
+      openid_auth_domain:
+        description: "Keycloak single sign-on"
+        http_enabled: true
+        transport_enabled: false
+        order: 1
+        http_authenticator:
+          type: openid
+          challenge: false
+          config:
+            subject_key: {{ wazuh_indexer_oidc_subject_key | to_json }}
+            roles_key: {{ wazuh_indexer_oidc_roles_key | to_json }}
+            openid_connect_url: {{ wazuh_indexer_oidc_connect_url | trim | to_json }}
+{% if wazuh_indexer_oidc_ca_file | length > 0 %}
+            openid_connect_idp:
+              enable_ssl: true
+              verify_hostnames: true
+              pemtrustedcas_filepath: {{ wazuh_indexer_oidc_ca_file | to_json }}
+{% endif %}
+        authentication_backend:
+          type: noop
+{% endif %}

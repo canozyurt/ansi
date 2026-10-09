@@ -1,0 +1,71 @@
+---
+# The dashboard calls the API "run as" the signed-in user: these rules give people with an IdP role
+# (the backend role from the "roles" claim) the matching Wazuh API role (IAM-09).
+- name: Map IdP roles to Wazuh API roles
+  when: wazuh_manager_is_master | bool
+  module_defaults:
+    ansible.builtin.uri:
+      ca_path: "{{ wazuh_manager_data_dir }}/certs/ca.pem"
+  tags: [chk_iam_09]
+  block:
+    - name: Get an API token
+      ansible.builtin.uri:
+        url: "{{ wazuh_manager_api }}/security/user/authenticate"
+        method: POST
+        url_username: "{{ wazuh_manager_api_user }}"
+        url_password: "{{ wazuh_manager_api_password }}"
+        force_basic_auth: true
+      register: wazuh_manager_api_token
+      until: wazuh_manager_api_token.status == 200
+      retries: 30
+      delay: 10
+      no_log: true
+
+    - name: Read the API roles and rules
+      ansible.builtin.uri:
+        url: "{{ wazuh_manager_api }}/security/{{ item }}?limit=500"
+        headers:
+          Authorization: "Bearer {{ wazuh_manager_api_token.json.data.token }}"
+      loop: [roles, rules]
+      register: wazuh_manager_api_security
+
+    - name: Create a rule per IdP role
+      ansible.builtin.uri:
+        url: "{{ wazuh_manager_api }}/security/rules"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ wazuh_manager_api_token.json.data.token }}"
+        # Only requests with a body may say JSON: an empty JSON body makes the API fail with 500.
+        body_format: json
+        body:
+          name: "compliant-infra-{{ item.key }}"
+          rule:
+            FIND:
+              "r'^backend_roles$'": ["{{ item.key }}"]
+      loop: "{{ wazuh_manager_api_role_mapping | dict2items }}"
+      when: >-
+        ('compliant-infra-' ~ item.key) not in
+        (wazuh_manager_api_security.results[1].json.data.affected_items | map(attribute='name') | list)
+      changed_when: true
+
+    - name: Read the rules again
+      ansible.builtin.uri:
+        url: "{{ wazuh_manager_api }}/security/rules?limit=500"
+        headers:
+          Authorization: "Bearer {{ wazuh_manager_api_token.json.data.token }}"
+      register: wazuh_manager_api_rules
+
+    - name: Link each rule to its API role
+      ansible.builtin.uri:
+        url: "{{ wazuh_manager_api }}/security/roles/{{ wazuh_manager_role.id }}/rules?rule_ids={{ wazuh_manager_rule.id }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ wazuh_manager_api_token.json.data.token }}"
+      vars:
+        wazuh_manager_role: >-
+          {{ wazuh_manager_api_security.results[0].json.data.affected_items | selectattr('name', 'equalto', item.value) | first }}
+        wazuh_manager_rule: >-
+          {{ wazuh_manager_api_rules.json.data.affected_items | selectattr('name', 'equalto', 'compliant-infra-' ~ item.key) | first }}
+      loop: "{{ wazuh_manager_api_role_mapping | dict2items }}"
+      when: wazuh_manager_rule.id not in wazuh_manager_role.rules
+      changed_when: true

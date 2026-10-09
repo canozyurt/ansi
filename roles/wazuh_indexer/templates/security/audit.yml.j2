@@ -1,0 +1,32 @@
+---
+# {{ ansible_managed }}
+# Security plugin audit log (LOG-01, LOG-02): failed logins, missing privileges, TLS errors and every
+# change to users, roles and other security configuration (compliance.internal_config).
+_meta:
+  type: "audit"
+  config_version: 2
+
+config:
+  enabled: {{ wazuh_indexer_audit_enabled | bool | to_json }}
+  audit:
+    enable_rest: true
+    disabled_rest_categories: ["AUTHENTICATED", "GRANTED_PRIVILEGES"]
+    enable_transport: true
+    disabled_transport_categories: ["AUTHENTICATED", "GRANTED_PRIVILEGES"]
+    resolve_bulk_requests: false
+    log_request_body: false
+    resolve_indices: true
+    exclude_sensitive_headers: true
+    ignore_users: {{ wazuh_indexer_audit_ignore_users | to_json }}
+    ignore_requests: []
+  compliance:
+    enabled: true
+    internal_config: true
+    external_config: false
+    read_metadata_only: true
+    read_watched_fields: {}
+    read_ignore_users: {{ wazuh_indexer_audit_ignore_users | to_json }}
+    write_metadata_only: true
+    write_log_diffs: false
+    write_watched_indices: []
+    write_ignore_users: {{ wazuh_indexer_audit_ignore_users | to_json }}

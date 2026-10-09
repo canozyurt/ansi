@@ -1,0 +1,24 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Runs inside the manager container before Wazuh starts (upstream /entrypoint-scripts hook):
+# installs files that need the container's own users and permissions.
+set -euo pipefail
+
+install -o root -g root -m 0640 /etc/compliant-infra/config/filebeat.yml /etc/filebeat/filebeat.yml
+
+# Enrollment password (copied from /wazuh-config-mount by the image's init).
+chown root:wazuh /var/ossec/etc/authd.pass
+chmod 0640 /var/ossec/etc/authd.pass
+
+# Custom rules, central agent policy and the Alertmanager integration.
+chown wazuh:wazuh /var/ossec/etc/rules/compliant_infra_rules.xml
+chmod 0660 /var/ossec/etc/rules/compliant_infra_rules.xml
+chown wazuh:wazuh /var/ossec/etc/shared/default/agent.conf
+chmod 0660 /var/ossec/etc/shared/default/agent.conf
+chown root:wazuh /var/ossec/integrations/custom-alertmanager /var/ossec/integrations/custom-alertmanager.py
+chmod 0750 /var/ossec/integrations/custom-alertmanager /var/ossec/integrations/custom-alertmanager.py
+chown root:wazuh /var/ossec/api/configuration/api.yaml
+chmod 0640 /var/ossec/api/configuration/api.yaml
+chown root:wazuh /var/ossec/api/configuration/ssl/server.key /var/ossec/api/configuration/ssl/server.crt /var/ossec/api/configuration/ssl/ca.crt
+chmod 0640 /var/ossec/api/configuration/ssl/server.key
+chmod 0644 /var/ossec/api/configuration/ssl/server.crt /var/ossec/api/configuration/ssl/ca.crt

@@ -1,0 +1,55 @@
+---
+# Pushes changed security configuration into the cluster once, from the first node, with the
+# super-admin certificate (securityadmin). Users and role mappings are therefore code-managed.
+- name: Apply changed security configuration to the cluster
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - --env=JAVA_HOME={{ wazuh_indexer_home }}/jdk
+      - "{{ wazuh_indexer_container_name }}"
+      - bash
+      - "{{ wazuh_indexer_home }}/plugins/opensearch-security/tools/securityadmin.sh"
+      - -cd
+      - "{{ wazuh_indexer_home }}/config/opensearch-security/"
+      - -icl
+      - -nhnv
+      - -h
+      - 127.0.0.1
+      - -p
+      - "{{ wazuh_indexer_http_port }}"
+      - -cacert
+      - "{{ wazuh_indexer_cert_path }}/ca.pem"
+      - -cert
+      - "{{ wazuh_indexer_cert_path }}/admin.pem"
+      - -key
+      - "{{ wazuh_indexer_cert_path }}/admin-key.pem"
+  register: wazuh_indexer_securityadmin
+  changed_when: true
+  retries: 5
+  delay: 10
+  until: wazuh_indexer_securityadmin.rc == 0
+  run_once: true
+  when: >-
+    ansible_play_hosts | map('extract', hostvars, 'wazuh_indexer_security_written')
+    | selectattr('changed', 'defined') | selectattr('changed') | list | length > 0
+  tags: [chk_iam_01, chk_log_02]
+
+- name: Read the active authentication configuration
+  ansible.builtin.uri:
+    url: "{{ wazuh_indexer_api }}/_plugins/_security/api/securityconfig"
+    client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+    client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+    ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+  register: wazuh_indexer_secconfig
+  run_once: true
+  tags: [chk_iam_01]
+
+- name: Basic authentication never challenges; people sign in through the IdP (IAM-01)
+  ansible.builtin.assert:
+    that:
+      - not wazuh_indexer_secconfig.json.config.dynamic.authc.basic_internal_auth_domain.http_authenticator.challenge
+      - not wazuh_indexer_oidc_enabled | bool or 'openid_auth_domain' in wazuh_indexer_secconfig.json.config.dynamic.authc
+    quiet: true
+  run_once: true
+  tags: [chk_iam_01]

@@ -1,0 +1,55 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Writes the Wazuh agent's connection state for node_exporter's textfile collector (LOG-06).
+# Alert when wazuh_agent_connected == 0 or the last keepalive is old: the agent went silent.
+set -uo pipefail
+dir={{ wazuh_agent_textfile_dir | quote }}
+state=/var/ossec/var/run/wazuh-agentd.state
+out="${dir}/wazuh_agent.prom"
+tmp="$(mktemp "${dir}/.wazuh_agent.prom.XXXXXX")"
+trap 'rm -f "${tmp}"' EXIT
+
+value() { sed -n "s/^$1='\(.*\)'\$/\1/p" "${state}" 2>/dev/null | head -n 1; }
+
+running=0
+systemctl is-active --quiet wazuh-agent && running=1
+connected=0
+keepalive=0
+last_ack=0
+buffered=0
+if [ -r "${state}" ]; then
+  [ "$(value status)" = "connected" ] && connected=1
+  ka="$(value last_keepalive)"
+  if [ -n "${ka}" ]; then
+    keepalive="$(date -d "${ka}" +%s 2>/dev/null || echo 0)"
+  fi
+  ack="$(value last_ack)"
+  if [ -n "${ack}" ]; then
+    last_ack="$(date -d "${ack}" +%s 2>/dev/null || echo 0)"
+  fi
+  buffered="$(value msg_buffer)"
+  buffered="${buffered:-0}"
+fi
+{
+  echo "# HELP wazuh_agent_running Whether the wazuh-agent service is active."
+  echo "# TYPE wazuh_agent_running gauge"
+  echo "wazuh_agent_running ${running}"
+  echo "# HELP wazuh_agent_connected Whether the agent is connected to a manager (1) or not (0)."
+  echo "# TYPE wazuh_agent_connected gauge"
+  echo "wazuh_agent_connected ${connected}"
+  echo "# HELP wazuh_agent_last_keepalive_timestamp_seconds Last keepalive the agent sent to the manager."
+  echo "# TYPE wazuh_agent_last_keepalive_timestamp_seconds gauge"
+  echo "wazuh_agent_last_keepalive_timestamp_seconds ${keepalive}"
+  echo "# HELP log_shipper_last_ack_timestamp_seconds Last time the manager acknowledged this host's log shipper (Wazuh agent)."
+  echo "# TYPE log_shipper_last_ack_timestamp_seconds gauge"
+  echo "log_shipper_last_ack_timestamp_seconds ${last_ack}"
+  echo "# HELP wazuh_agent_buffered_events Events waiting in the agent's buffer."
+  echo "# TYPE wazuh_agent_buffered_events gauge"
+  echo "wazuh_agent_buffered_events ${buffered}"
+  echo "# HELP wazuh_agent_textfile_last_run_timestamp_seconds Last time this collector ran."
+  echo "# TYPE wazuh_agent_textfile_last_run_timestamp_seconds gauge"
+  echo "wazuh_agent_textfile_last_run_timestamp_seconds $(date +%s)"
+} > "${tmp}"
+chmod 0644 "${tmp}"
+mv -f "${tmp}" "${out}"
+trap - EXIT

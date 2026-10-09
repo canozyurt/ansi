@@ -1,0 +1,50 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - wazuh_indexer_admin_password | length >= 16
+      - wazuh_indexer_dashboard_password | length >= 16
+      - wazuh_indexer_manager_password | length >= 16
+      - wazuh_indexer_ism_hot_days | int > 0
+      - wazuh_indexer_ism_delete_days | int > wazuh_indexer_ism_hot_days | int
+      - wazuh_indexer_ism_after_hot in ['read_only', 'close']
+      - (wazuh_indexer_tls_cert_file | length > 0) == (wazuh_indexer_tls_key_file | length > 0)
+    fail_msg: >-
+      Set wazuh_indexer_admin_password, wazuh_indexer_dashboard_password and wazuh_indexer_manager_password
+      (16+ characters, from Ansible Vault or the secrets manager), a delete age after the hot phase, and
+      both or neither of the TLS file variables.
+    quiet: true
+
+- name: Keep logs at least 90 days searchable and 12 months in total (LOG-02)
+  ansible.builtin.assert:
+    that:
+      - wazuh_indexer_ism_hot_days | int >= 90
+      - wazuh_indexer_ism_delete_days | int >= 365
+    fail_msg: LOG-02 requires 90 days searchable and 365 days of retention; shorten only with a documented exception.
+    quiet: true
+  tags: [chk_log_02]
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: wazuh_indexer_cluster_hosts | length >= wazuh_indexer_min_nodes or wazuh_indexer_allow_single_node | bool
+    fail_msg: >-
+      The Wazuh indexer needs at least {{ wazuh_indexer_min_nodes }} nodes (found {{ wazuh_indexer_cluster_hosts | length }}).
+      Set wazuh_indexer_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Know every cluster node's address
+  ansible.builtin.import_tasks: cluster_facts.yml
+
+- name: Deploy the indexer
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Apply the security configuration
+  ansible.builtin.import_tasks: security.yml
+
+- name: Configure retention
+  ansible.builtin.import_tasks: ism.yml
+
+- name: Configure snapshots
+  ansible.builtin.import_tasks: snapshots.yml
+  when: wazuh_indexer_s3_bucket | length > 0

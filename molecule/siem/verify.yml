@@ -1,0 +1,393 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_indexer: https://127.0.0.1:9200
+    verify_api: https://127.0.0.1:55000
+    verify_dashboard: https://127.0.0.1:5601
+    verify_cert_args: &verify_cert_args
+      client_cert: /opt/wazuh-indexer/certs/admin.pem
+      client_key: /opt/wazuh-indexer/certs/admin-key.pem
+      ca_path: /opt/wazuh-indexer/certs/ca.pem
+  tasks:
+    - name: Pick a unique marker for this run
+      ansible.builtin.set_fact:
+        verify_marker: "siem-verify-{{ lookup('ansible.builtin.pipe', 'date +%s%N') }}"
+
+    # ---------------------------------------------------------------- indexer
+    - name: Read the indexer cluster health
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/_cluster/health"
+        <<: *verify_cert_args
+      register: verify_health
+      tags: [chk_log_01, chk_ha_01]
+
+    - name: The indexer cluster is green or yellow
+      ansible.builtin.assert:
+        that: verify_health.json.status in ['green', 'yellow']
+      tags: [chk_log_01, chk_ha_01]
+
+    - name: Inspect the SIEM containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [wazuh-indexer, wazuh-manager, wazuh-dashboard]
+      register: verify_containers
+      tags: [chk_hrd_02]
+
+    - name: The containers drop all capabilities and cannot gain privileges
+      ansible.builtin.assert:
+        that:
+          - item.container.State.Running
+          - "'ALL' in item.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - not item.container.HostConfig.Privileged
+      loop: "{{ verify_containers.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_hrd_02]
+
+    - name: The indexer refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:9200 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Anonymous requests to the indexer are refused
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/wazuh-alerts-*/_search"
+        ca_path: /opt/wazuh-indexer/certs/ca.pem
+        status_code: 401
+      tags: [chk_log_02]
+
+    - name: The break-glass admin can sign in with basic authentication
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/_plugins/_security/authinfo"
+        url_username: break-glass-admin
+        url_password: test-only-admin-password
+        force_basic_auth: true
+        ca_path: /opt/wazuh-indexer/certs/ca.pem
+      register: verify_authinfo
+      tags: [chk_iam_01]
+
+    - name: The break-glass admin has all_access
+      ansible.builtin.assert:
+        that: "'all_access' in verify_authinfo.json.roles"
+      tags: [chk_iam_01]
+
+    - name: Read the retention policy
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/_plugins/_ism/policies/compliant-infra-log-retention"
+        <<: *verify_cert_args
+      register: verify_ism
+      tags: [chk_log_02]
+
+    - name: Logs stay searchable 90 days and are deleted after 365
+      vars:
+        verify_states: "{{ verify_ism.json.policy.states | items2dict(key_name='name', value_name='transitions') }}"
+      ansible.builtin.assert:
+        that:
+          - verify_states.hot[0].conditions.min_index_age == '90d'
+          - verify_states.retained[0].conditions.min_index_age == '365d'
+          - "'wazuh-alerts-*' in verify_ism.json.policy.ism_template[0].index_patterns"
+          - "'security-auditlog-*' in verify_ism.json.policy.ism_template[0].index_patterns"
+      tags: [chk_log_02]
+
+    - name: Read the security audit configuration
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/_plugins/_security/api/audit"
+        <<: *verify_cert_args
+      register: verify_audit
+      tags: [chk_log_02]
+
+    - name: Security plugin actions and configuration changes are audited
+      ansible.builtin.assert:
+        that:
+          - verify_audit.json.config.enabled
+          - verify_audit.json.config.audit.enable_rest
+          - verify_audit.json.config.compliance.internal_config
+      tags: [chk_log_02]
+
+    - name: Read the role mapping of the auditor and operator roles
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/_plugins/_security/api/rolesmapping"
+        <<: *verify_cert_args
+      register: verify_mapping
+      tags: [chk_iam_01]
+
+    - name: IdP roles map to indexer roles (admins all_access, auditor read-only, operator alerts only)
+      ansible.builtin.assert:
+        that:
+          - "'platform-admin' in verify_mapping.json.all_access.backend_roles"
+          - "'security-admin' in verify_mapping.json.all_access.backend_roles"
+          - "'auditor' in verify_mapping.json.readall.backend_roles"
+          - "'operator' in verify_mapping.json.wazuh_alerts_read.backend_roles"
+          - "'developer' not in (verify_mapping.json.values() | map(attribute='backend_roles') | flatten)"
+      tags: [chk_iam_01]
+
+    # ---------------------------------------------------------------- manager
+    - name: Get a manager API token
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/security/user/authenticate"
+        method: POST
+        url_username: wazuh-wui
+        url_password: Test-only-API-pass1!
+        force_basic_auth: true
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_token
+      no_log: true
+      tags: [chk_log_01]
+
+    - name: Read the manager cluster status
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/cluster/status"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_cluster
+      tags: [chk_ha_01]
+
+    - name: The manager runs as a cluster node
+      ansible.builtin.assert:
+        that:
+          - verify_cluster.json.data.enabled == 'yes'
+          - verify_cluster.json.data.running == 'yes'
+      tags: [chk_ha_01]
+
+    - name: Read the vulnerability detection and integration settings
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/manager/configuration?section={{ item }}"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      loop: [vulnerability-detection, integration, auth]
+      register: verify_mgr_config
+      tags: [chk_hrd_05, chk_log_04]
+
+    - name: Vulnerability detection is on, alerts go to Alertmanager, enrollment needs a password
+      vars:
+        verify_cfg: "{{ verify_mgr_config.results | map(attribute='json') | map(attribute='data') | map(attribute='affected_items') | map('first') | list }}"
+      ansible.builtin.assert:
+        that:
+          - verify_cfg[0]['vulnerability-detection'].enabled == 'yes'
+          - verify_cfg[1].integration[0].name == 'custom-alertmanager'
+          - verify_cfg[1].integration[0].level | int == 10
+          - verify_cfg[2].auth.use_password == 'yes'
+      tags: [chk_hrd_05, chk_log_04]
+
+    - name: Read the agent-silence rule
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/rules?rule_ids=100110"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_rule
+      tags: [chk_log_06]
+
+    - name: A disconnected agent raises a level-10 alert on the manager
+      ansible.builtin.assert:
+        that: verify_rule.json.data.affected_items[0].level >= 10
+      tags: [chk_log_06]
+
+    # ---------------------------------------------------------------- agent
+    - name: Wait for the agent to be active
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/agents?name={{ inventory_hostname }}-host&select=id,status,group"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_agent
+      until: >-
+        verify_agent.json.data.affected_items | length > 0
+        and verify_agent.json.data.affected_items[0].status == 'active'
+      retries: 30
+      delay: 10
+      tags: [chk_hrd_06, chk_log_01]
+
+    - name: Note the agent id
+      ansible.builtin.set_fact:
+        verify_agent_id: "{{ verify_agent.json.data.affected_items[0].id }}"
+
+    - name: Wait for the system inventory of the agent
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/syscollector/{{ verify_agent_id }}/os"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_os
+      until: verify_os.json.data.affected_items | default([]) | length > 0
+      retries: 30
+      delay: 10
+      tags: [chk_evd_03]
+
+    - name: The inventory knows the host's operating system
+      ansible.builtin.assert:
+        that: "'Ubuntu' in verify_os.json.data.affected_items[0].os.name"
+      tags: [chk_evd_03]
+
+    - name: Read the agent's active file integrity and rootcheck configuration
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/agents/{{ verify_agent_id }}/config/syscheck/{{ item }}"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      loop: [syscheck, rootcheck]
+      register: verify_agent_cfg
+      until: verify_agent_cfg.status == 200
+      retries: 12
+      delay: 10
+      tags: [chk_hrd_06]
+
+    - name: FIM watches the system and service configuration and rootcheck runs
+      vars:
+        verify_dirs: "{{ verify_agent_cfg.results[0].json.data.syscheck.directories | map(attribute='dir') | list }}"
+      ansible.builtin.assert:
+        that:
+          - verify_agent_cfg.results[0].json.data.syscheck.disabled == 'no'
+          - "'/etc' in verify_dirs"
+          - "'/usr/bin' in verify_dirs"
+          - "'/usr/sbin' in verify_dirs"
+          - "'/boot' in verify_dirs"
+          - "'/opt' in verify_dirs"
+          - verify_agent_cfg.results[1].json.data.rootcheck.disabled == 'no'
+      tags: [chk_hrd_06]
+
+    - name: Wait for the CIS benchmark assessment
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/sca/{{ verify_agent_id }}"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_sca
+      until: verify_sca.json.data.affected_items | default([]) | length > 0
+      retries: 30
+      delay: 10
+      tags: [chk_hrd_06]
+
+    - name: The CIS Ubuntu policy ran
+      ansible.builtin.assert:
+        that: verify_sca.json.data.affected_items | map(attribute='policy_id') | select('match', '^cis_ubuntu') | list | length > 0
+      tags: [chk_hrd_06]
+
+    # ---------------------------------------------------------------- events end to end
+    - name: Write a marker to journald
+      ansible.builtin.command: logger -t siem-verify "{{ verify_marker }}"
+      changed_when: false
+      tags: [chk_log_01]
+
+    - name: The journald marker is searchable in the archives
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/wazuh-archives-*/_search?q=%22{{ verify_marker }}%22"
+        <<: *verify_cert_args
+      register: verify_archive
+      until: verify_archive.json.hits.total.value | default(0) > 0
+      retries: 30
+      delay: 10
+      tags: [chk_log_01]
+
+    - name: Send the SIEM test event
+      ansible.builtin.command: logger -t siem-verify "compliant-infra-siem-test {{ verify_marker }}"
+      changed_when: false
+      tags: [chk_log_04]
+
+    - name: The test event becomes a level-12 alert
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/wazuh-alerts-*/_search?q=rule.id:100100%20AND%20%22{{ verify_marker }}%22"
+        <<: *verify_cert_args
+      register: verify_alert
+      until: verify_alert.json.hits.total.value | default(0) > 0
+      retries: 30
+      delay: 10
+      tags: [chk_log_04]
+
+    - name: The alert reached Alertmanager
+      ansible.builtin.command: grep -c "{{ verify_marker }}" /var/log/fake-alertmanager.jsonl
+      register: verify_am
+      until: verify_am.rc == 0
+      retries: 12
+      delay: 5
+      changed_when: false
+      tags: [chk_log_04]
+
+    - name: Wait until the first file integrity scan finished
+      ansible.builtin.uri:
+        url: "{{ verify_api }}/syscheck/{{ verify_agent_id }}/last_scan"
+        headers: { Authorization: "Bearer {{ verify_token.json.data.token }}" }
+        ca_path: /opt/wazuh-manager/certs/ca.pem
+      register: verify_fim_scan
+      until: verify_fim_scan.json.data.affected_items[0].end | default(none) is not none
+      retries: 60
+      delay: 10
+      tags: [chk_hrd_06]
+
+    - name: Change a watched file
+      ansible.builtin.copy:
+        content: "{{ verify_marker }}\n"
+        dest: /etc/siem-verify-fim.conf
+        mode: "0644"
+      tags: [chk_hrd_06]
+
+    - name: The change produces a file integrity alert
+      ansible.builtin.uri:
+        url: "{{ verify_indexer }}/wazuh-alerts-*/_search?q=syscheck.path:%22/etc/siem-verify-fim.conf%22"
+        <<: *verify_cert_args
+      register: verify_fim
+      until: verify_fim.json.hits.total.value | default(0) > 0
+      retries: 30
+      delay: 10
+      tags: [chk_hrd_06]
+
+    # ---------------------------------------------------------------- dashboard
+    - name: The dashboard answers over TLS
+      ansible.builtin.uri:
+        url: "{{ verify_dashboard }}/app/login"
+        validate_certs: false
+      tags: [chk_sec_03]
+
+    - name: The dashboard refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:5601 -tls1_1
+      register: verify_dash_tls11
+      changed_when: false
+      failed_when: verify_dash_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Single sign-on sends people to the IdP
+      ansible.builtin.uri:
+        url: "{{ verify_dashboard }}/auth/openid/login"
+        validate_certs: false
+        follow_redirects: none
+        status_code: 302
+      register: verify_sso
+      tags: [chk_iam_01]
+
+    - name: The redirect is an authorization request for the dashboard's client
+      ansible.builtin.assert:
+        that:
+          - verify_sso.location is search('127.0.0.1:19093/realms/org/protocol/openid-connect/auth')
+          - verify_sso.location is search('client_id=wazuh-dashboard')
+      tags: [chk_iam_01]
+
+    # ---------------------------------------------------------------- monitoring
+    - name: Refresh the status metrics
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop: [wazuh-agent-textfile.service, wazuh-manager-textfile.service]
+      changed_when: false
+      tags: [chk_log_06]
+
+    - name: Read the agent and manager metrics
+      ansible.builtin.slurp:
+        src: "/var/lib/node_exporter/textfile_collector/{{ item }}"
+      loop: [wazuh_agent.prom, wazuh_manager.prom]
+      register: verify_prom
+      tags: [chk_log_06]
+
+    - name: The agent reports it is connected with a recent keepalive, the manager counts it active
+      vars:
+        verify_agent_prom: "{{ verify_prom.results[0].content | b64decode }}"
+        verify_manager_prom: "{{ verify_prom.results[1].content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - verify_agent_prom is search('(?m)^wazuh_agent_connected 1$')
+          - verify_agent_prom is search('(?m)^wazuh_agent_last_keepalive_timestamp_seconds [1-9][0-9]+$')
+          - verify_agent_prom is search('(?m)^log_shipper_last_ack_timestamp_seconds [1-9][0-9]+$')
+          - verify_manager_prom is search('(?m)^wazuh_manager_up 1$')
+          - verify_manager_prom is search('(?m)^wazuh_manager_agents\{status="active"\} [1-9]')
+      tags: [chk_log_06]

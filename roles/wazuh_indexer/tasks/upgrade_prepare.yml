@@ -1,0 +1,51 @@
+---
+# A version change replaces one node at a time (playbooks/upgrade.yml, serial: 1). Before the node goes
+# down, replica allocation is limited to primaries so the cluster does not copy shards around (CHG-07).
+- name: Read the running indexer container
+  community.docker.docker_container_info:
+    name: "{{ wazuh_indexer_container_name }}"
+  register: wazuh_indexer_current
+
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    wazuh_indexer_needs_upgrade: >-
+      {{ wazuh_indexer_current.exists and wazuh_indexer_current.container.Config.Image != wazuh_indexer_image }}
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: >-
+      not wazuh_indexer_needs_upgrade
+      or ansible_play_batch | length == 1
+      or wazuh_indexer_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ wazuh_indexer_current.container.Config.Image | default('') }} but this
+      release pins {{ wazuh_indexer_image }}. Run playbooks/upgrade.yml, which upgrades one node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Prepare the cluster for a node restart
+  when:
+    - wazuh_indexer_needs_upgrade | bool
+    - wazuh_indexer_cluster_hosts | length > 1
+  module_defaults:
+    ansible.builtin.uri:
+      client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+      client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+      ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+      body_format: json
+  tags: [chk_chg_07]
+  block:
+    - name: Allocate only primaries while the node is down
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_cluster/settings"
+        method: PUT
+        body:
+          persistent:
+            cluster.routing.allocation.enable: primaries
+      changed_when: true
+
+    - name: Flush before stopping the node
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_flush"
+        method: POST
+      changed_when: false

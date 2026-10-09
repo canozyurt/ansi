@@ -35,3 +35,6 @@
 
 - name: Deploy source control, CI/CD and change approval
   ansible.builtin.import_playbook: delivery.yml
+
+- name: Deploy central logging and the SIEM
+  ansible.builtin.import_playbook: siem.yml

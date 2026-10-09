@@ -1,0 +1,177 @@
+<!-- {{ ansible_managed }} -->
+<ossec_config>
+  <global>
+    <jsonout_output>yes</jsonout_output>
+    <alerts_log>yes</alerts_log>
+    <logall>no</logall>
+    <logall_json>{{ 'yes' if wazuh_manager_archives_enabled | bool else 'no' }}</logall_json>
+    <email_notification>{{ 'yes' if wazuh_manager_email_to | length > 0 else 'no' }}</email_notification>
+{% if wazuh_manager_email_to | length > 0 %}
+    <smtp_server>{{ wazuh_manager_smtp_server }}</smtp_server>
+    <email_from>{{ wazuh_manager_email_from }}</email_from>
+{% for to in wazuh_manager_email_to %}
+    <email_to>{{ to }}</email_to>
+{% endfor %}
+    <email_maxperhour>60</email_maxperhour>
+    <email_log_source>alerts.log</email_log_source>
+{% endif %}
+    <agents_disconnection_time>{{ wazuh_manager_agents_disconnection_time }}</agents_disconnection_time>
+    <agents_disconnection_alert_time>0</agents_disconnection_alert_time>
+    <white_list>127.0.0.1</white_list>
+  </global>
+
+  <alerts>
+    <log_alert_level>3</log_alert_level>
+    <email_alert_level>{{ wazuh_manager_email_alert_level }}</email_alert_level>
+  </alerts>
+
+  <logging>
+    <log_format>plain,json</log_format>
+  </logging>
+
+  <remote>
+    <connection>secure</connection>
+    <port>{{ wazuh_manager_agent_port }}</port>
+    <protocol>tcp</protocol>
+    <queue_size>131072</queue_size>
+  </remote>
+
+  <!-- The manager runs in a container; its host is covered by the host's own agent. -->
+  <rootcheck>
+    <disabled>yes</disabled>
+  </rootcheck>
+  <syscheck>
+    <disabled>yes</disabled>
+  </syscheck>
+  <sca>
+    <enabled>no</enabled>
+  </sca>
+  <wodle name="syscollector">
+    <disabled>yes</disabled>
+  </wodle>
+  <wodle name="cis-cat">
+    <disabled>yes</disabled>
+  </wodle>
+  <wodle name="osquery">
+    <disabled>yes</disabled>
+  </wodle>
+
+  <!-- Vulnerability detection (HRD-05) from agents' package inventory, results in wazuh-states-vulnerabilities-* -->
+  <vulnerability-detection>
+    <enabled>{{ 'yes' if wazuh_manager_vulnerability_detection | bool else 'no' }}</enabled>
+    <index-status>yes</index-status>
+    <feed-update-interval>{{ wazuh_manager_vulnerability_feed_interval }}</feed-update-interval>
+  </vulnerability-detection>
+
+  <indexer>
+    <enabled>yes</enabled>
+    <hosts>
+{% for url in wazuh_manager_indexer_urls %}
+      <host>{{ url }}</host>
+{% endfor %}
+    </hosts>
+    <ssl>
+      <certificate_authorities>
+        <ca>{{ wazuh_manager_cert_path }}/ca.pem</ca>
+      </certificate_authorities>
+      <certificate>{{ wazuh_manager_cert_path }}/manager.pem</certificate>
+      <key>{{ wazuh_manager_cert_path }}/manager-key.pem</key>
+    </ssl>
+  </indexer>
+
+{% if wazuh_manager_alertmanager_url | length > 0 %}
+  <!-- LOG-04: alerts of level {{ wazuh_manager_alert_forward_level }}+ go to Alertmanager (on-call). -->
+  <integration>
+    <name>custom-alertmanager</name>
+    <hook_url>{{ wazuh_manager_alertmanager_url }}</hook_url>
+    <level>{{ wazuh_manager_alert_forward_level }}</level>
+    <alert_format>json</alert_format>
+  </integration>
+{% endif %}
+
+{% if wazuh_manager_active_response_enabled | bool %}
+  <command>
+    <name>firewall-drop</name>
+    <executable>firewall-drop</executable>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+  <command>
+    <name>disable-account</name>
+    <executable>disable-account</executable>
+    <timeout_allowed>yes</timeout_allowed>
+  </command>
+{% for ar in wazuh_manager_active_response_rules %}
+  <active-response>
+    <command>{{ ar.command }}</command>
+    <location>{{ ar.location | default('local') }}</location>
+    <rules_id>{{ ar.rules_id }}</rules_id>
+    <timeout>{{ ar.timeout | default(600) }}</timeout>
+  </active-response>
+{% endfor %}
+{% else %}
+  <!-- Active response is disabled (wazuh_manager_active_response_enabled). -->
+{% endif %}
+
+  <ruleset>
+    <decoder_dir>ruleset/decoders</decoder_dir>
+    <rule_dir>ruleset/rules</rule_dir>
+    <rule_exclude>0215-policy_rules.xml</rule_exclude>
+    <list>etc/lists/audit-keys</list>
+    <list>etc/lists/amazon/aws-eventnames</list>
+    <list>etc/lists/security-eventchannel</list>
+    <list>etc/lists/malicious-ioc/malicious-ip</list>
+    <list>etc/lists/malicious-ioc/malicious-domains</list>
+    <list>etc/lists/malicious-ioc/malware-hashes</list>
+    <decoder_dir>etc/decoders</decoder_dir>
+    <rule_dir>etc/rules</rule_dir>
+  </ruleset>
+
+  <rule_test>
+    <enabled>yes</enabled>
+    <threads>1</threads>
+    <max_sessions>64</max_sessions>
+    <session_timeout>15m</session_timeout>
+  </rule_test>
+
+  <!-- Enrollment (authd): password required, TLS with the SIEM CA certificate agents verify. -->
+  <auth>
+    <disabled>no</disabled>
+    <port>{{ wazuh_manager_enrollment_port }}</port>
+    <use_source_ip>no</use_source_ip>
+    <purge>yes</purge>
+    <use_password>yes</use_password>
+    <force>
+      <enabled>{{ 'yes' if wazuh_manager_enrollment_force_replace | bool else 'no' }}</enabled>
+      <key_mismatch>yes</key_mismatch>
+      <disconnected_time enabled="yes">1h</disconnected_time>
+      <after_registration_time>1h</after_registration_time>
+    </force>
+    <ciphers>HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH</ciphers>
+    <ssl_verify_host>no</ssl_verify_host>
+    <ssl_manager_cert>{{ wazuh_manager_cert_path }}/manager.pem</ssl_manager_cert>
+    <ssl_manager_key>{{ wazuh_manager_cert_path }}/manager-key.pem</ssl_manager_key>
+    <ssl_auto_negotiate>no</ssl_auto_negotiate>
+  </auth>
+
+  <!-- HA-01: one master, the other nodes workers; the key is filled in from the environment at start. -->
+  <cluster>
+    <name>{{ wazuh_manager_cluster_name }}</name>
+    <node_name>{{ wazuh_manager_node_name }}</node_name>
+    <node_type>{{ 'master' if wazuh_manager_is_master | bool else 'worker' }}</node_type>
+    <key>to_be_replaced_by_cluster_key</key>
+    <port>{{ wazuh_manager_cluster_port }}</port>
+    <bind_addr>0.0.0.0</bind_addr>
+    <nodes>
+      <node>{{ wazuh_manager_master_address }}</node>
+    </nodes>
+    <hidden>no</hidden>
+    <disabled>no</disabled>
+  </cluster>
+</ossec_config>
+
+<ossec_config>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/ossec/logs/active-responses.log</location>
+  </localfile>
+</ossec_config>

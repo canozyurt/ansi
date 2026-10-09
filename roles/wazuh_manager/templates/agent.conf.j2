@@ -1,0 +1,76 @@
+<!-- {{ ansible_managed }} -->
+<!-- Central policy for every agent in the "default" group (HRD-06, EVD-03, HRD-05). -->
+<agent_config>
+  <!-- File integrity monitoring -->
+  <syscheck>
+    <disabled>no</disabled>
+    <frequency>{{ wazuh_manager_fim_frequency }}</frequency>
+    <scan_on_start>yes</scan_on_start>
+    <alert_new_files>yes</alert_new_files>
+    <auto_ignore frequency="10" timeframe="3600">no</auto_ignore>
+{% for dir in wazuh_manager_fim_directories %}
+    <directories check_all="yes"{{ ' realtime="yes"' if dir in wazuh_manager_fim_realtime_directories else '' }}{{ ' report_changes="no"' }}>{{ dir }}</directories>
+{% endfor %}
+    <!-- Service configuration of the containers this repository deploys (/opt/<service>/...): hashes and
+         attributes only, never content, because these files hold secrets. -->
+    <directories check_all="yes" report_changes="no" recursion_level="3" restrict="{{ wazuh_manager_fim_service_config_restrict | e }}">{{ wazuh_manager_fim_service_config_dir }}</directories>
+{% for path in wazuh_manager_fim_ignore %}
+    <ignore>{{ path }}</ignore>
+{% endfor %}
+    <ignore type="sregex">{{ wazuh_manager_fim_ignore_regex | e }}</ignore>
+    <nodiff type="sregex">\.key$|\.env$|\.pem$|shadow|gshadow</nodiff>
+    <skip_nfs>yes</skip_nfs>
+    <skip_dev>yes</skip_dev>
+    <skip_proc>yes</skip_proc>
+    <skip_sys>yes</skip_sys>
+    <process_priority>10</process_priority>
+    <max_eps>100</max_eps>
+    <synchronization>
+      <enabled>yes</enabled>
+      <interval>5m</interval>
+      <max_interval>1h</max_interval>
+      <max_eps>10</max_eps>
+    </synchronization>
+  </syscheck>
+
+  <!-- Rootkit and malware checks -->
+  <rootcheck>
+    <disabled>no</disabled>
+    <check_files>yes</check_files>
+    <check_trojans>yes</check_trojans>
+    <check_dev>yes</check_dev>
+    <check_sys>yes</check_sys>
+    <check_pids>yes</check_pids>
+    <check_ports>yes</check_ports>
+    <check_if>yes</check_if>
+    <frequency>{{ wazuh_manager_rootcheck_frequency }}</frequency>
+    <rootkit_files>etc/shared/rootkit_files.txt</rootkit_files>
+    <rootkit_trojans>etc/shared/rootkit_trojans.txt</rootkit_trojans>
+    <skip_nfs>yes</skip_nfs>
+  </rootcheck>
+
+  <!-- Security configuration assessment: the agent package installs the CIS benchmark policy of its
+       distribution (CIS Debian 12, CIS Ubuntu 22.04 / 24.04) and runs it on this schedule. -->
+  <sca>
+    <enabled>yes</enabled>
+    <scan_on_start>yes</scan_on_start>
+    <interval>{{ wazuh_manager_sca_interval }}</interval>
+    <skip_nfs>yes</skip_nfs>
+  </sca>
+
+  <!-- Asset and software inventory (EVD-03); packages feed vulnerability detection (HRD-05). -->
+  <wodle name="syscollector">
+    <disabled>no</disabled>
+    <interval>{{ wazuh_manager_syscollector_interval }}</interval>
+    <scan_on_start>yes</scan_on_start>
+    <hardware>yes</hardware>
+    <os>yes</os>
+    <network>yes</network>
+    <packages>yes</packages>
+    <ports all="no">yes</ports>
+    <processes>yes</processes>
+    <synchronization>
+      <max_eps>10</max_eps>
+    </synchronization>
+  </wodle>
+</agent_config>

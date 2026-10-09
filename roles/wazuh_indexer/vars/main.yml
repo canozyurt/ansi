@@ -1,0 +1,30 @@
+---
+# Internal: not meant to be overridden.
+wazuh_indexer_home: /usr/share/wazuh-indexer
+wazuh_indexer_security_files:
+  - config.yml
+  - internal_users.yml
+  - roles.yml
+  - roles_mapping.yml
+  - action_groups.yml
+  - audit.yml
+wazuh_indexer_volumes: >-
+  {% set out = [wazuh_indexer_data_dir ~ '/data:/var/lib/wazuh-indexer',
+                wazuh_indexer_data_dir ~ '/config/opensearch.yml:' ~ wazuh_indexer_home ~ '/config/opensearch.yml:ro',
+                wazuh_indexer_data_dir ~ '/certs:' ~ wazuh_indexer_home ~ '/config/certs:ro'] %}
+  {%- for f in wazuh_indexer_security_files %}{{ out.append(wazuh_indexer_data_dir ~ '/security/' ~ f ~ ':'
+  ~ wazuh_indexer_home ~ '/config/opensearch-security/' ~ f ~ ':ro') }}{% endfor %}{{ out }}
+wazuh_indexer_api: "https://127.0.0.1:{{ wazuh_indexer_http_port }}"
+wazuh_indexer_cert_path: "{{ wazuh_indexer_home }}/config/certs"
+wazuh_indexer_http_cert: >-
+  {{ wazuh_indexer_cert_path ~ ('/http/tls.crt' if wazuh_indexer_http_cert_from_tls_cert | bool else '/node.pem') }}
+wazuh_indexer_http_key: >-
+  {{ wazuh_indexer_cert_path ~ ('/http/tls.key' if wazuh_indexer_http_cert_from_tls_cert | bool else '/node-key.pem') }}
+# Role defaults are not visible through hostvars: inventory overrides win, then the node's facts
+# (gathered for every cluster node in tasks/cluster_facts.yml).
+wazuh_indexer_seed_addresses: >-
+  {% set out = [] %}{% for h in wazuh_indexer_cluster_hosts %}{{ out.append(hostvars[h].wazuh_indexer_node_address
+  | default(hostvars[h].ansible_facts.default_ipv4.address | default('127.0.0.1'))) }}{% endfor %}{{ out }}
+wazuh_indexer_seed_names: >-
+  {% set out = [] %}{% for h in wazuh_indexer_cluster_hosts %}{{ out.append(hostvars[h].wazuh_indexer_node_name
+  | default(h)) }}{% endfor %}{{ out }}

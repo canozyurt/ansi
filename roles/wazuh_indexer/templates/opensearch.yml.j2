@@ -1,0 +1,58 @@
+# {{ ansible_managed }}
+cluster.name: {{ wazuh_indexer_cluster_name | to_json }}
+node.name: {{ wazuh_indexer_node_name | to_json }}
+network.host: "0.0.0.0"
+network.publish_host: {{ wazuh_indexer_node_address | to_json }}
+http.port: {{ wazuh_indexer_http_port }}
+transport.port: {{ wazuh_indexer_transport_port }}
+path.data: /var/lib/wazuh-indexer
+path.logs: /var/log/wazuh-indexer
+{% if wazuh_indexer_cluster_hosts | length > 1 %}
+# HA-01: every node is master-eligible and holds data; a majority of three keeps the cluster writable.
+discovery.seed_hosts: {{ wazuh_indexer_seed_addresses | map('regex_replace', '$', ':' ~ wazuh_indexer_transport_port) | list | to_json }}
+cluster.initial_cluster_manager_nodes: {{ wazuh_indexer_seed_names | to_json }}
+{% else %}
+discovery.type: single-node
+{% endif %}
+compatibility.override_main_response_version: true
+action.destructive_requires_name: true
+cluster.routing.allocation.disk.threshold_enabled: {{ wazuh_indexer_disk_threshold_enabled | bool | to_json }}
+
+# TLS (SEC-03): node-to-node with the SIEM CA; HTTP with the PKI certificate when there is one.
+plugins.security.ssl.transport.pemcert_filepath: {{ wazuh_indexer_cert_path }}/node.pem
+plugins.security.ssl.transport.pemkey_filepath: {{ wazuh_indexer_cert_path }}/node-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: {{ wazuh_indexer_cert_path }}/ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: {{ wazuh_indexer_transport_hostname_verification | bool | to_json }}
+plugins.security.ssl.transport.resolve_hostname: false
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: {{ wazuh_indexer_http_cert | trim }}
+plugins.security.ssl.http.pemkey_filepath: {{ wazuh_indexer_http_key | trim }}
+plugins.security.ssl.http.pemtrustedcas_filepath: {{ wazuh_indexer_cert_path }}/ca.pem
+plugins.security.ssl.http.clientauth_mode: OPTIONAL
+plugins.security.ssl.http.enabled_protocols: ["TLSv1.3", "TLSv1.2"]
+plugins.security.ssl.transport.enabled_protocols: ["TLSv1.3", "TLSv1.2"]
+
+# Identities: only certificates of this CA with the node OU are cluster nodes; the admin certificate
+# (kept on the indexer hosts, root/uid 1000 only) is the super-admin for configuration changes.
+plugins.security.nodes_dn:
+  - "CN=*,OU={{ wazuh_indexer_cert_org_unit }},O={{ wazuh_certs_organization | default('compliant-infra') }}"
+plugins.security.authcz.admin_dn:
+  - "CN=admin,OU={{ wazuh_indexer_admin_cert_org_unit }},O={{ wazuh_certs_organization | default('compliant-infra') }}"
+plugins.security.allow_default_init_securityindex: true
+plugins.security.allow_unsafe_democertificates: false
+plugins.security.check_snapshot_restore_write_privileges: true
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.restapi.roles_enabled: ["all_access", "security_rest_api_access"]
+plugins.security.system_indices.enabled: true
+plugins.security.system_indices.indices: [".opendistro-alerting-config", ".opendistro-alerting-alert*", ".opendistro-anomaly-results*", ".opendistro-anomaly-detector*", ".opendistro-anomaly-checkpoints", ".opendistro-anomaly-detection-state", ".opendistro-reports-*", ".opendistro-notifications-*", ".opendistro-notebooks", ".opensearch-observability", ".opendistro-asynchronous-search-response*", ".replication-metadata-store", ".opendistro-ism-config", ".opendistro-job-scheduler-lock"]
+
+{% if wazuh_indexer_audit_enabled | bool %}
+# Audit log of the security plugin (LOG-01, LOG-02): logins, denied requests and security configuration
+# changes go to security-auditlog-* indices; categories are set in opensearch-security/audit.yml.
+plugins.security.audit.type: internal_opensearch
+{% endif %}
+{% if wazuh_indexer_s3_bucket | length > 0 %}
+s3.client.default.endpoint: {{ wazuh_indexer_s3_endpoint | default('s3.amazonaws.com', true) | to_json }}
+s3.client.default.region: {{ wazuh_indexer_s3_region | to_json }}
+s3.client.default.path_style_access: {{ wazuh_indexer_s3_path_style_access | bool | to_json }}
+{% endif %}

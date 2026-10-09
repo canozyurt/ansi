@@ -1,0 +1,22 @@
+---
+# {{ ansible_managed }}
+# Only the break-glass admin and two service accounts. People sign in through Keycloak.
+_meta:
+  type: "internalusers"
+  config_version: 2
+
+{{ wazuh_indexer_admin_user | to_json }}:
+  hash: {{ wazuh_indexer_user_hashes[wazuh_indexer_admin_user] | to_json }}
+  reserved: true
+  backend_roles: []
+  description: "Break-glass administrator; every use is alerted on"
+
+{{ wazuh_indexer_dashboard_user | to_json }}:
+  hash: {{ wazuh_indexer_user_hashes[wazuh_indexer_dashboard_user] | to_json }}
+  reserved: true
+  description: "Wazuh dashboard server"
+
+{{ wazuh_indexer_manager_user | to_json }}:
+  hash: {{ wazuh_indexer_user_hashes[wazuh_indexer_manager_user] | to_json }}
+  reserved: true
+  description: "Wazuh manager (Filebeat and vulnerability detection), write-only to wazuh-* indices"

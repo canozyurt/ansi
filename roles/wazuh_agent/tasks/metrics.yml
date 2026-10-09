@@ -1,0 +1,58 @@
+---
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ wazuh_agent_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the agent status script
+  ansible.builtin.template:
+    src: wazuh-agent-textfile.sh.j2
+    dest: /usr/local/sbin/wazuh-agent-textfile
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_log_06]
+
+- name: Install the status service and timer
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: wazuh-agent-textfile.service
+      content: |
+        [Unit]
+        Description=Wazuh agent status for node_exporter
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/wazuh-agent-textfile
+    - name: wazuh-agent-textfile.timer
+      content: |
+        [Unit]
+        Description=Refresh the Wazuh agent status every minute
+
+        [Timer]
+        OnBootSec=30s
+        OnUnitActiveSec=1min
+        AccuracySec=5s
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: wazuh_agent_units
+  tags: [chk_log_06]
+
+- name: Enable the status timer
+  ansible.builtin.systemd_service:
+    name: wazuh-agent-textfile.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ wazuh_agent_units is changed }}"
+  tags: [chk_log_06]

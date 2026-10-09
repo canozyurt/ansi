@@ -1,0 +1,99 @@
+---
+# Issues <wazuh_certs_dir>/<wazuh_certs_name>.pem (leaf) and -key.pem, signed by the SIEM CA.
+# Needs wazuh_certs_ca_pem (tasks/main.yml) in the play. Sets wazuh_certs_changed.
+- name: Check the certificate parameters
+  ansible.builtin.assert:
+    that:
+      - wazuh_certs_dir | length > 0
+      - wazuh_certs_name | length > 0
+      - wazuh_certs_ca_pem is defined
+    fail_msg: wazuh_certs issue.yml needs wazuh_certs_dir, wazuh_certs_name and the CA (include tasks/main.yml first).
+    quiet: true
+
+- name: Generate the private key on this host ({{ wazuh_certs_name }})
+  community.crypto.openssl_privatekey:
+    path: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}-key.pem"
+    type: RSA
+    size: 3072
+    # OpenSearch reads only PKCS#8 keys.
+    format: pkcs8
+    owner: "{{ wazuh_certs_owner }}"
+    group: "{{ wazuh_certs_file_group }}"
+    mode: "{{ wazuh_certs_key_mode }}"
+  tags: [chk_sec_03]
+
+- name: Generate the signing request ({{ wazuh_certs_name }})
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}-key.pem"
+    subject_ordered:
+      - O: "{{ wazuh_certs_organization }}"
+      - OU: "{{ wazuh_certs_org_unit }}"
+      - CN: "{{ wazuh_certs_common_name }}"
+    subject_alt_name: >-
+      {{ (wazuh_certs_dns_names | unique | map('regex_replace', '^', 'DNS:') | list)
+         + (wazuh_certs_ip_addresses | unique | map('regex_replace', '^', 'IP:') | list) }}
+    extended_key_usage: "{{ wazuh_certs_extended_key_usage }}"
+    key_usage: [digitalSignature, keyEncipherment]
+    basic_constraints: ["CA:FALSE"]
+  register: wazuh_certs_csr
+  changed_when: false
+
+- name: Read the current certificate ({{ wazuh_certs_name }})
+  ansible.builtin.slurp:
+    src: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}.pem"
+  register: wazuh_certs_current
+  failed_when: false
+
+- name: Sign the certificate on the CA host ({{ wazuh_certs_name }})
+  community.crypto.x509_certificate_pipe:
+    content: "{{ (wazuh_certs_current.content | b64decode) if wazuh_certs_current.content is defined else omit }}"
+    csr_content: "{{ wazuh_certs_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ wazuh_certs_ca_dir }}/ca.pem"
+    ownca_privatekey_path: "{{ wazuh_certs_ca_dir }}/ca-key.pem"
+    ownca_not_after: "+{{ wazuh_certs_days }}d"
+  delegate_to: "{{ wazuh_certs_ca_host }}"
+  register: wazuh_certs_signed
+  tags: [chk_sec_03]
+
+- name: Write the certificate ({{ wazuh_certs_name }})
+  ansible.builtin.copy:
+    content: "{{ wazuh_certs_signed.certificate }}"
+    dest: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}.pem"
+    owner: "{{ wazuh_certs_owner }}"
+    group: "{{ wazuh_certs_file_group }}"
+    mode: "0444"
+  register: wazuh_certs_written
+
+- name: Check the certificate is not about to expire ({{ wazuh_certs_name }})
+  community.crypto.x509_certificate_info:
+    path: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}.pem"
+    valid_at:
+      renew: "+{{ wazuh_certs_renew_before_days }}d"
+  register: wazuh_certs_info
+
+- name: Renew a certificate close to expiry ({{ wazuh_certs_name }})
+  when: not wazuh_certs_info.valid_at.renew
+  block:
+    - name: Sign a fresh certificate on the CA host
+      community.crypto.x509_certificate_pipe:
+        csr_content: "{{ wazuh_certs_csr.csr }}"
+        provider: ownca
+        ownca_path: "{{ wazuh_certs_ca_dir }}/ca.pem"
+        ownca_privatekey_path: "{{ wazuh_certs_ca_dir }}/ca-key.pem"
+        ownca_not_after: "+{{ wazuh_certs_days }}d"
+        force: true
+      delegate_to: "{{ wazuh_certs_ca_host }}"
+      register: wazuh_certs_renewed
+
+    - name: Write the renewed certificate
+      ansible.builtin.copy:
+        content: "{{ wazuh_certs_renewed.certificate }}"
+        dest: "{{ wazuh_certs_dir }}/{{ wazuh_certs_name }}.pem"
+        owner: "{{ wazuh_certs_owner }}"
+        group: "{{ wazuh_certs_file_group }}"
+        mode: "0444"
+
+- name: Note the change ({{ wazuh_certs_name }})
+  ansible.builtin.set_fact:
+    wazuh_certs_changed: "{{ wazuh_certs_written is changed or not wazuh_certs_info.valid_at.renew }}"

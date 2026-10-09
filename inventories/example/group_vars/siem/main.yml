@@ -1,0 +1,34 @@
+---
+# Central logging and SIEM (Wazuh). Secrets: ansible-vault encrypt_string, or look them up from OpenBao.
+wazuh_indexer_admin_password: "{{ vault_wazuh_indexer_admin_password }}"
+wazuh_indexer_dashboard_password: "{{ vault_wazuh_indexer_dashboard_password }}"
+wazuh_indexer_manager_password: "{{ vault_wazuh_indexer_manager_password }}"
+wazuh_indexer_heap: 4g
+wazuh_indexer_memory_limit: 8g
+
+wazuh_manager_cluster_key: "{{ vault_wazuh_manager_cluster_key }}"
+wazuh_manager_api_password: "{{ vault_wazuh_manager_api_password }}"
+
+wazuh_dashboard_public_url: https://siem.example.internal
+wazuh_dashboard_oidc_client_secret: "{{ vault_wazuh_dashboard_oidc_client_secret }}"
+
+# Snapshots to S3-compatible storage (BCK-01); leave the bucket empty to disable.
+# wazuh_s3_bucket: siem-snapshots
+# wazuh_s3_endpoint: s3.example.internal
+# wazuh_s3_access_key: "{{ vault_wazuh_s3_access_key }}"
+# wazuh_s3_secret_key: "{{ vault_wazuh_s3_secret_key }}"
+
+# Agents connect from every zone and from laptops on the VPN (firewall_mgmt_cidrs); the indexer and
+# the manager cluster talk only between SIEM nodes; the API only from management; the dashboard from
+# the edge proxies and management (NET-01, NET-03).
+siem_agent_sources: "{{ (network_zones.values() | list) + firewall_mgmt_cidrs }}"
+firewall_rules_wazuh:
+  - { name: wazuh-agents, port: 1514, sources: "{{ siem_agent_sources }}" }
+  - { name: wazuh-enrollment, port: 1515, sources: "{{ siem_agent_sources }}" }
+  - { name: wazuh-manager-cluster, port: 1516, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: wazuh-api, port: 55000, sources: "{{ firewall_mgmt_cidrs }}" }
+  - { name: wazuh-indexer-http, port: 9200, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: wazuh-indexer-transport, port: 9300, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: wazuh-dashboard, port: 5601, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }
+  # Only when wazuh_dashboard_port is 443 (no edge proxy in front).
+  - { name: wazuh-dashboard-https, port: 443, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }

@@ -1,0 +1,54 @@
+---
+# Wazuh agent on every host (group "all"): host intrusion detection, file integrity monitoring,
+# rootkit checks, configuration assessment, inventory and log shipping (LOG-01, HRD-06, EVD-03).
+wazuh_agent_version: "{{ versions_packages.wazuh_agent }}"
+
+# Installation: "apt" (official repository, pinned and held, signing key fingerprint checked) or
+# "deb" (a pinned .deb from the controller, checked against its SHA-256; for air-gapped sites).
+wazuh_agent_install_method: apt
+wazuh_agent_apt_repo_url: https://packages.wazuh.com/4.x/apt/
+wazuh_agent_gpg_key_url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+# Fingerprint of the Wazuh package signing key ("Wazuh.com <support@wazuh.com>").
+wazuh_agent_gpg_fingerprint: 0DCFCA5547B19D2A6099506096B3EE5F29111145
+wazuh_agent_deb_src: ""          # path on the controller
+wazuh_agent_deb_sha256: ""
+
+# Managers: a VIP / load-balancer name, or the list of manager nodes (agents fail over in order).
+wazuh_agent_manager_group: siem
+wazuh_agent_manager_addresses: "{{ groups[wazuh_agent_manager_group] | default([]) }}"
+wazuh_agent_manager_port: "{{ wazuh_manager_agent_port | default(1514) }}"
+wazuh_agent_enrollment_address: "{{ wazuh_agent_manager_addresses | first | default('') }}"
+wazuh_agent_enrollment_port: "{{ wazuh_manager_enrollment_port | default(1515) }}"
+wazuh_agent_enrollment_password: "{{ wazuh_manager_enrollment_password | default('') }}"
+# The manager already registers itself (agent 000) under the host's name and refuses a second agent with
+# that name, so the host agent on a manager node gets a suffix.
+wazuh_agent_manager_host_suffix: "-host"
+wazuh_agent_name: >-
+  {{ inventory_hostname
+     ~ (wazuh_agent_manager_host_suffix if inventory_hostname in (groups[wazuh_agent_manager_group] | default([])) else '') }}
+wazuh_agent_groups: [default]
+# The SIEM CA verifies the manager during enrollment. Read from the CA host when not set.
+wazuh_agent_server_ca_pem: ""
+
+# Asset labels (EVD-03): every agent reports an owner; add more (zone, environment) as needed.
+wazuh_agent_owner: "{{ asset_owner | default('platform-team') }}"
+wazuh_agent_labels:
+  owner: "{{ wazuh_agent_owner }}"
+  inventory_groups: "{{ group_names | join(',') }}"
+
+# Log collection (LOG-01): journald holds every container's output and the system's own logs;
+# auditd's log carries privileged commands and session records (IAM-07); the auth log where rsyslog writes one.
+wazuh_agent_collect_journald: true
+wazuh_agent_audit_log: /var/log/audit/audit.log
+wazuh_agent_auth_logs: [/var/log/auth.log]
+wazuh_agent_extra_localfiles: []      # [{location: /var/log/x.log, log_format: syslog}]
+
+# Active response stays off unless the manager enables it.
+wazuh_agent_active_response_enabled: "{{ wazuh_manager_active_response_enabled | default(false) }}"
+
+# Agent status for monitoring (LOG-06), written for node_exporter's textfile collector every minute.
+wazuh_agent_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# Where the SIEM CA certificate is read from when wazuh_agent_server_ca_pem is empty.
+wazuh_agent_ca_host: "{{ (groups[wazuh_agent_manager_group] | default([inventory_hostname])) | first }}"
+wazuh_agent_ca_file: "{{ wazuh_certs_ca_dir | default('/opt/wazuh-ca') }}/ca.pem"

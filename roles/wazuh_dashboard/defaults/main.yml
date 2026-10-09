@@ -1,0 +1,56 @@
+---
+wazuh_dashboard_image: "{{ versions_images.wazuh_dashboard }}"
+wazuh_dashboard_container_name: wazuh-dashboard
+
+# Runs on every SIEM node (stateless; saved objects live in the indexer). The edge proxy balances
+# across them (HA-01).
+wazuh_dashboard_min_nodes: 2
+wazuh_dashboard_allow_single_node: false
+wazuh_dashboard_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+# Public URL people use (through the edge proxy or directly).
+wazuh_dashboard_public_url: https://siem.example.internal
+wazuh_dashboard_port: 5601
+wazuh_dashboard_data_dir: /opt/wazuh-dashboard
+wazuh_dashboard_memory_limit: 2g
+# The upstream image runs as uid/gid 1000.
+wazuh_dashboard_uid: 1000
+
+# TLS (SEC-03) for the browser-facing listener: internal PKI, organisation files or self-signed (labs).
+wazuh_dashboard_tls_cert_file: ""
+wazuh_dashboard_tls_key_file: ""
+
+# Indexer nodes the dashboard talks to (TLS verified with the SIEM CA bundle) and its service account.
+wazuh_dashboard_indexer_group: siem
+wazuh_dashboard_indexer_urls: >-
+  {{ (groups[wazuh_dashboard_indexer_group] | default([]))
+     | map('regex_replace', '^', 'https://')
+     | map('regex_replace', '$', ':' ~ (wazuh_indexer_http_port | default(9200) | string))
+     | list }}
+wazuh_dashboard_indexer_user: "{{ wazuh_indexer_dashboard_user | default('kibanaserver') }}"
+wazuh_dashboard_indexer_password: "{{ wazuh_indexer_dashboard_password | default('') }}"
+
+# Wazuh API of the master manager.
+wazuh_dashboard_api_url: "https://{{ wazuh_manager_master_host | default(groups[wazuh_dashboard_indexer_group][0]) }}"
+wazuh_dashboard_api_port: "{{ wazuh_manager_api_port | default(55000) }}"
+wazuh_dashboard_api_user: "{{ wazuh_manager_api_user | default('wazuh-wui') }}"
+wazuh_dashboard_api_password: "{{ wazuh_manager_api_password | default('') }}"
+
+# ---------------------------------------------------------------- SSO (IAM-01)
+# OIDC through Keycloak with the OpenSearch security plugin's openid backend; the "roles" claim is
+# mapped in the indexer (wazuh_indexer_role_mapping). The login form stays only for the break-glass admin.
+wazuh_dashboard_oidc_enabled: true
+wazuh_dashboard_oidc_client_id: wazuh-dashboard
+wazuh_dashboard_oidc_client_secret: ""
+wazuh_dashboard_oidc_connect_url: >-
+  {{ (keycloak_hostname | default('https://sso.example.internal')) ~ '/realms/'
+     ~ (keycloak_realm | default('org')) ~ '/.well-known/openid-configuration' }}
+wazuh_dashboard_oidc_scope: openid profile email
+# CA file inside the container that verifies Keycloak; empty uses the system store.
+wazuh_dashboard_oidc_ca_file: ""
+# Register the client in Keycloak (oidc_client); off in labs without Keycloak.
+wazuh_dashboard_oidc_register_client: "{{ oidc_clients_enabled | default(true) }}"
+
+# Session limits (IAM-01): 30 minutes idle, 10 hours at most.
+wazuh_dashboard_session_ttl_ms: 1800000
+wazuh_dashboard_cookie_ttl_ms: 36000000

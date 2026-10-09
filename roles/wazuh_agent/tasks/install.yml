@@ -1,0 +1,97 @@
+---
+- name: Install from the official repository
+  when: wazuh_agent_install_method == 'apt'
+  tags: [chk_chg_05]
+  block:
+    - name: Install the tools to verify the signing key
+      ansible.builtin.apt:
+        name: [gnupg, ca-certificates]
+        state: present
+
+    - name: Create the keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the Wazuh signing key
+      ansible.builtin.get_url:
+        url: "{{ wazuh_agent_gpg_key_url }}"
+        dest: /etc/apt/keyrings/wazuh.asc
+        owner: root
+        group: root
+        mode: "0644"
+      register: wazuh_agent_key
+
+    - name: Read the key's fingerprint
+      ansible.builtin.command:
+        argv: [gpg, --show-keys, --with-colons, --with-fingerprint, /etc/apt/keyrings/wazuh.asc]
+      register: wazuh_agent_key_info
+      changed_when: false
+
+    - name: Refuse a key with an unexpected fingerprint
+      ansible.builtin.assert:
+        that: >-
+          wazuh_agent_gpg_fingerprint | upper
+          in (wazuh_agent_key_info.stdout_lines | select('match', '^fpr:') | map('split', ':') | map(attribute=9) | list)
+        fail_msg: >-
+          /etc/apt/keyrings/wazuh.asc does not have fingerprint {{ wazuh_agent_gpg_fingerprint }}; not trusting it.
+          Remove the file and check wazuh_agent_gpg_key_url.
+        quiet: true
+
+    - name: Add the Wazuh repository (signed by that key only)
+      ansible.builtin.copy:
+        content: |
+          deb [signed-by=/etc/apt/keyrings/wazuh.asc] {{ wazuh_agent_apt_repo_url }} stable main
+        dest: /etc/apt/sources.list.d/wazuh.list
+        owner: root
+        group: root
+        mode: "0644"
+      register: wazuh_agent_repo
+
+    - name: Install the pinned agent version
+      ansible.builtin.apt:
+        name: "wazuh-agent={{ wazuh_agent_version }}"
+        update_cache: "{{ wazuh_agent_repo is changed or wazuh_agent_key is changed }}"
+        allow_downgrade: false
+        state: present
+      notify: Restart wazuh-agent
+
+- name: Install a pinned package from the controller
+  when: wazuh_agent_install_method == 'deb'
+  tags: [chk_chg_05]
+  block:
+    - name: Copy the package
+      ansible.builtin.copy:
+        src: "{{ wazuh_agent_deb_src }}"
+        dest: "/var/cache/wazuh-agent_{{ wazuh_agent_version }}_amd64.deb"
+        owner: root
+        group: root
+        mode: "0644"
+        checksum: "{{ wazuh_agent_deb_sha256 if wazuh_agent_deb_sha256 | length > 0 else omit }}"
+
+    - name: Read the package checksum
+      ansible.builtin.stat:
+        path: "/var/cache/wazuh-agent_{{ wazuh_agent_version }}_amd64.deb"
+        checksum_algorithm: sha256
+      register: wazuh_agent_deb
+
+    - name: Refuse a package with an unexpected checksum
+      ansible.builtin.assert:
+        that: wazuh_agent_deb_sha256 | length == 0 or wazuh_agent_deb.stat.checksum == wazuh_agent_deb_sha256
+        fail_msg: The agent package does not match wazuh_agent_deb_sha256.
+        quiet: true
+
+    - name: Install the package
+      ansible.builtin.apt:
+        deb: "/var/cache/wazuh-agent_{{ wazuh_agent_version }}_amd64.deb"
+        state: present
+      notify: Restart wazuh-agent
+
+- name: Hold the agent at the pinned version (upgrades go through this repository)
+  ansible.builtin.dpkg_selections:
+    name: wazuh-agent
+    selection: hold
+  tags: [chk_chg_05]

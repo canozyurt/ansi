@@ -1,0 +1,167 @@
+---
+- name: Install Python libraries the Docker, crypto and hashing tasks need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography, python3-bcrypt]
+    state: present
+
+- name: Create indexer directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ wazuh_indexer_data_dir }}", mode: "0755" }
+    - { path: "{{ wazuh_indexer_data_dir }}/data", owner: "{{ wazuh_indexer_uid }}", group: "{{ wazuh_indexer_uid }}", mode: "0750" }
+    - { path: "{{ wazuh_indexer_data_dir }}/certs", owner: "{{ wazuh_indexer_uid }}", group: "{{ wazuh_indexer_uid }}", mode: "0500" }
+    - { path: "{{ wazuh_indexer_data_dir }}/config", owner: "{{ wazuh_indexer_uid }}", group: "{{ wazuh_indexer_uid }}", mode: "0500" }
+    - { path: "{{ wazuh_indexer_data_dir }}/security", owner: "{{ wazuh_indexer_uid }}", group: "{{ wazuh_indexer_uid }}", mode: "0500" }
+    - { path: "{{ wazuh_indexer_data_dir }}/hashes", mode: "0700" }
+
+- name: Make sure the SIEM CA exists
+  ansible.builtin.include_role:
+    name: wazuh_certs
+  tags: [chk_sec_03]
+
+- name: Issue the node certificate (transport and, without a PKI, HTTP)
+  ansible.builtin.include_role:
+    name: wazuh_certs
+    tasks_from: issue
+  vars:
+    wazuh_certs_dir: "{{ wazuh_indexer_data_dir }}/certs"
+    wazuh_certs_name: node
+    wazuh_certs_common_name: "{{ wazuh_indexer_node_name }}"
+    wazuh_certs_org_unit: "{{ wazuh_indexer_cert_org_unit }}"
+    wazuh_certs_dns_names: "{{ wazuh_indexer_cert_dns_names }}"
+    wazuh_certs_ip_addresses: "{{ [wazuh_indexer_node_address, '127.0.0.1'] }}"
+    wazuh_certs_owner: "{{ wazuh_indexer_uid }}"
+    wazuh_certs_file_group: "{{ wazuh_indexer_uid }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the node certificate changed
+  ansible.builtin.set_fact:
+    wazuh_indexer_node_cert_changed: "{{ wazuh_certs_changed }}"
+
+- name: Issue the super-admin client certificate (security configuration and automation)
+  ansible.builtin.include_role:
+    name: wazuh_certs
+    tasks_from: issue
+  vars:
+    wazuh_certs_dir: "{{ wazuh_indexer_data_dir }}/certs"
+    wazuh_certs_name: admin
+    wazuh_certs_common_name: admin
+    wazuh_certs_org_unit: "{{ wazuh_indexer_admin_cert_org_unit }}"
+    wazuh_certs_extended_key_usage: [clientAuth]
+    wazuh_certs_owner: "{{ wazuh_indexer_uid }}"
+    wazuh_certs_file_group: "{{ wazuh_indexer_uid }}"
+  tags: [chk_sec_03]
+
+- name: Get the HTTP certificate from the internal PKI or organisation files
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: wazuh-indexer
+    tls_cert_dir: "{{ wazuh_indexer_data_dir }}/certs/http"
+    tls_cert_owner: "{{ wazuh_indexer_uid }}"
+    tls_cert_group: "{{ wazuh_indexer_uid }}"
+    tls_cert_dir_mode: "0500"
+    tls_cert_key_mode: "0400"
+    tls_cert_common_name: "{{ inventory_hostname }}"
+    tls_cert_alt_names: "{{ wazuh_indexer_cert_dns_names }}"
+    tls_cert_ip_sans: ["127.0.0.1", "{{ wazuh_indexer_node_address }}"]
+    tls_cert_src_cert: "{{ wazuh_indexer_tls_cert_file }}"
+    tls_cert_src_key: "{{ wazuh_indexer_tls_key_file }}"
+  when: wazuh_indexer_http_cert_from_tls_cert | bool
+  tags: [chk_sec_03]
+
+- name: Read the internal PKI root, when this host trusts one
+  ansible.builtin.slurp:
+    src: /usr/local/share/ca-certificates/compliant-infra-ca.crt
+  register: wazuh_indexer_internal_ca
+  failed_when: false
+
+- name: Write the CA bundle clients and nodes trust (SIEM CA plus internal PKI)
+  ansible.builtin.copy:
+    content: "{{ wazuh_indexer_ca_parts | join('\n') }}\n"
+    dest: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+    owner: "{{ wazuh_indexer_uid }}"
+    group: "{{ wazuh_indexer_uid }}"
+    mode: "0444"
+  vars:
+    wazuh_indexer_ca_parts: >-
+      {{ [wazuh_certs_ca_pem | trim]
+         + ([(wazuh_indexer_internal_ca.content | b64decode) | trim] if wazuh_indexer_internal_ca.content is defined else []) }}
+  register: wazuh_indexer_ca_bundle
+  tags: [chk_sec_03]
+
+- name: Restart the indexer when its certificates changed
+  ansible.builtin.debug:
+    msg: A certificate changed; the indexer restarts to load it.
+  changed_when: >-
+    (wazuh_indexer_node_cert_changed | bool) or (wazuh_indexer_ca_bundle is changed)
+    or (wazuh_indexer_http_cert_from_tls_cert | bool and tls_cert_changed | default(false) | bool)
+  notify: Restart wazuh-indexer
+
+- name: Write the OpenSearch configuration
+  ansible.builtin.template:
+    src: opensearch.yml.j2
+    dest: "{{ wazuh_indexer_data_dir }}/config/opensearch.yml"
+    owner: "{{ wazuh_indexer_uid }}"
+    group: "{{ wazuh_indexer_uid }}"
+    mode: "0400"
+  notify: Restart wazuh-indexer
+  tags: [chk_sec_03, chk_log_02, chk_ha_01]
+
+- name: Prepare the security configuration
+  ansible.builtin.import_tasks: security_files.yml
+
+- name: Prepare a version change
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
+- name: Run the indexer container
+  community.docker.docker_container:
+    name: "{{ wazuh_indexer_container_name }}"
+    image: "{{ wazuh_indexer_image }}"
+    network_mode: host
+    user: "{{ wazuh_indexer_uid }}:{{ wazuh_indexer_uid }}"
+    env:
+      OPENSEARCH_JAVA_OPTS: "-Xms{{ wazuh_indexer_heap }} -Xmx{{ wazuh_indexer_heap }}"
+    volumes: "{{ wazuh_indexer_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_indexer_memory_limit }}"
+    pids_limit: 4096
+    ulimits: ["nofile:{{ wazuh_indexer_nofile }}:{{ wazuh_indexer_nofile }}"]
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    # OpenSearch writes its keystore and plugin state into the image's config directory, so the root
+    # filesystem stays writable; configuration, certificates and data are mounted from the host.
+    read_only: false
+    labels:
+      com.compliant-infra.role: wazuh-indexer
+    state: started
+  register: wazuh_indexer_container
+  tags: [chk_hrd_02, chk_log_01]
+
+- name: Apply configuration changes now (rolling restart)
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml
+
+- name: Finish a version change
+  ansible.builtin.import_tasks: upgrade_apply.yml
+
+# Index data is protected by replicas and S3 snapshots (snapshots.yml); files hold the node's
+# configuration and, on the CA host, the SIEM CA.
+- name: Declare what to back up (configuration and SIEM CA)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: wazuh-indexer
+    backup_register_paths: >-
+      {{ [wazuh_indexer_data_dir ~ '/config', wazuh_indexer_data_dir ~ '/security', wazuh_indexer_data_dir ~ '/hashes']
+         + ([wazuh_certs_ca_dir | default('/opt/wazuh-ca')] if inventory_hostname == (wazuh_certs_ca_host | default('')) else []) }}
+    backup_register_rpo_hours: 24
+    backup_register_rto_hours: 4
+  tags: [chk_bck_01]

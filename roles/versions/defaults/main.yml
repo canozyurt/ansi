@@ -48,6 +48,15 @@ versions_images:
   postgres_base: docker.io/library/ubuntu:resolute-20260927
   etcd: gcr.io/etcd-development/etcd:v3.6.15
   postgres_exporter: docker.io/prometheuscommunity/postgres-exporter:v0.20.1
+  # SIEM (Wazuh 4.x, GPLv2). Indexer, manager, dashboard and agent move together.
+  wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.8
+  wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.8
+  wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.8
+
+# Host packages installed from upstream repositories (pinned, held).
+versions_packages:
+  # Must match the Wazuh manager version above (agents may not be newer than the manager).
+  wazuh_agent: 4.14.8-1
 
 # Host binaries installed outside the package manager, verified by SHA-256.
 versions_tools:
@@ -79,3 +88,6 @@ versions_postgres:
 versions_upgrade_from:
   keycloak: docker.io/keycloak/keycloak:26.7.5
   openbao: docker.io/openbao/openbao:2.6.4
+  wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.7
+  wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.7
+  wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.7

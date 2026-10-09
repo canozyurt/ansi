@@ -1,0 +1,37 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Writes Wazuh manager metrics for the node_exporter textfile collector (LOG-06).
+set -uo pipefail
+dir={{ wazuh_manager_textfile_dir | quote }}
+out="${dir}/wazuh_manager.prom"
+tmp="$(mktemp "${dir}/.wazuh_manager.prom.XXXXXX")"
+trap 'rm -f "${tmp}"' EXIT
+
+up=0
+status="$(docker exec {{ wazuh_manager_container_name | quote }} /var/ossec/bin/wazuh-control status 2>/dev/null)"
+if grep -q "wazuh-remoted is running" <<<"${status}" && grep -q "wazuh-analysisd is running" <<<"${status}"; then
+  up=1
+fi
+{
+  echo "# HELP wazuh_manager_up Whether the Wazuh manager's analysis and agent listener daemons run."
+  echo "# TYPE wazuh_manager_up gauge"
+  echo "wazuh_manager_up ${up}"
+{% if wazuh_manager_is_master | bool %}
+  if [ "${up}" = 1 ]; then
+    list="$(docker exec {{ wazuh_manager_container_name | quote }} /var/ossec/bin/agent_control -l 2>/dev/null | grep -v 'ID: 000,')"
+    echo "# HELP wazuh_manager_agents Agents registered with the cluster, by connection status."
+    echo "# TYPE wazuh_manager_agents gauge"
+    for s in Active Disconnected Pending "Never connected"; do
+      n="$(grep -c ", ${s}\$" <<<"${list}")"
+      label="$(tr 'A-Z ' 'a-z_' <<<"${s}")"
+      echo "wazuh_manager_agents{status=\"${label}\"} ${n}"
+    done
+  fi
+{% endif %}
+  echo "# HELP wazuh_manager_textfile_last_run_timestamp_seconds Last time this collector ran."
+  echo "# TYPE wazuh_manager_textfile_last_run_timestamp_seconds gauge"
+  echo "wazuh_manager_textfile_last_run_timestamp_seconds $(date +%s)"
+} > "${tmp}"
+chmod 0644 "${tmp}"
+mv -f "${tmp}" "${out}"
+trap - EXIT

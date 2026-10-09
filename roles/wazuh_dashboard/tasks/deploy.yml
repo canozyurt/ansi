@@ -1,0 +1,123 @@
+---
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Create dashboard directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ wazuh_dashboard_data_dir }}", mode: "0755" }
+    - { path: "{{ wazuh_dashboard_data_dir }}/certs", owner: "{{ wazuh_dashboard_uid }}", group: "{{ wazuh_dashboard_uid }}", mode: "0500" }
+    - { path: "{{ wazuh_dashboard_data_dir }}/wazuh-config", owner: "{{ wazuh_dashboard_uid }}", group: "{{ wazuh_dashboard_uid }}", mode: "0700" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: wazuh-dashboard
+    tls_cert_dir: "{{ wazuh_dashboard_data_dir }}/certs/tls"
+    tls_cert_owner: "{{ wazuh_dashboard_uid }}"
+    tls_cert_group: "{{ wazuh_dashboard_uid }}"
+    tls_cert_dir_mode: "0500"
+    tls_cert_key_mode: "0400"
+    tls_cert_common_name: "{{ wazuh_dashboard_public_url | urlsplit('hostname') }}"
+    tls_cert_src_cert: "{{ wazuh_dashboard_tls_cert_file }}"
+    tls_cert_src_key: "{{ wazuh_dashboard_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart the dashboard when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; the dashboard restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart wazuh-dashboard
+
+- name: Make sure the SIEM CA is known
+  ansible.builtin.include_role:
+    name: wazuh_certs
+  when: wazuh_certs_ca_pem is not defined
+
+- name: Read the internal PKI root, when this host trusts one
+  ansible.builtin.slurp:
+    src: /usr/local/share/ca-certificates/compliant-infra-ca.crt
+  register: wazuh_dashboard_internal_ca
+  failed_when: false
+
+- name: Write the CA bundle used to verify the indexer
+  ansible.builtin.copy:
+    content: "{{ wazuh_dashboard_ca_parts | join('\n') }}\n"
+    dest: "{{ wazuh_dashboard_data_dir }}/certs/ca.pem"
+    owner: "{{ wazuh_dashboard_uid }}"
+    group: "{{ wazuh_dashboard_uid }}"
+    mode: "0444"
+  vars:
+    wazuh_dashboard_ca_parts: >-
+      {{ [wazuh_certs_ca_pem | trim]
+         + ([(wazuh_dashboard_internal_ca.content | b64decode) | trim] if wazuh_dashboard_internal_ca.content is defined else []) }}
+  notify: Restart wazuh-dashboard
+  tags: [chk_sec_03]
+
+- name: Write the dashboard configuration (contains the OIDC client secret)
+  ansible.builtin.template:
+    src: opensearch_dashboards.yml.j2
+    dest: "{{ wazuh_dashboard_data_dir }}/opensearch_dashboards.yml"
+    owner: "{{ wazuh_dashboard_uid }}"
+    group: "{{ wazuh_dashboard_uid }}"
+    mode: "0400"
+  no_log: true
+  notify: Restart wazuh-dashboard
+  tags: [chk_iam_01, chk_sec_02, chk_sec_03]
+
+- name: Write the Wazuh app configuration (contains the API password)
+  ansible.builtin.template:
+    src: wazuh.yml.j2
+    dest: "{{ wazuh_dashboard_data_dir }}/wazuh-config/wazuh.yml"
+    owner: "{{ wazuh_dashboard_uid }}"
+    group: "{{ wazuh_dashboard_uid }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart wazuh-dashboard
+  tags: [chk_sec_02]
+
+- name: Write the dashboard environment (contains secrets)
+  ansible.builtin.template:
+    src: wazuh-dashboard.env.j2
+    dest: "{{ wazuh_dashboard_data_dir }}/wazuh-dashboard.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart wazuh-dashboard
+  tags: [chk_sec_02]
+
+- name: Run the dashboard container
+  community.docker.docker_container:
+    name: "{{ wazuh_dashboard_container_name }}"
+    image: "{{ wazuh_dashboard_image }}"
+    network_mode: host
+    user: "{{ wazuh_dashboard_uid }}:{{ wazuh_dashboard_uid }}"
+    env_file: "{{ wazuh_dashboard_data_dir }}/wazuh-dashboard.env"
+    volumes: "{{ wazuh_dashboard_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_dashboard_memory_limit }}"
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    # The entrypoint writes the keystore holding the indexer password into the image's config directory.
+    read_only: false
+    labels:
+      com.compliant-infra.role: wazuh-dashboard
+    state: started
+  register: wazuh_dashboard_container
+  tags: [chk_hrd_02, chk_iam_01]
+
+- name: Apply configuration changes now (rolling restart)
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the node to be healthy
+  ansible.builtin.import_tasks: health.yml

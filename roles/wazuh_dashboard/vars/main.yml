@@ -1,0 +1,6 @@
+---
+wazuh_dashboard_home: /usr/share/wazuh-dashboard
+wazuh_dashboard_volumes:
+  - "{{ wazuh_dashboard_data_dir }}/opensearch_dashboards.yml:{{ wazuh_dashboard_home }}/config/opensearch_dashboards.yml:ro"
+  - "{{ wazuh_dashboard_data_dir }}/wazuh-config:{{ wazuh_dashboard_home }}/data/wazuh/config"
+  - "{{ wazuh_dashboard_data_dir }}/certs:{{ wazuh_dashboard_home }}/certs:ro"

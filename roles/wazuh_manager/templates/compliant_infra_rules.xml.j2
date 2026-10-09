@@ -1,0 +1,26 @@
+<!-- {{ ansible_managed }} -->
+<group name="compliant_infra,">
+
+  <!-- LOG-04: end-to-end test. `logger compliant-infra-siem-test <marker>` on any host must reach the
+       on-call through Alertmanager. -->
+  <rule id="100100" level="12">
+    <match>compliant-infra-siem-test</match>
+    <description>compliant-infra SIEM test event (LOG-04): $(full_log)</description>
+    <group>siem_test,</group>
+  </rule>
+
+  <!-- LOG-06: an agent going silent alerts the on-call. -->
+  <rule id="100110" level="{{ [wazuh_manager_alert_forward_level | int, 10] | max }}">
+    <if_sid>504</if_sid>
+    <description>Wazuh agent disconnected: no events or keepalives from it (LOG-06).</description>
+    <group>agent_silent,</group>
+  </rule>
+
+  <!-- Break-glass use is always worth a page. -->
+  <rule id="100120" level="12">
+    <if_group>authentication_success</if_group>
+    <match>break-glass</match>
+    <description>Break-glass account used.</description>
+    <group>break_glass,</group>
+  </rule>
+</group>

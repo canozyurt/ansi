@@ -1,0 +1,11 @@
+---
+- name: Wait until the manager API answers
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ wazuh_manager_api_port }}/"
+    ca_path: "{{ wazuh_manager_data_dir }}/certs/ca.pem"
+    status_code: [200, 401]
+  register: wazuh_manager_ready
+  until: wazuh_manager_ready.status in [200, 401]
+  retries: 60
+  delay: 5
+  tags: [chk_log_05]

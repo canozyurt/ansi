@@ -1,0 +1,41 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - wazuh_manager_cluster_key | length == 32
+      - wazuh_manager_cluster_key is match('^[A-Za-z0-9]+$')
+      - wazuh_manager_enrollment_password | length >= 16
+      - wazuh_manager_api_password | length >= 8 and wazuh_manager_api_password | length <= 64
+      - wazuh_manager_api_password is search('[A-Z]') and wazuh_manager_api_password is search('[a-z]')
+      - wazuh_manager_api_password is search('[0-9]') and wazuh_manager_api_password is search('[^A-Za-z0-9]')
+      - wazuh_manager_indexer_password | length >= 16
+      - wazuh_manager_indexer_urls | length > 0
+      - wazuh_manager_master_host in wazuh_manager_cluster_hosts
+    fail_msg: >-
+      Set wazuh_manager_cluster_key (32 letters/digits), wazuh_manager_enrollment_password (16+),
+      wazuh_manager_api_password (8-64 with upper, lower, digit and symbol) and the indexer password, all
+      from Ansible Vault or the secrets manager.
+    quiet: true
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: wazuh_manager_cluster_hosts | length >= wazuh_manager_min_nodes or wazuh_manager_allow_single_node | bool
+    fail_msg: >-
+      The Wazuh manager needs at least {{ wazuh_manager_min_nodes }} nodes (found {{ wazuh_manager_cluster_hosts | length }}).
+      Set wazuh_manager_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Know every cluster node's address
+  ansible.builtin.import_tasks: cluster_facts.yml
+
+- name: Deploy the manager
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Map dashboard users to API roles
+  ansible.builtin.import_tasks: api_rbac.yml
+
+- name: Install the manager status metrics
+  ansible.builtin.import_tasks: metrics.yml

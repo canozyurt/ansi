@@ -1,0 +1,25 @@
+---
+- name: Restart wazuh-dashboard
+  community.docker.docker_container:
+    name: "{{ wazuh_dashboard_container_name }}"
+    image: "{{ wazuh_dashboard_image }}"
+    network_mode: host
+    user: "{{ wazuh_dashboard_uid }}:{{ wazuh_dashboard_uid }}"
+    env_file: "{{ wazuh_dashboard_data_dir }}/wazuh-dashboard.env"
+    volumes: "{{ wazuh_dashboard_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_dashboard_memory_limit }}"
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    read_only: false
+    labels:
+      com.compliant-infra.role: wazuh-dashboard
+    state: started
+    restart: true
+  throttle: 1
+  when: not (wazuh_dashboard_container.changed | default(false))
+  notify: Wait for wazuh-dashboard
+
+- name: Wait for wazuh-dashboard
+  ansible.builtin.include_tasks: health.yml

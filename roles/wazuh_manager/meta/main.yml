@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: wazuh_manager
+  author: compliant-infra-ansible contributors
+  description: Wazuh manager cluster with password enrollment, FIM/rootcheck/SCA/inventory policy, vulnerability detection and alert forwarding
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

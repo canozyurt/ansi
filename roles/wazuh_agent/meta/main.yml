@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: wazuh_agent
+  author: compliant-infra-ansible contributors
+  description: Wazuh agent on every host with password enrollment, journald/audit/auth log collection and status metrics
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

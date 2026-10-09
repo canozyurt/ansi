@@ -1,0 +1,87 @@
+---
+# {{ ansible_managed }}
+_meta:
+  type: "roles"
+  config_version: 2
+
+# Marker role: the dashboard shows read-only UIs to users holding it.
+kibana_read_only:
+  reserved: true
+
+security_rest_api_access:
+  reserved: true
+
+# Operators: read alerts only (rbac_model "logs: read" for on-call).
+wazuh_alerts_read:
+  reserved: true
+  cluster_permissions:
+    - "cluster_composite_ops_ro"
+  index_permissions:
+    - index_patterns:
+        - "wazuh-alerts-*"
+      allowed_actions:
+        - "read"
+        - "indices:admin/mappings/get"
+        - "indices:admin/resolve/index"
+
+# Wazuh manager: writes alerts, archives and state indices; cannot read or delete other data.
+wazuh_manager_writer:
+  reserved: true
+  cluster_permissions:
+    - "cluster_monitor"
+    - "cluster_composite_ops"
+    - "indices:admin/template/get"
+    - "indices:admin/template/put"
+    - "indices:admin/index_template/get"
+    - "indices:admin/index_template/put"
+    - "cluster:admin/ingest/pipeline/get"
+    - "cluster:admin/ingest/pipeline/put"
+  index_permissions:
+    - index_patterns:
+        - "wazuh-alerts-*"
+        - "wazuh-archives-*"
+        - "wazuh-states-*"
+        - "wazuh-monitoring-*"
+        - "wazuh-statistics-*"
+      allowed_actions:
+        - "crud"
+        - "create_index"
+        - "indices:admin/mapping/put"
+        - "indices:admin/mappings/get"
+        - "indices:admin/refresh*"
+        - "indices:admin/get"
+        - "indices:monitor/settings/get"
+
+wazuh_ui_user:
+  reserved: true
+  hidden: false
+  cluster_permissions: []
+  index_permissions:
+    - index_patterns:
+        - "wazuh-*"
+      allowed_actions:
+        - "read"
+  tenant_permissions: []
+  static: false
+
+wazuh_ui_admin:
+  reserved: true
+  hidden: false
+  cluster_permissions: []
+  index_permissions:
+    - index_patterns:
+        - "wazuh-*"
+      allowed_actions:
+        - "read"
+        - "delete"
+        - "manage"
+        - "index"
+  tenant_permissions: []
+  static: false
+
+manage_ism:
+  reserved: true
+  hidden: false
+  cluster_permissions:
+    - "manage_ism"
+  static: false

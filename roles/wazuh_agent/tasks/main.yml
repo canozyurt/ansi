@@ -1,0 +1,22 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - wazuh_agent_enrollment_password | length >= 16
+      - wazuh_agent_manager_addresses | length > 0
+      - wazuh_agent_install_method in ['apt', 'deb']
+      - wazuh_agent_install_method != 'deb' or wazuh_agent_deb_src | length > 0
+    fail_msg: >-
+      Set wazuh_agent_enrollment_password (the manager's enrollment password, from the secrets manager),
+      the manager addresses (a VIP or the SIEM hosts), and wazuh_agent_deb_src for the "deb" method.
+    quiet: true
+  no_log: true
+
+- name: Install the agent
+  ansible.builtin.import_tasks: install.yml
+
+- name: Configure the agent
+  ansible.builtin.import_tasks: config.yml
+
+- name: Install the agent status metrics
+  ansible.builtin.import_tasks: metrics.yml

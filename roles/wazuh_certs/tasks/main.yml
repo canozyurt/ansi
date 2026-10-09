@@ -1,0 +1,77 @@
+---
+- name: Install Python libraries for certificate handling
+  ansible.builtin.apt:
+    name: [python3-cryptography]
+    state: present
+
+- name: Create the SIEM CA on the CA host
+  run_once: true
+  delegate_to: "{{ wazuh_certs_ca_host }}"
+  tags: [chk_sec_03]
+  block:
+    - name: Create the CA directory
+      ansible.builtin.file:
+        path: "{{ wazuh_certs_ca_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install the CA supplied from the secrets manager
+      ansible.builtin.copy:
+        content: "{{ item.content }}\n"
+        dest: "{{ wazuh_certs_ca_dir }}/{{ item.name }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: ca.pem, content: "{{ wazuh_certs_ca_cert_pem | trim }}", mode: "0644" }
+        - { name: ca-key.pem, content: "{{ wazuh_certs_ca_key_pem | trim }}", mode: "0600" }
+      loop_control:
+        label: "{{ item.name }}"
+      when: wazuh_certs_ca_cert_pem | length > 0
+      no_log: true
+
+    - name: Generate the CA key
+      community.crypto.openssl_privatekey:
+        path: "{{ wazuh_certs_ca_dir }}/ca-key.pem"
+        type: RSA
+        size: 4096
+        owner: root
+        group: root
+        mode: "0600"
+      when: wazuh_certs_ca_cert_pem | length == 0
+
+    - name: Generate the CA signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ wazuh_certs_ca_dir }}/ca-key.pem"
+        common_name: "{{ wazuh_certs_ca_common_name }}"
+        organization_name: "{{ wazuh_certs_organization }}"
+        basic_constraints: ["CA:TRUE", "pathlen:0"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+      register: wazuh_certs_ca_csr
+      changed_when: false
+      when: wazuh_certs_ca_cert_pem | length == 0
+
+    - name: Self-sign the CA certificate
+      community.crypto.x509_certificate:
+        path: "{{ wazuh_certs_ca_dir }}/ca.pem"
+        csr_content: "{{ wazuh_certs_ca_csr.csr }}"
+        privatekey_path: "{{ wazuh_certs_ca_dir }}/ca-key.pem"
+        provider: selfsigned
+        selfsigned_not_after: "+{{ wazuh_certs_ca_days }}d"
+        owner: root
+        group: root
+        mode: "0644"
+      when: wazuh_certs_ca_cert_pem | length == 0
+
+    - name: Read the CA certificate
+      ansible.builtin.slurp:
+        src: "{{ wazuh_certs_ca_dir }}/ca.pem"
+      register: wazuh_certs_ca_slurp
+
+- name: Publish the CA certificate to every host of the play
+  ansible.builtin.set_fact:
+    wazuh_certs_ca_pem: "{{ wazuh_certs_ca_slurp.content | b64decode }}"

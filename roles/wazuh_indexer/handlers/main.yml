@@ -1,0 +1,27 @@
+---
+- name: Restart wazuh-indexer
+  community.docker.docker_container:
+    name: "{{ wazuh_indexer_container_name }}"
+    image: "{{ wazuh_indexer_image }}"
+    network_mode: host
+    user: "{{ wazuh_indexer_uid }}:{{ wazuh_indexer_uid }}"
+    env:
+      OPENSEARCH_JAVA_OPTS: "-Xms{{ wazuh_indexer_heap }} -Xmx{{ wazuh_indexer_heap }}"
+    volumes: "{{ wazuh_indexer_volumes }}"
+    restart_policy: unless-stopped
+    memory: "{{ wazuh_indexer_memory_limit }}"
+    pids_limit: 4096
+    ulimits: ["nofile:{{ wazuh_indexer_nofile }}:{{ wazuh_indexer_nofile }}"]
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    read_only: false
+    labels:
+      com.compliant-infra.role: wazuh-indexer
+    state: started
+    restart: true
+  throttle: 1  # rolling restart keeps the cluster available
+  when: not (wazuh_indexer_container.changed | default(false))
+  notify: Wait for wazuh-indexer
+
+- name: Wait for wazuh-indexer
+  ansible.builtin.include_tasks: health.yml

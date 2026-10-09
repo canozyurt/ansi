@@ -1,0 +1,39 @@
+---
+# SIEM (Wazuh) alert rules, collected from prometheus_rules_* variables (LOG-05, LOG-06).
+# Metrics come from node_exporter's textfile collector (wazuh_agent.prom, wazuh_manager.prom).
+# LogShipperNotRunning and LogShipperSilent in the platform rules already cover the agents.
+prometheus_rules_siem:
+  - name: siem
+    rules:
+      - alert: WazuhAgentDisconnected
+        expr: wazuh_agent_connected == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A Wazuh agent is not connected to any SIEM manager
+          description: Security events from this host are buffered locally and not analysed.
+      - alert: WazuhManagerDown
+        expr: wazuh_manager_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Wazuh manager is down
+          description: Agents fail over to the other managers; check the cluster before the next one fails.
+      - alert: WazuhAgentsDisconnected
+        expr: wazuh_manager_agents{status="disconnected"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: The SIEM manager reports disconnected agents
+          description: Hosts are not sending security events. List them with agent_control -l on the master.
+      - alert: WazuhManagerMetricsStale
+        expr: time() - wazuh_manager_textfile_last_run_timestamp_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Wazuh manager metrics are stale
+          description: wazuh-manager-textfile.timer has not run for 15 minutes.

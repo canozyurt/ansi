@@ -1,0 +1,54 @@
+---
+# Renders the security plugin configuration. The files are mounted into every node; the first node
+# loads them into the security index on first start, and security.yml pushes later changes.
+- name: Install the password hashing helper
+  ansible.builtin.copy:
+    src: bcrypt_hash.py
+    dest: /usr/local/sbin/compliant-infra-bcrypt-hash
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Hash the internal user passwords (same hashes on every node)
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /usr/local/sbin/compliant-infra-bcrypt-hash
+      - "{{ wazuh_indexer_data_dir }}/hashes/{{ item.user }}"
+    stdin: "{{ item.password }}"
+  loop:
+    - { user: "{{ wazuh_indexer_admin_user }}", password: "{{ wazuh_indexer_admin_password }}" }
+    - { user: "{{ wazuh_indexer_dashboard_user }}", password: "{{ wazuh_indexer_dashboard_password }}" }
+    - { user: "{{ wazuh_indexer_manager_user }}", password: "{{ wazuh_indexer_manager_password }}" }
+  register: wazuh_indexer_hashes
+  changed_when: false
+  run_once: true
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Keep the hashes for the next run
+  ansible.builtin.copy:
+    content: "{{ item.stdout }}\n"
+    dest: "{{ wazuh_indexer_data_dir }}/hashes/{{ item.item.user }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ wazuh_indexer_hashes.results }}"
+  run_once: true
+  no_log: true
+
+- name: Write the security plugin configuration
+  ansible.builtin.template:
+    src: "security/{{ item }}.j2"
+    dest: "{{ wazuh_indexer_data_dir }}/security/{{ item }}"
+    owner: "{{ wazuh_indexer_uid }}"
+    group: "{{ wazuh_indexer_uid }}"
+    mode: "0400"
+  loop: "{{ wazuh_indexer_security_files }}"
+  vars:
+    wazuh_indexer_user_hashes: >-
+      {{ dict(wazuh_indexer_hashes.results | map(attribute='item.user')
+              | zip(wazuh_indexer_hashes.results | map(attribute='stdout'))) }}
+  register: wazuh_indexer_security_written
+  no_log: true
+  tags: [chk_iam_01, chk_log_02]

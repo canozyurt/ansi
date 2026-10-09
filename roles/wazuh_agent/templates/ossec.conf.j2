@@ -1,0 +1,82 @@
+<!-- {{ ansible_managed }} -->
+<!-- File integrity monitoring, rootcheck, SCA and inventory come from the managers' central policy
+     (agent.conf of the "default" group); this file holds the connection and the log sources. -->
+<ossec_config>
+  <client>
+{% for address in wazuh_agent_manager_addresses %}
+    <server>
+      <address>{{ address }}</address>
+      <port>{{ wazuh_agent_manager_port }}</port>
+      <protocol>tcp</protocol>
+    </server>
+{% endfor %}
+    <notify_time>10</notify_time>
+    <time-reconnect>60</time-reconnect>
+    <auto_restart>yes</auto_restart>
+    <crypto_method>aes</crypto_method>
+    <enrollment>
+      <enabled>yes</enabled>
+      <manager_address>{{ wazuh_agent_enrollment_address }}</manager_address>
+      <port>{{ wazuh_agent_enrollment_port }}</port>
+      <agent_name>{{ wazuh_agent_name }}</agent_name>
+      <groups>{{ wazuh_agent_groups | join(',') }}</groups>
+      <server_ca_path>/var/ossec/etc/siem-ca.pem</server_ca_path>
+      <authorization_pass_path>etc/authd.pass</authorization_pass_path>
+    </enrollment>
+  </client>
+
+  <client_buffer>
+    <disabled>no</disabled>
+    <queue_size>5000</queue_size>
+    <events_per_second>500</events_per_second>
+  </client_buffer>
+
+  <labels>
+{% for key, value in wazuh_agent_labels.items() %}
+    <label key="{{ key }}">{{ value }}</label>
+{% endfor %}
+  </labels>
+
+  <logging>
+    <log_format>plain</log_format>
+  </logging>
+
+  <active-response>
+    <disabled>{{ 'no' if wazuh_agent_active_response_enabled | bool else 'yes' }}</disabled>
+    <ca_store>etc/wpk_root.pem</ca_store>
+    <ca_verification>yes</ca_verification>
+  </active-response>
+
+{% if wazuh_agent_collect_journald | bool %}
+  <!-- journald: system services, sshd/sudo/PAM, and every container (Docker logs to journald). -->
+  <localfile>
+    <location>journald</location>
+    <log_format>journald</log_format>
+  </localfile>
+{% endif %}
+
+  <!-- auditd: identity and privilege changes, commands run with sudo or another uid (IAM-07). -->
+  <localfile>
+    <location>{{ wazuh_agent_audit_log }}</location>
+    <log_format>audit</log_format>
+  </localfile>
+
+{% for path in wazuh_agent_auth_logs %}
+  <localfile>
+    <location>{{ path }}</location>
+    <log_format>syslog</log_format>
+  </localfile>
+{% endfor %}
+
+  <localfile>
+    <location>/var/ossec/logs/active-responses.log</location>
+    <log_format>syslog</log_format>
+  </localfile>
+{% for lf in wazuh_agent_extra_localfiles %}
+
+  <localfile>
+    <location>{{ lf.location }}</location>
+    <log_format>{{ lf.log_format | default('syslog') }}</log_format>
+  </localfile>
+{% endfor %}
+</ossec_config>

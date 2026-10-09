@@ -1,0 +1,87 @@
+---
+# LOG-02: one ISM policy for alerts, archives and the security audit log. The policy carries a
+# fingerprint of its definition in the description, so it is only rewritten when it changes.
+- name: Configure retention and replicas
+  run_once: true
+  module_defaults:
+    ansible.builtin.uri:
+      client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+      client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+      ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+      body_format: json
+  vars:
+    wazuh_indexer_ism_states:
+      - name: hot
+        actions: []
+        transitions:
+          - state_name: retained
+            conditions:
+              min_index_age: "{{ wazuh_indexer_ism_hot_days }}d"
+      - name: retained
+        actions: >-
+          {{ ([{'read_only': {}}, {'force_merge': {'max_num_segments': 1}}]
+              if wazuh_indexer_ism_after_hot == 'read_only' else [{'close': {}}]) }}
+        transitions:
+          - state_name: delete
+            conditions:
+              min_index_age: "{{ wazuh_indexer_ism_delete_days }}d"
+      - name: delete
+        actions:
+          - delete: {}
+        transitions: []
+    wazuh_indexer_ism_fingerprint: >-
+      {{ (wazuh_indexer_ism_states | to_json ~ wazuh_indexer_ism_index_patterns | to_json) | hash('sha1') | truncate(12, true, '') }}
+    wazuh_indexer_ism_description: >-
+      compliant-infra log retention (LOG-02): {{ wazuh_indexer_ism_hot_days }} days hot,
+      deleted after {{ wazuh_indexer_ism_delete_days }} days [{{ wazuh_indexer_ism_fingerprint }}]
+  tags: [chk_log_02]
+  block:
+    - name: Read the retention policy
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_plugins/_ism/policies/{{ wazuh_indexer_ism_policy_id }}"
+        status_code: [200, 404]
+      register: wazuh_indexer_ism_current
+
+    - name: Write the retention policy
+      ansible.builtin.uri:
+        url: >-
+          {{ wazuh_indexer_api }}/_plugins/_ism/policies/{{ wazuh_indexer_ism_policy_id }}{{
+          ('?if_seq_no=' ~ wazuh_indexer_ism_current.json._seq_no ~ '&if_primary_term='
+           ~ wazuh_indexer_ism_current.json._primary_term) if wazuh_indexer_ism_current.status == 200 else '' }}
+        method: PUT
+        body:
+          policy:
+            description: "{{ wazuh_indexer_ism_description }}"
+            default_state: hot
+            states: "{{ wazuh_indexer_ism_states }}"
+            ism_template:
+              - index_patterns: "{{ wazuh_indexer_ism_index_patterns }}"
+                priority: 100
+        status_code: [200, 201]
+      when: >-
+        wazuh_indexer_ism_current.status == 404
+        or wazuh_indexer_ism_current.json.policy.description != wazuh_indexer_ism_description
+      changed_when: true
+
+    - name: Read the replica template
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_template/compliant-infra-replicas"
+        status_code: [200, 404]
+      register: wazuh_indexer_replica_template
+
+    # The Wazuh template creates indices without replicas; this higher-order template adds them (HA-01).
+    - name: Give every log index replicas
+      ansible.builtin.uri:
+        url: "{{ wazuh_indexer_api }}/_template/compliant-infra-replicas"
+        method: PUT
+        body:
+          order: 10
+          index_patterns: "{{ wazuh_indexer_ism_index_patterns + ['wazuh-states-*', 'wazuh-monitoring-*', 'wazuh-statistics-*'] }}"
+          settings:
+            index.number_of_replicas: "{{ wazuh_indexer_replicas | string }}"
+      when: >-
+        wazuh_indexer_replica_template.status == 404
+        or (wazuh_indexer_replica_template.json['compliant-infra-replicas'].settings.index.number_of_replicas
+            | default('')) != (wazuh_indexer_replicas | string)
+      changed_when: true
+      tags: [chk_ha_01]

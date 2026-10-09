@@ -1,0 +1,39 @@
+---
+# Internal helper for the SIEM roles (wazuh_indexer, wazuh_manager, wazuh_dashboard, wazuh_agent).
+#
+# OpenSearch (the Wazuh indexer) authenticates its own nodes and the super-admin by client certificates
+# whose distinguished names are listed in opensearch.yml (nodes_dn, admin_dn), and both ends of every
+# node-to-node connection need serverAuth and clientAuth. The general tls_cert role issues server
+# certificates named after hosts, so the SIEM keeps a dedicated CA for these identities:
+#
+#   - tasks/main.yml   makes sure the CA exists on wazuh_certs_ca_host and publishes its certificate
+#                      as the fact wazuh_certs_ca_pem on every host of the play;
+#   - tasks/issue.yml  issues one certificate: the key is generated on the target host and never leaves
+#                      it; only the CSR travels to the CA host to be signed.
+#
+# The CA key lives on the first SIEM host (0600, root) and is declared for backup. Organisations that
+# prefer to keep it in OpenBao or Ansible Vault set wazuh_certs_ca_cert_pem and wazuh_certs_ca_key_pem.
+
+wazuh_certs_group: siem
+wazuh_certs_ca_host: "{{ groups[wazuh_certs_group][0] if (groups[wazuh_certs_group] | default([])) | length > 0 else inventory_hostname }}"
+wazuh_certs_ca_dir: /opt/wazuh-ca
+wazuh_certs_ca_common_name: compliant-infra SIEM CA
+wazuh_certs_ca_days: 3650
+# Optional CA supplied from the secrets manager (PEM strings). Both or neither.
+wazuh_certs_ca_cert_pem: ""
+wazuh_certs_ca_key_pem: ""
+
+# Parameters of tasks/issue.yml
+wazuh_certs_dir: ""              # directory on the target host
+wazuh_certs_name: ""             # writes <name>.pem and <name>-key.pem
+wazuh_certs_common_name: "{{ inventory_hostname }}"
+wazuh_certs_org_unit: siem
+wazuh_certs_organization: compliant-infra
+wazuh_certs_dns_names: []
+wazuh_certs_ip_addresses: []
+wazuh_certs_extended_key_usage: [serverAuth, clientAuth]
+wazuh_certs_owner: root
+wazuh_certs_file_group: root
+wazuh_certs_key_mode: "0400"
+wazuh_certs_days: 825
+wazuh_certs_renew_before_days: 30
