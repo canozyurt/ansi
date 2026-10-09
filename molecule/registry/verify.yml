@@ -1,0 +1,267 @@
+---
+# Each task is tagged with the checklist items it proves (tools/checklist.py reads these tags).
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  environment:
+    no_proxy: "127.0.0.1,localhost,registry.test.internal"
+  vars:
+    verify_host: registry.test.internal:5000
+    verify_url: https://registry.test.internal:5000
+    verify_image: docker.io/library/busybox:1.38.0-musl
+    verify_ci: { user: ci-apps, password: test-only-ci-apps-password-0001 }
+    verify_puller: { user: puller, password: test-only-puller-password-00001 }
+  tasks:
+    - name: Inspect the registry container
+      community.docker.docker_container_info:
+        name: registry
+      register: verify_container
+      tags: [chk_hrd_02]
+
+    - name: The container runs as a non-root user with no capabilities and a read-only root
+      ansible.builtin.assert:
+        that:
+          - verify_container.container.State.Running
+          - verify_container.container.Config.User == '10001:10001'
+          - "'ALL' in verify_container.container.HostConfig.CapDrop"
+          - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
+          - verify_container.container.HostConfig.ReadonlyRootfs
+          - not verify_container.container.HostConfig.Privileged
+      tags: [chk_hrd_02]
+
+    - name: HTTPS refuses TLS 1.1
+      ansible.builtin.command: openssl s_client -connect 127.0.0.1:5000 -tls1_1
+      register: verify_tls11
+      changed_when: false
+      failed_when: verify_tls11.rc == 0
+      tags: [chk_sec_03]
+
+    - name: Plain HTTP is not served
+      ansible.builtin.uri:
+        url: http://127.0.0.1:5000/v2/
+        status_code: [-1, 400]
+      register: verify_plain
+      tags: [chk_sec_03]
+
+    - name: Anonymous requests cannot list repositories
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/v2/_catalog"
+        validate_certs: false
+        status_code: 401
+      tags: [chk_iam_01]
+
+    - name: Anonymous push is refused
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/v2/apps/anonymous/blobs/uploads/"
+        method: POST
+        validate_certs: false
+        status_code: 401
+      tags: [chk_iam_01]
+
+    - name: Create the Docker trust directory for the registry
+      ansible.builtin.file:
+        path: /etc/docker/certs.d/{{ verify_host }}
+        state: directory
+        mode: "0755"
+
+    - name: Trust the registry certificate in Docker
+      ansible.builtin.copy:
+        src: /opt/registry/tls/tls.crt
+        dest: /etc/docker/certs.d/{{ verify_host }}/ca.crt
+        remote_src: true
+        mode: "0644"
+
+    - name: Pull the test image from Docker Hub
+      community.docker.docker_image_pull:
+        name: "{{ verify_image }}"
+
+    - name: Tag it for the registry
+      community.docker.docker_image_tag:
+        name: "{{ verify_image }}"
+        repository:
+          - "{{ verify_host }}/apps/busybox:1.38.0-musl"
+          - "{{ verify_host }}/other/busybox:1.38.0-musl"
+
+    - name: Log in as the CI robot over TLS
+      ansible.builtin.command:
+        argv: [docker, login, "{{ verify_host }}", --username, "{{ verify_ci.user }}", --password-stdin]
+        stdin: "{{ verify_ci.password }}"
+      changed_when: false
+      no_log: true
+      tags: [chk_sec_03]
+
+    - name: The CI robot pushes to its namespace
+      ansible.builtin.command: docker push {{ verify_host }}/apps/busybox:1.38.0-musl
+      register: verify_push
+      changed_when: false
+      tags: [chk_iam_09]
+
+    - name: The CI robot cannot push outside its namespace
+      ansible.builtin.command: docker push {{ verify_host }}/other/busybox:1.38.0-musl
+      register: verify_push_other
+      changed_when: false
+      failed_when: verify_push_other.rc == 0
+      tags: [chk_iam_09]
+
+    - name: Log in as the read-only robot
+      ansible.builtin.command:
+        argv: [docker, login, "{{ verify_host }}", --username, "{{ verify_puller.user }}", --password-stdin]
+        stdin: "{{ verify_puller.password }}"
+      changed_when: false
+      no_log: true
+
+    - name: The read-only robot cannot push
+      ansible.builtin.command: docker push {{ verify_host }}/apps/busybox:1.38.0-musl
+      register: verify_push_ro
+      changed_when: false
+      failed_when: verify_push_ro.rc == 0
+      tags: [chk_iam_09]
+
+    - name: Remove the local copy
+      community.docker.docker_image_remove:
+        name: "{{ verify_host }}/apps/busybox:1.38.0-musl"
+
+    - name: The read-only robot pulls the pushed image
+      ansible.builtin.command: docker pull {{ verify_host }}/apps/busybox:1.38.0-musl
+      register: verify_pull
+      changed_when: false
+      tags: [chk_iam_09]
+
+    - name: The pulled image runs
+      ansible.builtin.command: docker run --rm {{ verify_host }}/apps/busybox:1.38.0-musl echo pulled-from-registry
+      register: verify_run
+      changed_when: false
+      failed_when: "'pulled-from-registry' not in verify_run.stdout"
+
+    - name: Log out
+      ansible.builtin.command: docker logout {{ verify_host }}
+      changed_when: false
+
+    - name: Read the metrics as the scrape account
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/metrics"
+        url_username: prometheus
+        url_password: test-only-metrics-password
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: verify_metrics
+      tags: [chk_log_05]
+
+    - name: Zot metrics are exported
+      ansible.builtin.assert:
+        that:
+          - "'zot_info{' in verify_metrics.content"
+          - "'zot_http_requests_total{' in verify_metrics.content"
+          - "'zot_repo_uploads_total{repo=\"apps/busybox\"}' in verify_metrics.content"
+        fail_msg: "{{ verify_metrics.content[:2000] }}"
+      tags: [chk_log_05]
+
+    - name: Metrics need a login
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/metrics"
+        validate_certs: false
+        status_code: 401
+      tags: [chk_log_05]
+
+    - name: Robots cannot read the metrics
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/metrics"
+        url_username: "{{ verify_puller.user }}"
+        url_password: "{{ verify_puller.password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 403
+
+    - name: Check the unsigned image against the signature policy (enforce)
+      ansible.builtin.command: /usr/local/sbin/registry-check-signature apps/busybox:1.38.0-musl
+      environment:
+        REGISTRY_URL: "{{ verify_url }}"
+        REGISTRY_CA_FILE: /opt/registry/tls/tls.crt
+      register: verify_sig
+      changed_when: false
+      failed_when: verify_sig.rc not in [0, 1]
+      tags: [chk_chg_08]
+
+    - name: The unsigned image is refused under enforce and the search API saw it
+      ansible.builtin.assert:
+        that:
+          - verify_sig.rc == 1
+          - (verify_sig.stdout | from_json).digest is match('^sha256:')
+          - not (verify_sig.stdout | from_json).signed
+          - not (verify_sig.stdout | from_json).trusted
+        fail_msg: "{{ verify_sig.stdout }} {{ verify_sig.stderr }}"
+      tags: [chk_chg_08]
+
+    - name: The cosign public key was accepted by the trust store (the copy is kept only after the upload)
+      ansible.builtin.stat:
+        path: /opt/registry/trust/cosign/release.pub
+      register: verify_trust_copy
+      failed_when: not verify_trust_copy.stat.exists
+      tags: [chk_chg_08]
+
+    - name: Read the registry log
+      ansible.builtin.command: journalctl --no-pager -q CONTAINER_NAME=registry
+      register: verify_log
+      changed_when: false
+      tags: [chk_log_01]
+
+    - name: Registry logs reach the journal
+      ansible.builtin.assert:
+        that: "'\"username\":\"ci-apps\"' in verify_log.stdout"
+        fail_msg: "{{ verify_log.stdout[-1500:] }}"
+      tags: [chk_log_01]
+
+    - name: Read the audit log
+      ansible.builtin.slurp:
+        src: /opt/registry/audit/audit.log
+      register: verify_audit
+      tags: [chk_log_01]
+
+    - name: The audit log names the robot that pushed
+      ansible.builtin.assert:
+        that: "'\"subject\":\"ci-apps\"' in verify_audit.content | b64decode"
+        fail_msg: "{{ (verify_audit.content | b64decode)[:1500] }}"
+      tags: [chk_log_01]
+
+    - name: Read the backup declaration
+      ansible.builtin.slurp:
+        src: /etc/compliant-infra/backup.d/registry.json
+      register: verify_backup
+      tags: [chk_bck_01]
+
+    - name: Local storage is declared for backup with a restore check
+      ansible.builtin.assert:
+        that:
+          - (verify_backup.content | b64decode | from_json).paths == ['/opt/registry/data']
+          - (verify_backup.content | b64decode | from_json).verify_command == '/usr/local/sbin/registry-verify-restore'
+      tags: [chk_bck_01]
+
+    - name: Run the restore check against the live data
+      ansible.builtin.command: /usr/local/sbin/registry-verify-restore
+      environment:
+        RESTORE_DIR: /
+      register: verify_restore
+      changed_when: false
+      failed_when: "'registry restore ok' not in verify_restore.stdout"
+      tags: [chk_bck_03]
+
+    - name: Query the CVE scan of the pushed image
+      ansible.builtin.uri:
+        url: "{{ verify_url }}/v2/_zot/ext/search"
+        method: POST
+        url_username: "{{ verify_puller.user }}"
+        url_password: "{{ verify_puller.password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          query: '{ CVEListForImage(image: "apps/busybox:1.38.0-musl") { Tag CVEList { Id Severity } } }'
+        return_content: true
+      register: verify_cve
+      failed_when: false
+
+    - name: Show the CVE scan result (the vulnerability database download may be blocked in the test network)
+      ansible.builtin.debug:
+        msg: "{{ verify_cve.json | default(verify_cve.content | default('no answer')) }}"

@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Use the socket from /etc/opendkim.conf (localhost TCP) instead of the packaged command line.
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/opendkim -P /run/opendkim/opendkim.pid -x /etc/opendkim.conf

@@ -1,0 +1,106 @@
+{#- Zot configuration. Rendered to JSON; contains secrets when S3 or Redis are used (0600). -#}
+{%- set read_policy = {'groups': registry_read_roles, 'actions': ['read']} -%}
+{%- set repositories = {} -%}
+{#- Every repository: the read roles, plus the robots that cover it. -#}
+{%- set patterns = ['**'] + registry_push_namespaces + (registry_robots | map(attribute='repositories') | flatten)
+                   + (registry_extra_repositories | map(attribute='pattern') | list) -%}
+{%- for pattern in patterns | unique -%}
+{%-   set policies = [read_policy] -%}
+{%-   if pattern in registry_push_namespaces -%}
+{%-     set _ = policies.append({'groups': registry_push_roles, 'actions': ['read', 'create', 'update']}) -%}
+{%-   endif -%}
+{%-   for extra in registry_extra_repositories if extra.pattern == pattern -%}
+{%-     set _ = policies.extend(extra.policies) -%}
+{%-   endfor -%}
+{#-   A robot covers a pattern it names, and also any longer pattern that is inside one it names. -#}
+{%-   for robot in registry_robots -%}
+{%-     for robot_pattern in robot.repositories
+          if robot_pattern == pattern or robot_pattern == '**'
+             or (robot_pattern.endswith('/**') and pattern.startswith(robot_pattern[:-2])) -%}
+{%-       if loop.first -%}
+{%-         set _ = policies.append({'users': [robot.name], 'actions': robot.actions | default(['read'])}) -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-   endfor -%}
+{%-   set _ = repositories.update({pattern: {'policies': policies, 'defaultPolicy': [], 'anonymousPolicy': []}}) -%}
+{%- endfor -%}
+{%- set auth = {
+      'htpasswd': {'path': registry_ct_config_dir ~ '/htpasswd'},
+      'failDelay': registry_auth_fail_delay | int,
+      'apikey': registry_api_keys | bool,
+    } -%}
+{%- if registry_oidc_enabled | bool -%}
+{%-   set _ = auth.update({'openid': {'providers': {'oidc': {
+          'name': registry_oidc_provider_name,
+          'issuer': registry_oidc_issuer,
+          'credentialsFile': registry_ct_config_dir ~ '/oidc-credentials.json',
+          'scopes': ['openid', 'profile', 'email'],
+          'claimMapping': {'username': registry_oidc_username_claim, 'groups': registry_oidc_groups_claim}}}}}) -%}
+{%- endif -%}
+{%- if registry_redis_url | length > 0 -%}
+{%-   set _ = auth.update({'sessionDriver': {'name': 'redis', 'url': registry_redis_url, 'keyprefix': registry_redis_keyprefix ~ '-sessions'}}) -%}
+{%- elif registry_oidc_enabled | bool -%}
+{%-   set _ = auth.update({'sessionKeysFile': registry_ct_config_dir ~ '/session-keys.json'}) -%}
+{%- endif -%}
+{%- set storage = {
+      'rootDirectory': registry_ct_data_dir,
+      'dedupe': registry_dedupe | bool,
+      'gc': registry_gc | bool,
+      'gcDelay': registry_gc_delay,
+      'gcInterval': registry_gc_interval,
+    } -%}
+{%- if registry_storage == 's3' -%}
+{%-   set _ = storage.update({'storageDriver': {
+          'name': 's3',
+          'regionendpoint': registry_s3_endpoint,
+          'region': registry_s3_region,
+          'bucket': registry_s3_bucket,
+          'rootdirectory': registry_s3_rootdirectory,
+          'accesskey': registry_s3_access_key,
+          'secretkey': registry_s3_secret_key,
+          'forcepathstyle': registry_s3_force_path_style | bool,
+          'secure': true,
+          'skipverify': false}}) -%}
+{%- endif -%}
+{%- if registry_redis_url | length > 0 -%}
+{%-   set _ = storage.update({'remoteCache': true, 'cacheDriver': {'name': 'redis', 'url': registry_redis_url, 'keyprefix': registry_redis_keyprefix}}) -%}
+{%- endif -%}
+{%- set extensions = {
+      'metrics': {'enable': true, 'prometheus': {'path': '/metrics'}},
+      'scrub': {'enable': registry_storage == 'local', 'interval': registry_scrub_interval},
+      'search': {'enable': true},
+      'ui': {'enable': registry_ui_enabled | bool},
+      'trust': {'enable': registry_trust_cosign | bool or registry_trust_notation | bool,
+                'cosign': registry_trust_cosign | bool, 'notation': registry_trust_notation | bool},
+    } -%}
+{%- if registry_cve_enabled | bool -%}
+{%-   set _ = extensions.search.update({'cve': {'updateInterval': registry_cve_update_interval, 'trivy': {
+          'dbRepository': registry_trivy_db_repository,
+          'javaDbRepository': registry_trivy_java_db_repository}}}) -%}
+{%- endif -%}
+{%- set log = {'level': registry_log_level} -%}
+{%- if registry_audit_log | bool -%}
+{%-   set _ = log.update({'audit': registry_ct_audit_dir ~ '/audit.log'}) -%}
+{%- endif -%}
+{%- set config = {
+      'distSpecVersion': '1.1.1',
+      'storage': storage,
+      'http': {
+        'address': registry_listen_address,
+        'port': registry_port | string,
+        'externalUrl': registry_hostname,
+        'realm': 'zot',
+        'compat': registry_compat,
+        'tls': {'cert': registry_ct_tls_dir ~ '/tls.crt', 'key': registry_ct_tls_dir ~ '/tls.key'},
+        'auth': auth,
+        'accessControl': {
+          'adminPolicy': {'users': [registry_admin_user], 'groups': registry_admin_roles,
+                          'actions': ['read', 'create', 'update', 'delete']},
+          'metrics': {'users': [registry_metrics_user]},
+          'repositories': repositories,
+        },
+      },
+      'log': log,
+      'extensions': extensions,
+    } -%}
+{{ config | to_nice_json(indent=2) }}

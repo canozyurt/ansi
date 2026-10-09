@@ -1,0 +1,47 @@
+---
+# One relay (lab mode) delivering directly with DKIM. A small SMTP sink on 127.0.0.1:2525 stands in for
+# the recipients' MX (transport map for sink.test). The container's own address is not an allowed
+# network, so connections from it test the refusal to relay.
+driver:
+  name: docker
+platforms:
+  - name: mail-relay-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    command: ""
+    groups: [mail_relay]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        mail_relay_allow_single_node: true
+        mail_relay_hostname: relay.test.internal
+        mail_relay_origin_domain: example.com
+        mail_relay_allowed_cidrs: [10.99.0.0/24]
+        mail_relay_sender_domains: [example.com]
+        mail_relay_dkim_domains: [example.com]
+        mail_relay_public_addresses: [192.0.2.25, "2001:db8::25"]
+        mail_relay_transports:
+          sink.test: "smtp:[127.0.0.1]:2525"
+        mail_relay_inet_protocols: ipv4
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

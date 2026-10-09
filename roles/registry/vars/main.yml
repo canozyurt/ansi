@@ -1,0 +1,11 @@
+---
+# Derived values; set the variables in defaults/main.yml instead.
+registry_effective_image: "{{ registry_build_image if registry_build | bool else registry_image }}"
+registry_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] | default('amd64') }}"
+# Paths inside the container.
+registry_ct_config_dir: /etc/zot
+registry_ct_tls_dir: /etc/zot-tls
+registry_ct_data_dir: /var/lib/registry
+registry_ct_audit_dir: /var/log/zot
+registry_url_local: "https://127.0.0.1:{{ registry_port }}"
+registry_external_hostname: "{{ registry_hostname | urlsplit('hostname') }}"

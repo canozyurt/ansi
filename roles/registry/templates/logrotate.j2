@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Zot audit log (LOG-01): the SIEM agent ships it; a short local copy is kept.
+{{ registry_data_dir }}/audit/audit.log {
+    daily
+    rotate {{ registry_audit_log_keep_days }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su {{ registry_container_uid }} {{ registry_container_uid }}
+}

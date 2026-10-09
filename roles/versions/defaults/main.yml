@@ -52,6 +52,10 @@ versions_images:
   wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.8
   wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.8
   wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.8
+  # OCI registry (roles/registry): Zot, full build (UI, search/CVE, trust, metrics).
+  zot: ghcr.io/project-zot/zot:v2.1.21
+  # Base for registry_build (the same Zot release binary on Debian; the upstream image is distroless Debian).
+  zot_build_base: docker.io/library/debian:13.7-slim
 
 # Host packages installed from upstream repositories (pinned, held).
 versions_packages:
@@ -66,6 +70,13 @@ versions_tools:
     sha256:
       amd64: f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
       arm64: a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+  # Zot release binary for registry_build (same release as versions_images.zot).
+  zot:
+    version: 2.1.21
+    url: https://github.com/project-zot/zot/releases/download/v2.1.21/zot-linux-{arch}
+    sha256:
+      amd64: 8751cc0daf739634835a3bd8206e3094c84d552e2c462e4a4baf80f40dd92685
+      arm64: 49e1f948af8e5c6ed5c803bad4508cf7af37be6c15b7fb2840109900b916eb48
 
 # PostgreSQL server image recipe (roles/postgres_cluster): Ubuntu archive packages pinned to exact
 # versions (PostgreSQL 18 is in main, with Canonical security maintenance) and Patroni from PyPI,

@@ -1,0 +1,9 @@
+---
+# Outbound mail relay (Postfix, OpenDKIM) on the mail_relay group (2 nodes). Internal services such as
+# Alertmanager and Keycloak send through it; see docs/architecture.md for the client settings.
+- name: Deploy the outbound mail relays
+  hosts: mail_relay
+  become: true
+  serial: 1  # one relay at a time; clients fail over to the other
+  roles:
+    - role: mail_relay

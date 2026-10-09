@@ -43,6 +43,8 @@
         otp_policy_period: 30
         web_authn_policy_rp_entity_name: "{{ keycloak_realm_display_name }}"
         web_authn_policy_user_verification_requirement: required
+        # Outgoing mail (password resets, verification), e.g. through roles/mail_relay.
+        smtp_server: "{{ keycloak_smtp_server if keycloak_smtp_server | length > 0 else omit }}"
         browser_security_headers:
           contentSecurityPolicy: "frame-src 'self'; frame-ancestors 'self'; object-src 'none';"
           xContentTypeOptions: nosniff

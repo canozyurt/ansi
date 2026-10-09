@@ -1,0 +1,23 @@
+---
+- name: Read the DKIM public records
+  ansible.builtin.slurp:
+    src: "{{ mail_relay_dkim_key_dir }}/{{ item }}/{{ mail_relay_dkim_selector }}.txt"
+  loop: "{{ mail_relay_dkim_domains }}"
+  register: mail_relay_dkim_records
+  when: mail_relay_dkim_enabled | bool
+
+# SPF and DMARC are published once per domain (list every relay's address in mail_relay_public_addresses);
+# each relay prints its own DKIM selector record.
+- name: DNS records to publish
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ (mail_relay_dkim_records.results | default([]) | selectattr('item', 'eq', item) | map(attribute='content')
+            | map('b64decode') | map('regex_replace', '\s+', ' ') | first | default('DKIM: off (the smarthost signs)')) | trim }}
+      - >-
+        {{ item }}. TXT "v=spf1 {{ ((mail_relay_public_addresses | reject('search', ':') | map('regex_replace', '^', 'ip4:') | list)
+        + (mail_relay_public_addresses | select('search', ':') | map('regex_replace', '^', 'ip6:') | list)
+        + (['include:<your smarthost provider>'] if mail_relay_smarthost | length > 0 else [])) | join(' ') }} -all"
+      - >-
+        _dmarc.{{ item }}. TXT "v=DMARC1; p={{ mail_relay_dmarc_policy }}; rua=mailto:{{ mail_relay_dmarc_report_address }}; adkim=s; aspf=s"
+  loop: "{{ mail_relay_dkim_domains if mail_relay_dkim_enabled | bool else [mail_relay_origin_domain] }}"

@@ -1,0 +1,29 @@
+---
+# Outbound mail relay (roles/mail_relay). Clients submit on 587 with STARTTLS to either relay, e.g. the
+# DNS name mail-relay.example.internal with both addresses:
+#   Alertmanager (group_vars/monitoring):
+#     alertmanager_smtp_smarthost: mail-relay.example.internal:587
+#     alertmanager_smtp_from: alerts@example.com
+#     alertmanager_smtp_require_tls: true          # no SMTP login: the relay trusts the internal networks
+#   Keycloak (group_vars/keycloak):
+#     keycloak_smtp_server: { host: mail-relay.example.internal, port: "587", from: sso@example.com,
+#                             fromDisplayName: Sign-in, starttls: "true", ssl: "false", auth: "false" }
+mail_relay_origin_domain: example.com
+mail_relay_tls_alt_names: [mail-relay.example.internal]
+
+# Only internal service networks may relay (NET-01); never 0.0.0.0/0.
+mail_relay_allowed_cidrs: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"]
+mail_relay_sender_domains: [example.com]
+
+# Upstream: a smarthost with verified TLS and a SASL login (the provider signs DKIM) ...
+mail_relay_smarthost: smtp.mail-provider.example:587
+mail_relay_smarthost_username: "{{ vault_mail_relay_smarthost_username }}"
+mail_relay_smarthost_password: "{{ vault_mail_relay_smarthost_password }}"
+# ... or direct delivery with DKIM signing: leave mail_relay_smarthost empty and list the public
+# addresses the relays send from, so the printed SPF record is complete.
+# mail_relay_smarthost: ""
+# mail_relay_public_addresses: [198.51.100.25, 198.51.100.26]
+
+# Submission from the internal networks only (NET-01, NET-03).
+firewall_rules_mail_relay:
+  - { name: mail-relay-submission, port: 587, sources: "{{ mail_relay_allowed_cidrs }}" }

@@ -106,6 +106,8 @@ jobs:
           - forgejo
           - postgres
           - siem
+          - registry
+          - mail_relay
     steps:
       - uses: actions/checkout@v4
 

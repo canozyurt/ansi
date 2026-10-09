@@ -1,0 +1,43 @@
+---
+# Mail relay alert rules for Prometheus (collected from prometheus_rules_* variables). The metrics come
+# from the relay's textfile collector (node job).
+prometheus_rules_mail_relay:
+  - name: mail_relay
+    rules:
+      - alert: MailRelayDown
+        expr: postfix_up == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Postfix is down or its queue cannot be read on a mail relay (see the instance label)" }
+      - alert: MailRelayAllDown
+        expr: sum(postfix_up) == 0 or absent(postfix_up)
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "No mail relay is running; alert and password-reset mail is not delivered" }
+      - alert: MailRelayMetricsStale
+        expr: time() - mail_relay_metrics_timestamp_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+      - alert: MailRelayQueueLarge
+        expr: sum by (instance) (postfix_queue_messages{queue=~"active|incoming|maildrop"}) > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "More than 100 messages are waiting on a mail relay" }
+      - alert: MailRelayDeferredHigh
+        expr: postfix_queue_messages{queue="deferred"} > 20
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "Mail is being deferred on a relay; check the upstream or recipient errors in the journal" }
+      - alert: MailRelayOldestMessageOld
+        expr: postfix_queue_oldest_message_age_seconds > 4 * 3600
+        labels: { severity: warning }
+        annotations: { summary: "A message has waited more than 4 hours on a mail relay" }
+      - alert: MailRelayCorruptOrHeld
+        expr: postfix_queue_messages{queue=~"corrupt|hold"} > 0
+        for: 15m
+        labels: { severity: warning }
+      - alert: MailRelayDkimDown
+        expr: opendkim_up == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "OpenDKIM is down on a relay; mail is held back (tempfail) until it returns" }

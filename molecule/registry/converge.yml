@@ -1,0 +1,47 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  environment:
+    no_proxy: "127.0.0.1,localhost,registry.test.internal"
+  vars:
+    molecule_https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+  pre_tasks:
+    - name: Resolve the registry name to this host
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: 127.0.0.1 registry.test.internal
+        unsafe_writes: true  # /etc/hosts is a bind mount in the test container
+
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Route image pulls through the test proxy
+      when: molecule_https_proxy | length > 0
+      block:
+        - name: Create the Docker service drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Set the proxy for dockerd
+          ansible.builtin.copy:
+            content: |
+              [Service]
+              Environment="HTTPS_PROXY={{ molecule_https_proxy }}"
+              Environment="NO_PROXY=127.0.0.1,localhost,registry.test.internal"
+            dest: /etc/systemd/system/docker.service.d/proxy.conf
+            mode: "0644"
+          register: converge_docker_proxy
+
+        - name: Restart Docker with the proxy
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+            daemon_reload: true
+          when: converge_docker_proxy.changed  # noqa: no-handler
+
+  roles:
+    - role: registry

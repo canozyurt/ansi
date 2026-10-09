@@ -1,0 +1,12 @@
+---
+# OCI registry (Zot) on the registry group: 2+ instances on shared S3 storage behind the edge proxy,
+# or one node with local storage (registry_allow_single_node). Run after identity.yml (Keycloak) and
+# monitoring.yml; the edge routes registry_hostname to these hosts once the "registry" entry from
+# group_vars/registry/main.yml is added to edge_extra_services in group_vars/edge.
+- name: Deploy the container registry
+  hosts: registry
+  become: true
+  serial: 1  # one instance at a time keeps the registry available during changes and upgrades
+  max_fail_percentage: 0
+  roles:
+    - role: registry

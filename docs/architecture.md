@@ -243,7 +243,6 @@ Operator workflow: [docs/access.md](access.md).
   protected main branch with the vault password from OpenBao (CHG-02).
 - Backup: `forgejo dump` (DB as SQL, repositories, config) as the backup pre_command on the active node;
   RPO 24 h, RTO 4 h.
-```
 
 ## PostgreSQL (product playbook)
 - `playbooks/postgres.yml` deploys every entry of `postgres_clusters`; each is an independent cluster on its own
@@ -276,6 +275,46 @@ Operator workflow: [docs/access.md](access.md).
 - Dashboard on every SIEM node behind the edge: OIDC via the security plugin, the "roles" claim mapped
   (admins all_access, auditor readall, operator alerts read-only); login form only for break-glass.
 - Upgrades: indexer, manager, dashboard one node at a time, then agents in 20% batches (playbooks/upgrade.yml).
+
+## Container registry (Zot)
+
+- Zot (Apache-2.0) runs as a container with host networking on the `registry` group: non-root (uid 10001),
+  read-only root filesystem, no capabilities, HTTPS only on 5000 with the certificate from tls_cert.
+- HA: two or more stateless instances on one shared S3 bucket (Garage or another S3 store) with a shared
+  Redis/Valkey for the dedupe cache, metadata, API keys and sessions, behind the edge (the `registry` entry
+  documented in group_vars/registry goes in `edge_extra_services`; internal only). Local storage with dedupe
+  is allowed only with `registry_allow_single_node` and is then declared to backup_register with a restore check.
+- People sign in to the UI through Keycloak (OIDC); the `roles` claim becomes Zot groups. platform-admin is
+  admin, developer can push (create/update, no delete) to `apps/**`, every other role reads. Anonymous access
+  is off.
+- CI uses htpasswd robots (bcrypt, per-namespace grants) or API keys that SSO users create; a break-glass
+  admin and a metrics-only account complete the htpasswd file; undeclared logins are removed.
+- The search extension scans images with the built-in Trivy (database from mirror.gcr.io, refreshed daily).
+- The trust extension verifies cosign and notation signatures against keys loaded by Ansible;
+  `registry-check-signature` applies `registry_signature_policy` (off, warn, enforce) for deploy pipelines.
+- Logs go to journald; an audit log of authenticated requests (JSON, `subject` = user) is kept in
+  /opt/registry/audit for the SIEM agent. Metrics: `prometheus_scrape_extra_registry` (scrape account),
+  alerts in `prometheus_rules_registry`.
+- Where ghcr.io blobs are unreachable, `registry_build` builds the image from the pinned, checksum-verified
+  release binary.
+
+## Outbound mail relay (Postfix)
+
+- Postfix and OpenDKIM from the distribution packages on the `mail_relay` group (2 nodes); clients list both
+  or use one DNS name with both addresses.
+- Relaying only for `mail_relay_allowed_cidrs` (an empty list or 0.0.0.0/0 fails the run); other clients are
+  rejected ("Client host rejected: Access denied"). Optional allow-list of sender domains. Per-client
+  connection, message and recipient rate limits with no exempt networks.
+- Clients submit on 587 with STARTTLS required (TLS 1.2+, certificate from tls_cert); port 25 listens on
+  loopback only unless `mail_relay_smtp_port_enabled`.
+- Upstream: a smarthost with verified TLS (`secure`) and SASL credentials from the vault, or direct delivery
+  (DANE where published) with DKIM signing. Each relay generates its own DKIM key and selector on the host;
+  the run prints the DKIM, SPF and DMARC records to publish.
+- Logs go to journald. A textfile metric (node job) reports the queue per state, the oldest message and
+  OpenDKIM state; `prometheus_rules_mail_relay` alerts on queue size, deferred mail and outages.
+- Clients: Alertmanager `alertmanager_smtp_smarthost: mail-relay.example.internal:587`,
+  `alertmanager_smtp_require_tls: true`, no auth; Keycloak `keycloak_smtp_server` (realm smtpServer keys,
+  e.g. port "587", starttls "true", auth "false"). The relay certificate must chain to the internal CA.
 
 ## Compliance as code
 

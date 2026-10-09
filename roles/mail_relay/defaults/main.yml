@@ -1,0 +1,73 @@
+---
+# Outbound mail relay: Postfix (IPL-1.0 / EPL-2.0) and OpenDKIM from the distribution packages.
+# Internal services submit on 587 (STARTTLS required); the relay forwards to an upstream smarthost
+# (TLS verified, SASL login) or delivers directly to the recipients' MX with DKIM signing.
+
+# High availability (HA-01): two relays; clients list both (or a DNS name with both addresses).
+mail_relay_group: mail_relay
+mail_relay_min_nodes: 2
+mail_relay_allow_single_node: false
+
+# Name in the SMTP greeting and Received headers; the certificate covers it. With direct delivery it must
+# resolve forward and reverse to the public address the relay sends from.
+mail_relay_hostname: "{{ inventory_hostname }}"
+# Domain appended to bare sender names (e.g. cron mail from root).
+mail_relay_origin_domain: example.com
+
+# Clients allowed to relay (NET-01). Everything else is refused, so the relay is never open.
+mail_relay_allowed_cidrs: []
+mail_relay_listen_addresses: [all]
+mail_relay_inet_protocols: all
+
+# Submission port for clients: STARTTLS is mandatory before MAIL FROM (SEC-03).
+mail_relay_submission_port: 587
+# Also accept plain SMTP on port 25 from the allowed networks (STARTTLS offered, not required) for
+# legacy senders. Off by default; 25 is always open on 127.0.0.1 for local system mail.
+mail_relay_smtp_port_enabled: false
+
+# Only these sender domains may be used (envelope sender); empty allows any sender from allowed clients.
+mail_relay_sender_domains: []
+mail_relay_message_size_limit: 10485760     # 10 MiB
+
+# Per-client limits over mail_relay_rate_time_unit (Postfix anvil); no network is exempt.
+mail_relay_rate_time_unit: 60s
+mail_relay_client_connection_rate_limit: 60
+mail_relay_client_message_rate_limit: 120
+mail_relay_client_recipient_rate_limit: 600
+mail_relay_client_connection_count_limit: 20
+
+# --------------------------------------------------------------------------- upstream
+# Smarthost "host:port" (e.g. smtp.provider.example:587). Empty: deliver directly to the MX hosts.
+mail_relay_smarthost: ""
+# secure: TLS with certificate and host name verification (required for the smarthost).
+mail_relay_smarthost_tls_level: secure
+mail_relay_smarthost_username: ""
+mail_relay_smarthost_password: ""           # from the vault
+# Direct delivery: DANE where the destination publishes TLSA records (needs the DNSSEC-validating
+# resolvers of roles/dns_resolver), opportunistic TLS otherwise.
+mail_relay_direct_tls_level: dane
+# Extra transport map entries ("domain": "transport:nexthop"), e.g. internal domains or test sinks.
+mail_relay_transports: {}
+
+# --------------------------------------------------------------------------- DKIM, SPF, DMARC
+mail_relay_dkim_enabled: "{{ mail_relay_smarthost | length == 0 }}"
+mail_relay_dkim_domains: ["{{ mail_relay_origin_domain }}"]
+# Each relay has its own key and selector, so no private key leaves the host it was generated on.
+mail_relay_dkim_selector: "relay-{{ inventory_hostname_short }}"
+mail_relay_dkim_key_bits: 2048
+mail_relay_dkim_port: 8891
+# When OpenDKIM is unreachable: tempfail (clients retry; nothing leaves unsigned) or accept.
+mail_relay_dkim_milter_default_action: tempfail
+# Public addresses the relays send from (for the printed SPF record).
+mail_relay_public_addresses: []
+mail_relay_dmarc_policy: quarantine
+mail_relay_dmarc_report_address: "dmarc-reports@{{ mail_relay_origin_domain }}"
+
+# --------------------------------------------------------------------------- TLS (SEC-03)
+mail_relay_tls_cert_file: ""
+mail_relay_tls_key_file: ""
+mail_relay_tls_alt_names: []
+
+# --------------------------------------------------------------------------- monitoring (LOG-05)
+mail_relay_metrics_dir: /var/lib/node_exporter/textfile_collector
+mail_relay_metrics_interval: 1min

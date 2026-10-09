@@ -1,0 +1,102 @@
+---
+# Zot verifies cosign and notation signatures against trust stores loaded through its admin-only API.
+# A copy of each uploaded key is kept under registry_data_dir/trust; a key is uploaded when it differs
+# from its copy, and the copy is written only after the upload succeeded.
+- name: Create the trust material directories
+  ansible.builtin.file:
+    path: "{{ registry_data_dir }}/trust/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: [cosign, notation]
+
+- name: Find new or changed cosign public keys
+  ansible.builtin.copy:
+    content: "{{ item.value | trim }}\n"
+    dest: "{{ registry_data_dir }}/trust/cosign/{{ item.key }}.pub"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ registry_trust_cosign_keys | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: registry_cosign_keys
+  check_mode: true
+  when: registry_trust_cosign | bool
+  tags: [chk_chg_08]
+
+- name: Upload changed cosign public keys
+  ansible.builtin.uri:
+    url: "{{ registry_url_local }}/v2/_zot/ext/cosign"
+    method: POST
+    url_username: "{{ registry_admin_user }}"
+    url_password: "{{ registry_admin_password }}"
+    force_basic_auth: true
+    headers:
+      Content-Type: application/octet-stream
+    body: "{{ item.item.value | trim }}\n"
+    validate_certs: false
+    status_code: 200
+  loop: "{{ registry_cosign_keys.results | default([]) | selectattr('changed') | list }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  changed_when: true
+  no_log: true
+  tags: [chk_chg_08]
+
+- name: Keep a copy of each uploaded cosign key
+  ansible.builtin.copy:
+    content: "{{ item.item.value | trim }}\n"
+    dest: "{{ registry_data_dir }}/trust/cosign/{{ item.item.key }}.pub"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ registry_cosign_keys.results | default([]) | selectattr('changed') | list }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Find new or changed notation certificates
+  ansible.builtin.copy:
+    content: "{{ (item.value.certificate | default(item.value)) | trim }}\n"
+    dest: "{{ registry_data_dir }}/trust/notation/{{ item.key }}.crt"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ registry_trust_notation_certificates | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: registry_notation_certs
+  check_mode: true
+  when: registry_trust_notation | bool
+  tags: [chk_chg_08]
+
+- name: Upload changed notation certificates
+  ansible.builtin.uri:
+    url: "{{ registry_url_local }}/v2/_zot/ext/notation?truststoreType={{ item.item.value.type | default('ca') }}"
+    method: POST
+    url_username: "{{ registry_admin_user }}"
+    url_password: "{{ registry_admin_password }}"
+    force_basic_auth: true
+    headers:
+      Content-Type: application/octet-stream
+    body: "{{ (item.item.value.certificate | default(item.item.value)) | trim }}\n"
+    validate_certs: false
+    status_code: 200
+  loop: "{{ registry_notation_certs.results | default([]) | selectattr('changed') | list }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  changed_when: true
+  no_log: true
+  tags: [chk_chg_08]
+
+- name: Keep a copy of each uploaded notation certificate
+  ansible.builtin.copy:
+    content: "{{ (item.item.value.certificate | default(item.item.value)) | trim }}\n"
+    dest: "{{ registry_data_dir }}/trust/notation/{{ item.item.key }}.crt"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ registry_notation_certs.results | default([]) | selectattr('changed') | list }}"
+  loop_control:
+    label: "{{ item.item.key }}"

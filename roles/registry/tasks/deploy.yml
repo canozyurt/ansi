@@ -1,0 +1,261 @@
+---
+- name: Install Python libraries the Docker, crypto and htpasswd modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography, python3-passlib, python3-bcrypt]
+    state: present
+
+- name: Create the registry directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(registry_container_uid) }}"
+    group: "{{ item.owner | default(registry_container_uid) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ registry_data_dir }}", owner: root, mode: "0755" }
+    - { path: "{{ registry_data_dir }}/config", mode: "0700" }
+    - { path: "{{ registry_data_dir }}/data", mode: "0700" }
+    - { path: "{{ registry_data_dir }}/data/_tmp", mode: "0700" }
+    - { path: "{{ registry_data_dir }}/audit", mode: "0750" }
+    - { path: "{{ registry_data_dir }}/trust", owner: root, mode: "0700" }
+    - { path: /etc/compliant-infra, owner: root, mode: "0755" }
+
+- name: Get the TLS certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: registry
+    tls_cert_dir: "{{ registry_data_dir }}/tls"
+    tls_cert_owner: "{{ registry_container_uid }}"
+    tls_cert_group: "{{ registry_container_uid }}"
+    tls_cert_common_name: "{{ registry_external_hostname }}"
+    tls_cert_alt_names: "{{ registry_tls_alt_names }}"
+    tls_cert_src_cert: "{{ registry_tls_cert_file }}"
+    tls_cert_src_key: "{{ registry_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Restart the registry when its certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; the registry restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart registry
+
+# ------------------------------------------------------------------ image
+- name: Build the image from the pinned release binary
+  when: registry_build | bool
+  block:
+    - name: Check whether the image is already built
+      community.docker.docker_image_info:
+        name: "{{ registry_build_image }}"
+      register: registry_build_info
+
+    - name: Build the image
+      when: registry_build_info.images | length == 0
+      block:
+        - name: Create the build directory
+          ansible.builtin.file:
+            path: "{{ registry_data_dir }}/build"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Download the release binary (SHA-256 verified)
+          ansible.builtin.get_url:
+            url: "{{ versions_tools.zot.url | replace('{arch}', registry_arch) }}"
+            dest: "{{ registry_data_dir }}/build/zot"
+            checksum: "sha256:{{ versions_tools.zot.sha256[registry_arch] }}"
+            owner: root
+            group: root
+            mode: "0755"
+          environment:
+            https_proxy: "{{ registry_build_proxy | default(omit, true) }}"
+          tags: [chk_chg_05]
+
+        - name: Write the Dockerfile
+          ansible.builtin.copy:
+            src: zot.Dockerfile
+            dest: "{{ registry_data_dir }}/build/Dockerfile"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Build the image
+          community.docker.docker_image_build:
+            name: "{{ registry_build_image.rsplit(':', 1) | first }}"
+            tag: "{{ registry_build_image.rsplit(':', 1) | last }}"
+            path: "{{ registry_data_dir }}/build"
+            args:
+              BASE_IMAGE: "{{ registry_build_base_image }}"
+              UID: "{{ registry_container_uid | string }}"
+            pull: true
+          tags: [chk_chg_05]
+
+        - name: Remove the build directory
+          ansible.builtin.file:
+            path: "{{ registry_data_dir }}/build"
+            state: absent
+
+# ------------------------------------------------------------------ configuration
+- name: Create the login file
+  ansible.builtin.file:
+    path: "{{ registry_data_dir }}/config/htpasswd"
+    state: touch
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+
+# bcrypt, checked with passlib: an unchanged password keeps its hash, so runs are idempotent.
+- name: Add the break-glass admin, the metrics account and the robots (bcrypt)
+  community.general.htpasswd:
+    path: "{{ registry_data_dir }}/config/htpasswd"
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    hash_scheme: bcrypt
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+  loop: >-
+    {{ [{'name': registry_admin_user, 'password': registry_admin_password},
+        {'name': registry_metrics_user, 'password': registry_metrics_password}] + registry_robots }}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart registry
+  tags: [chk_sec_02, chk_iam_01]
+
+- name: Read the current logins
+  ansible.builtin.slurp:
+    src: "{{ registry_data_dir }}/config/htpasswd"
+  register: registry_htpasswd
+
+- name: Remove logins that are no longer declared
+  community.general.htpasswd:
+    path: "{{ registry_data_dir }}/config/htpasswd"
+    name: "{{ item }}"
+    state: absent
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+  loop: >-
+    {{ registry_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
+       | difference([registry_admin_user, registry_metrics_user] + registry_robots | map(attribute='name') | list) }}
+  notify: Restart registry
+  tags: [chk_iam_05]
+
+- name: Write the OIDC client credentials (0600)
+  ansible.builtin.copy:
+    content: "{{ {'clientid': registry_oidc_client_id, 'clientsecret': registry_oidc_client_secret} | to_nice_json }}\n"
+    dest: "{{ registry_data_dir }}/config/oidc-credentials.json"
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+  when: registry_oidc_enabled | bool
+  no_log: true
+  notify: Restart registry
+  tags: [chk_sec_02]
+
+- name: Write the session cookie keys (0600, the same on every instance)
+  ansible.builtin.copy:
+    content: "{{ {'hashKey': registry_session_hash_key, 'encryptKey': registry_session_encrypt_key} | to_nice_json }}\n"
+    dest: "{{ registry_data_dir }}/config/session-keys.json"
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+  when:
+    - registry_oidc_enabled | bool
+    - registry_redis_url | length == 0
+  no_log: true
+  notify: Restart registry
+  tags: [chk_sec_02]
+
+- name: Write the Zot configuration (0600; holds the S3 and Redis credentials when used)
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ registry_data_dir }}/config/config.json"
+    owner: "{{ registry_container_uid }}"
+    group: "{{ registry_container_uid }}"
+    mode: "0600"
+  no_log: "{{ registry_storage == 's3' or registry_redis_url | length > 0 }}"
+  notify: Restart registry
+  tags: [chk_iam_01, chk_iam_09, chk_sec_02, chk_sec_03, chk_log_05]
+
+- name: Register the OIDC client in Keycloak
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_id: "{{ registry_oidc_client_id }}"
+    oidc_client_name: Container registry
+    oidc_client_secret: "{{ registry_oidc_client_secret }}"
+    oidc_client_root_url: "{{ registry_hostname }}"
+    oidc_client_redirect_uris: ["{{ registry_hostname }}/zot/auth/callback/oidc"]
+  when: registry_oidc_enabled | bool
+  tags: [chk_iam_01, chk_iam_09]
+
+# ------------------------------------------------------------------ logs, helpers
+- name: Rotate the audit log daily (the SIEM agent reads it)
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/registry
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_log_01]
+
+- name: Install the helper scripts (signature policy check, restore check)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: [registry-check-signature, registry-verify-restore]
+
+- name: Store the login registry-check-signature uses (0600 root)
+  ansible.builtin.copy:
+    content: "{{ registry_signature_check_robot }}:{{ (registry_robots | selectattr('name', 'eq', registry_signature_check_robot) | first).password }}\n"
+    dest: /etc/compliant-infra/registry-auth
+    owner: root
+    group: root
+    mode: "0600"
+  when: registry_signature_check_robot | length > 0
+  no_log: true
+  tags: [chk_sec_02]
+
+# ------------------------------------------------------------------ container
+- name: Run the registry container
+  community.docker.docker_container:
+    name: "{{ registry_container_name }}"
+    image: "{{ registry_effective_image }}"
+    pull: missing
+    command: [serve, "{{ registry_ct_config_dir }}/config.json"]
+    network_mode: host
+    user: "{{ registry_container_uid }}:{{ registry_container_uid }}"
+    env: "{{ registry_env | combine({'TMPDIR': registry_ct_data_dir ~ '/_tmp'}) }}"
+    volumes:
+      - "{{ registry_data_dir }}/config:{{ registry_ct_config_dir }}:ro"
+      - "{{ registry_data_dir }}/tls:{{ registry_ct_tls_dir }}:ro"
+      - "{{ registry_data_dir }}/data:{{ registry_ct_data_dir }}"
+      - "{{ registry_data_dir }}/audit:{{ registry_ct_audit_dir }}"
+      # The host trust store, which holds the internal CA (Keycloak, S3, OpenBao certificates).
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    restart_policy: unless-stopped
+    memory: "{{ registry_memory_limit }}"
+    pids_limit: "{{ registry_pids_limit }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: registry
+    state: started
+  register: registry_container
+  tags: [chk_hrd_02]
+
+- name: Apply configuration changes before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the registry to be ready
+  ansible.builtin.import_tasks: health.yml

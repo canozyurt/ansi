@@ -44,6 +44,11 @@ keycloak_java_opts_append: ""
 # ---------------------------------------------------------------- realm
 keycloak_realm: org
 keycloak_realm_display_name: Organization
+# Realm mail settings (Keycloak smtpServer keys), e.g. the internal relay of roles/mail_relay:
+#   { host: mail-relay.example.internal, port: "587", from: sso@example.com, fromDisplayName: Sign-in,
+#     starttls: "true", ssl: "false", auth: "false" }
+# Empty (the default) leaves the realm's mail settings unmanaged.
+keycloak_smtp_server: {}
 
 # Sessions (IAM-01) and brute force protection
 keycloak_sso_session_idle_timeout: 1800      # 30 minutes

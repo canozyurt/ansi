@@ -79,6 +79,14 @@
     - role: edge
     - role: keepalived
 
+- name: Upgrade the container registry one instance at a time (the edge sends traffic to the others)
+  hosts: registry
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: registry
+
 - name: Upgrade the status page one node at a time (the edge sends traffic to the other node)
   hosts: status_page
   become: true

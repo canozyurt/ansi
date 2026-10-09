@@ -426,6 +426,15 @@ requirements:
     check: "Molecule upgrade scenario per stateful service installs the previous release and upgrades it"
     status: designed
     progress: "Keycloak: versions role, playbooks/upgrade.yml (compatibility check, rolling or recreate, pre-upgrade pg_dump), molecule/keycloak-upgrade. Remaining: every other service as it is added; release tagging."
+  - id: CHG-08
+    requirement: "Images deployed come from the internal registry, are scanned for vulnerabilities and carry a trusted signature"
+    controls:
+      soc2: [CC7.1, CC8.1]
+      iso27001: ["8.8", "8.19", "8.32"]
+      iso27017: []
+    check: "Registry trust store holds the CI signing keys; registry-check-signature fails under enforce for an unsigned image"
+    status: designed
+    progress: "roles/registry: Zot with Trivy CVE scanning, cosign/notation trust stores and registry-check-signature (registry_signature_policy off/warn/enforce); the unsigned-image refusal passed in molecule/registry. Remaining: CI signing step, roles pulling from the internal registry and calling the check before deploy."
   - id: DAT-01
     requirement: "Each product instance gets its own database or bucket and credentials"
     controls:

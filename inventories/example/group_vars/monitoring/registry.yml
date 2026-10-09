@@ -1,0 +1,35 @@
+---
+# Container registry alert rules for Prometheus (collected from prometheus_rules_* variables).
+# Zot /metrics needs the Prometheus scrape account (registry_metrics_user, by default
+# monitoring_scrape_user); anonymous requests get 401 and robots 403.
+prometheus_scrape_extra_registry:
+  - { name: registry, group: registry, port: 5000, path: /metrics, scheme: https, basic_auth: true }
+prometheus_rules_registry:
+  - name: registry
+    rules:
+      - alert: RegistryDown
+        expr: up{job="registry"} == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "A registry instance is down (see the instance label); the edge routes to the others" }
+      - alert: RegistryAllDown
+        expr: sum(up{job="registry"}) == 0 or absent(up{job="registry"})
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "No registry instance answers; image pulls and CI pushes fail" }
+      - alert: RegistryServerErrors
+        expr: >-
+          sum by (instance) (rate(zot_http_requests_total{code=~"5.."}[10m]))
+          / clamp_min(sum by (instance) (rate(zot_http_requests_total[10m])), 0.001) > 0.05
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "More than 5% of registry requests fail with a server error (storage or S3 problems)" }
+      - alert: RegistryAuthFailuresHigh
+        expr: sum by (instance) (rate(zot_http_requests_total{code="401"}[10m])) > 1
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Many failed registry logins (expired robot passwords or guessing)" }
+      - alert: RegistryBackupStale
+        # Local storage only (backup_register); S3 storage is protected by the object store's replication.
+        expr: time() - backup_last_success_timestamp_seconds{name="registry"} > 26 * 3600
+        labels: { severity: warning }

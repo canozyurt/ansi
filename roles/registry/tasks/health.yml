@@ -1,0 +1,11 @@
+---
+- name: Wait until the registry is ready
+  ansible.builtin.uri:
+    url: "{{ registry_url_local }}/readyz"
+    validate_certs: false
+    status_code: 200
+  register: registry_ready
+  until: registry_ready.status == 200
+  retries: 60
+  delay: 3
+  tags: [chk_log_05]

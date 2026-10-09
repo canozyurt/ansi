@@ -1,0 +1,136 @@
+---
+# OCI registry: Zot (Apache-2.0). TLS, Keycloak SSO for the UI, htpasswd robots and API keys for CI,
+# repository access mapped from the "roles" claim, Trivy CVE scanning, cosign/notation trust stores,
+# Prometheus metrics. Local storage with dedupe (one node) or S3 for 2+ nodes behind the edge.
+registry_image: "{{ versions_images.zot }}"
+registry_container_name: registry
+
+# Public URL clients use (through the edge proxy). It is also the OIDC redirect base.
+registry_hostname: "https://registry.example.internal"
+
+# High availability (HA-01): 2+ stateless instances on shared S3 storage behind the edge proxy.
+# Local storage cannot be shared, so it is allowed only with registry_allow_single_node (labs, small sites).
+registry_min_nodes: 2
+registry_allow_single_node: false
+registry_cluster_hosts: "{{ ansible_play_hosts_all }}"
+
+registry_data_dir: /opt/registry
+# Fixed non-root uid/gid for the container (the upstream image would run as root).
+registry_container_uid: 10001
+registry_memory_limit: 2g
+registry_pids_limit: 1024
+# Extra environment for the container, e.g. HTTPS_PROXY for the CVE database download.
+registry_env: {}
+
+registry_port: 5000
+registry_listen_address: 0.0.0.0
+# Networks that may reach the registry port directly: the edge proxy and the monitoring hosts.
+registry_allowed_cidrs: "{{ firewall_mgmt_cidrs | default([]) }}"
+
+# --------------------------------------------------------------------------- TLS (SEC-03)
+registry_tls_cert_file: ""
+registry_tls_key_file: ""
+registry_tls_alt_names: []
+
+# --------------------------------------------------------------------------- storage
+# local: rootDirectory on this host, deduplicated with hard links (backed up with backup_register).
+# s3: shared bucket (e.g. Garage or MinIO-compatible) for 2+ instances; set the registry_s3_* values
+# and registry_redis_url so instances share the dedupe cache, metadata, API keys and sessions.
+registry_storage: local
+registry_dedupe: true
+registry_gc: true
+registry_gc_delay: 1h
+registry_gc_interval: 24h
+registry_scrub_interval: 24h
+registry_s3_endpoint: ""            # e.g. https://s3.example.internal:3900
+registry_s3_region: garage
+registry_s3_bucket: registry
+registry_s3_rootdirectory: /zot
+registry_s3_access_key: ""
+registry_s3_secret_key: ""
+registry_s3_force_path_style: true
+# Redis (or Valkey) URL shared by all instances: rediss://user:password@host:6379/0. From the vault.
+registry_redis_url: ""
+registry_redis_keyprefix: zot
+
+# Docker clients push Docker v2 schema 2 manifests; accept them alongside OCI.
+registry_compat: [docker2s2]
+
+# --------------------------------------------------------------------------- identity (IAM-01, IAM-09)
+# Browser logins through Keycloak (OIDC). The "roles" claim becomes the Zot groups.
+registry_oidc_enabled: true
+registry_oidc_client_id: registry
+registry_oidc_client_secret: ""
+registry_oidc_issuer: "{{ (keycloak_hostname | default('https://sso.example.internal')) ~ '/realms/' ~ (keycloak_realm | default('org')) }}"
+registry_oidc_provider_name: Single sign-on
+registry_oidc_username_claim: preferred_username
+registry_oidc_groups_claim: roles
+# Cookie keys for OIDC sessions (32 characters each, from the vault). The same on every instance;
+# not used when registry_redis_url stores the sessions.
+registry_session_hash_key: ""
+registry_session_encrypt_key: ""
+# Users who signed in through OIDC can create API keys (scoped, expiring) for CI.
+registry_api_keys: true
+
+# Break-glass admin (htpasswd): also used by Ansible to upload trust material. From the vault.
+registry_admin_user: break-glass-admin
+registry_admin_password: ""
+# Machine accounts (htpasswd, bcrypt). Passwords from the vault, 24+ characters.
+#   - { name: ci-apps, password: "{{ vault_registry_ci_apps }}", repositories: ["apps/**"], actions: [read, create, update] }
+#   - { name: puller, password: "{{ vault_registry_puller }}", repositories: ["**"], actions: [read] }
+registry_robots: []
+# Prometheus scrape account (metrics only, no repository access).
+registry_metrics_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+registry_metrics_password: "{{ monitoring_scrape_password | default('') }}"
+# Seconds a failed login waits before answering (slows down guessing).
+registry_auth_fail_delay: 5
+
+# Repository permissions from the default roles (rbac_model). Longest matching pattern wins in Zot,
+# so every namespace pattern carries the read grants too.
+registry_admin_roles: [platform-admin]
+registry_push_roles: [developer]
+registry_read_roles: "{{ rbac_model_roles | default({}) | list }}"
+# Namespaces the push roles may create and update tags in (no delete).
+registry_push_namespaces: ["apps/**"]
+# Extra patterns: { pattern: "team-a/**", policies: [{ groups: [developer], actions: [read, create] }] }
+registry_extra_repositories: []
+
+# --------------------------------------------------------------------------- extensions
+registry_ui_enabled: true
+# CVE scanning with the built-in Trivy (search extension). The vulnerability database is an OCI artifact;
+# mirror.gcr.io carries the same database Trivy itself defaults to.
+registry_cve_enabled: true
+registry_cve_update_interval: 24h
+registry_trivy_db_repository: mirror.gcr.io/aquasec/trivy-db
+registry_trivy_java_db_repository: mirror.gcr.io/aquasec/trivy-java-db
+# Signature verification: Zot verifies cosign and notation signatures against these trust stores and
+# shows the result (IsSigned / IsTrusted) in search and the UI.
+registry_trust_cosign: true
+registry_trust_notation: true
+# PEM public keys (cosign) and certificates (notation), keyed by a short name.
+registry_trust_cosign_keys: {}
+registry_trust_notation_certificates: {}
+# How registry-check-signature (used by deployment pipelines before running an image) treats an image
+# without a trusted signature: off (no check), warn (report, exit 0) or enforce (exit 1).
+registry_signature_policy: warn
+# Robot (from registry_robots) whose login registry-check-signature uses on the registry hosts; written to
+# /etc/compliant-infra/registry-auth (0600 root). Empty: the pipeline provides its own file.
+registry_signature_check_robot: ""
+
+# --------------------------------------------------------------------------- logging (LOG-01)
+registry_log_level: info
+# Audit log (every authenticated request with the user) for the SIEM agent; rotated daily.
+registry_audit_log: true
+registry_audit_log_keep_days: 7
+
+# --------------------------------------------------------------------------- backup (BCK-01, BCK-04)
+registry_backup_rpo_hours: 24
+registry_backup_rto_hours: 8
+
+# --------------------------------------------------------------------------- local image build
+# Build the image on the host from the pinned release binary (checksum verified) instead of pulling
+# registry_image, for sites that cannot reach ghcr.io blobs.
+registry_build: false
+registry_build_image: "localhost/zot:{{ versions_tools.zot.version }}"
+registry_build_base_image: "{{ versions_images.zot_build_base }}"
+registry_build_proxy: ""

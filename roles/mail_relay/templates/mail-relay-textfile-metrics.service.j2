@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write Postfix queue metrics for node_exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mail-relay-textfile-metrics {{ mail_relay_metrics_dir }} {{ mail_relay_dkim_port if mail_relay_dkim_enabled | bool else 0 }}
+ProtectSystem=strict
+ReadWritePaths={{ mail_relay_metrics_dir }} /var/spool/postfix
+PrivateTmp=true
+NoNewPrivileges=true

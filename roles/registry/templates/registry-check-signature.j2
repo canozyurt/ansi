@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+"""Check that an image in the registry carries a trusted cosign or notation signature (CHG-08).
+
+Usage: registry-check-signature <repository>:<tag>|<repository>@<digest>
+
+Credentials: a file with one "user:password" line (a robot or an API key), from REGISTRY_AUTH_FILE
+(default /etc/compliant-infra/registry-auth, root only). Zot verifies the signature against the trust
+stores loaded by Ansible and reports IsSigned / IsTrusted through its search API.
+Policy (registry_signature_policy): {{ registry_signature_policy }}
+  off: exit 0 without checking; warn: report and exit 0; enforce: exit 1 unless trusted.
+"""
+import base64
+import json
+import os
+import ssl
+import sys
+import urllib.request
+
+POLICY = os.environ.get("REGISTRY_SIGNATURE_POLICY", "{{ registry_signature_policy }}")
+URL = os.environ.get("REGISTRY_URL", "{{ registry_hostname }}").rstrip("/")
+AUTH_FILE = os.environ.get("REGISTRY_AUTH_FILE", "/etc/compliant-infra/registry-auth")
+CA_FILE = os.environ.get("REGISTRY_CA_FILE", "/etc/ssl/certs/ca-certificates.crt")
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    if POLICY == "off":
+        return 0
+    image = sys.argv[1]
+    query = '{ Image(image: %s) { RepoName Tag Digest IsSigned SignatureInfo { Tool IsTrusted Author } } }' % json.dumps(image)
+    req = urllib.request.Request(URL + "/v2/_zot/ext/search", data=json.dumps({"query": query}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with open(AUTH_FILE) as fh:
+        token = base64.b64encode(fh.read().strip().encode()).decode()
+    req.add_header("Authorization", "Basic " + token)
+    ctx = ssl.create_default_context(cafile=CA_FILE)
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # network or HTTP error: fail closed under enforce
+        print(f"signature check failed for {image}: {exc}", file=sys.stderr)
+        return 1 if POLICY == "enforce" else 0
+    info = (data.get("data") or {}).get("Image") or {}
+    sigs = info.get("SignatureInfo") or []
+    trusted = [s for s in sigs if s.get("IsTrusted")]
+    result = {"image": image, "digest": info.get("Digest"), "signed": bool(info.get("IsSigned")),
+              "trusted": bool(trusted), "signatures": sigs, "policy": POLICY, "errors": data.get("errors")}
+    print(json.dumps(result))
+    if trusted:
+        return 0
+    print(f"{image} has no trusted signature (policy {POLICY})", file=sys.stderr)
+    return 1 if POLICY == "enforce" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

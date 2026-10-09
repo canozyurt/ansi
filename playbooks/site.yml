@@ -15,11 +15,17 @@
 - name: Set up admin access (VPN, bastion, session recording, DNS; needs the SSH CA from secrets.yml)
   ansible.builtin.import_playbook: access.yml
 
+- name: Deploy the outbound mail relays (Keycloak and Alertmanager send through them)
+  ansible.builtin.import_playbook: mail_relay.yml
+
 - name: Deploy the identity provider
   ansible.builtin.import_playbook: identity.yml
 
 - name: Deploy monitoring and alerting
   ansible.builtin.import_playbook: monitoring.yml
+
+- name: Deploy the container registry (needs Keycloak for SSO; served through the edge)
+  ansible.builtin.import_playbook: registry.yml
 
 - name: Deploy the edge proxy, WAF and VIP failover
   ansible.builtin.import_playbook: edge.yml

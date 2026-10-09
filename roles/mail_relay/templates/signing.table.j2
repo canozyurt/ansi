@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+{% for domain in mail_relay_dkim_domains %}
+*@{{ domain }} {{ mail_relay_dkim_selector }}._domainkey.{{ domain }}
+*@*.{{ domain }} {{ mail_relay_dkim_selector }}._domainkey.{{ domain }}
+{% endfor %}

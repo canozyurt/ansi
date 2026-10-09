@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Write Postfix queue metrics every {{ mail_relay_metrics_interval }}
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ mail_relay_metrics_interval }}
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

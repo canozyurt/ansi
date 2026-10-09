@@ -1,0 +1,51 @@
+---
+# Container registry (roles/registry): Zot behind the edge proxy at registry_hostname.
+registry_hostname: https://registry.example.internal
+
+# HA (HA-01): both instances share an S3 bucket (Garage or another S3-compatible store) and a Redis /
+# Valkey for the dedupe cache, metadata, API keys and OIDC sessions.
+registry_storage: s3
+registry_s3_endpoint: https://s3.data.example.internal:3900
+registry_s3_bucket: registry
+registry_s3_access_key: "{{ vault_registry_s3_access_key }}"
+registry_s3_secret_key: "{{ vault_registry_s3_secret_key }}"
+registry_redis_url: "{{ vault_registry_redis_url }}"   # rediss://user:password@redis.data.example.internal:6379/0
+
+# Keep secrets out of plain text: ansible-vault encrypt_string, or look them up from the secrets manager.
+registry_oidc_client_secret: "{{ vault_registry_oidc_client_secret }}"
+registry_admin_password: "{{ vault_registry_admin_password }}"
+registry_robots:
+  # CI pushes application images; developers push to apps/** through SSO and API keys as well.
+  - { name: ci-apps, password: "{{ vault_registry_ci_apps_password }}", repositories: ["apps/**"], actions: [read, create, update] }
+  # Container hosts pull everything.
+  - { name: puller, password: "{{ vault_registry_puller_password }}", repositories: ["**"], actions: [read] }
+
+# Signature verification (proposed CHG-08): images are signed in CI with cosign; deployments call
+# registry-check-signature, which fails under "enforce" unless the image has a trusted signature.
+registry_signature_policy: enforce
+registry_signature_check_robot: puller
+registry_trust_cosign_keys:
+  ci: "{{ vault_registry_cosign_ci_public_key }}"
+
+# The CVE database is downloaded from mirror.gcr.io; set a proxy here if hosts have no direct egress.
+# registry_env: { HTTPS_PROXY: http://proxy.example.internal:3128, NO_PROXY: "127.0.0.1,localhost,.example.internal" }
+
+# HTTPS from the edge proxies (app zone) and the monitoring hosts (NET-01, NET-03).
+firewall_rules_registry:
+  - { name: registry-https, port: 5000, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }
+
+# Edge route: add to edge_extra_services in group_vars/edge. Internal only: administrators come in
+# through edge_admin_cidrs; allowed_cidrs adds the container hosts and CI runners.
+#   - name: registry
+#     hostnames: [registry.example.internal]
+#     backend_group: registry
+#     backend_port: 5000
+#     backend_tls: true
+#     health_path: /readyz
+#     public: false
+#     allowed_cidrs: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}", "{{ network_zones.data }}"]
+#     # Image pulls make many small requests (manifests, blobs) per image.
+#     rate_limit: 600
+#     # Layer uploads are binary and far larger than the inspected buffer; every request is
+#     # authenticated and authorised by Zot itself, so the WAF is skipped for this service.
+#     waf: false

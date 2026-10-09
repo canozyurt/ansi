@@ -1,0 +1,85 @@
+# {{ ansible_managed }}
+# Outbound relay only: no local delivery, relaying only for mail_relay_allowed_cidrs (NET-01).
+compatibility_level = 3.6
+myhostname = {{ mail_relay_hostname }}
+myorigin = {{ mail_relay_origin_domain }}
+mydestination =
+relay_domains =
+local_recipient_maps =
+local_transport = error:5.1.1 local delivery is disabled on this relay
+alias_maps =
+alias_database =
+inet_interfaces = {{ mail_relay_listen_addresses | join(', ') }}
+inet_protocols = {{ mail_relay_inet_protocols }}
+mynetworks = 127.0.0.0/8 [::1]/128{% for cidr in mail_relay_allowed_cidrs %} {{ ('[' ~ cidr.split('/')[0] ~ ']/' ~ cidr.split('/')[1]) if ':' in cidr else cidr }}{% endfor %}
+
+smtpd_banner = $myhostname ESMTP
+biff = no
+append_dot_mydomain = no
+disable_vrfy_command = yes
+smtpd_helo_required = yes
+message_size_limit = {{ mail_relay_message_size_limit }}
+mailbox_size_limit = 0
+
+# Who may relay: only the internal networks. Everyone else is refused at RCPT TO.
+smtpd_client_restrictions = permit_mynetworks, reject
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+{% if mail_relay_sender_domains | length > 0 %}
+smtpd_sender_restrictions = check_sender_access inline:{ {% for domain in mail_relay_sender_domains %}{{ domain }}=OK{{ ', ' if not loop.last else ' ' }}{% endfor %}}, reject
+{% endif %}
+smtpd_data_restrictions = reject_unauth_pipelining
+
+# Per-client rate limits (anvil); no client is exempt.
+anvil_rate_time_unit = {{ mail_relay_rate_time_unit }}
+smtpd_client_connection_rate_limit = {{ mail_relay_client_connection_rate_limit }}
+smtpd_client_message_rate_limit = {{ mail_relay_client_message_rate_limit }}
+smtpd_client_recipient_rate_limit = {{ mail_relay_client_recipient_rate_limit }}
+smtpd_client_connection_count_limit = {{ mail_relay_client_connection_count_limit }}
+smtpd_client_event_limit_exceptions =
+
+# TLS towards clients (SEC-03): offered on 25, required on submission (master.cf).
+smtpd_tls_cert_file = {{ mail_relay_tls_dir }}/tls.crt
+smtpd_tls_key_file = {{ mail_relay_tls_dir }}/tls.key
+smtpd_tls_security_level = may
+smtpd_tls_protocols = >=TLSv1.2
+smtpd_tls_mandatory_protocols = >=TLSv1.2
+smtpd_tls_ciphers = high
+smtpd_tls_mandatory_ciphers = high
+smtpd_tls_exclude_ciphers = aNULL, eNULL, MD5, RC4, 3DES, SHA1
+smtpd_tls_loglevel = 1
+smtpd_tls_received_header = yes
+smtpd_tls_session_cache_database = btree:${data_directory}/smtpd_scache
+
+# TLS towards the next hop.
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+smtp_tls_protocols = >=TLSv1.2
+smtp_tls_mandatory_protocols = >=TLSv1.2
+smtp_tls_mandatory_ciphers = high
+smtp_tls_loglevel = 1
+smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
+{% if mail_relay_smarthost | length > 0 %}
+relayhost = {{ mail_relay_relayhost }}
+smtp_tls_security_level = {{ mail_relay_smarthost_tls_level }}
+{%   if mail_relay_smarthost_username | length > 0 %}
+smtp_sasl_auth_enable = yes
+smtp_sasl_password_maps = texthash:/etc/postfix/sasl_passwd
+smtp_sasl_security_options = noanonymous
+smtp_sasl_tls_security_options = noanonymous
+smtp_tls_note_starttls_offer = yes
+{%   endif %}
+{% else %}
+relayhost =
+smtp_dns_support_level = dnssec
+smtp_tls_security_level = {{ mail_relay_direct_tls_level }}
+{% endif %}
+{% if mail_relay_transports | length > 0 %}
+transport_maps = inline:{ {% for domain, transport in mail_relay_transports.items() %}{{ domain }}={{ transport }}{{ ', ' if not loop.last else ' ' }}{% endfor %}}
+{% endif %}
+{% if mail_relay_dkim_enabled | bool %}
+
+# DKIM signing (OpenDKIM milter). Unsigned mail never leaves when the milter is down (tempfail).
+smtpd_milters = inet:127.0.0.1:{{ mail_relay_dkim_port }}
+non_smtpd_milters = $smtpd_milters
+milter_default_action = {{ mail_relay_dkim_milter_default_action }}
+milter_protocol = 6
+{% endif %}

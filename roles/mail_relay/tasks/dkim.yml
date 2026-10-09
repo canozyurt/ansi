@@ -1,0 +1,76 @@
+---
+- name: Create the DKIM key directories (one per domain)
+  ansible.builtin.file:
+    path: "{{ mail_relay_dkim_key_dir }}/{{ item }}"
+    state: directory
+    owner: opendkim
+    group: opendkim
+    mode: "0700"
+  loop: "{{ mail_relay_dkim_domains }}"
+
+# The private key is generated on the relay and never leaves it; each relay has its own selector.
+- name: Generate the DKIM key on the host
+  ansible.builtin.command:
+    argv:
+      - opendkim-genkey
+      - --bits={{ mail_relay_dkim_key_bits }}
+      - --domain={{ item }}
+      - --selector={{ mail_relay_dkim_selector }}
+      - --directory={{ mail_relay_dkim_key_dir }}/{{ item }}
+    creates: "{{ mail_relay_dkim_key_dir }}/{{ item }}/{{ mail_relay_dkim_selector }}.private"
+  loop: "{{ mail_relay_dkim_domains }}"
+  notify: Restart opendkim
+  tags: [chk_sec_02]
+
+- name: Restrict the DKIM private keys to OpenDKIM
+  ansible.builtin.file:
+    path: "{{ mail_relay_dkim_key_dir }}/{{ item }}/{{ mail_relay_dkim_selector }}.private"
+    owner: opendkim
+    group: opendkim
+    mode: "0600"
+  loop: "{{ mail_relay_dkim_domains }}"
+  tags: [chk_sec_02]
+
+- name: Write the OpenDKIM tables
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/opendkim/{{ item }}"
+    owner: root
+    group: opendkim
+    mode: "0640"
+  loop: [key.table, signing.table, internal.hosts]
+  notify: Restart opendkim
+
+- name: Write the OpenDKIM configuration
+  ansible.builtin.template:
+    src: opendkim.conf.j2
+    dest: /etc/opendkim.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart opendkim
+
+- name: Create the OpenDKIM service drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/opendkim.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Run OpenDKIM with the socket from its configuration
+  ansible.builtin.template:
+    src: opendkim.override.conf.j2
+    dest: /etc/systemd/system/opendkim.service.d/zz-compliant-infra.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: mail_relay_dkim_unit
+  notify: Restart opendkim
+
+- name: Start OpenDKIM
+  ansible.builtin.systemd_service:
+    name: opendkim
+    enabled: true
+    state: started
+    daemon_reload: "{{ mail_relay_dkim_unit is changed }}"

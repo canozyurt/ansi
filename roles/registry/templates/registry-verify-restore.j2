@@ -1,0 +1,18 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Restore test for the registry storage (BCK-03): every restored repository has a readable index and
+# a sample of blobs matches its content digest. RESTORE_DIR is set by the backup role.
+set -eu
+root="${RESTORE_DIR:?}{{ registry_data_dir }}/data"
+[ -d "$root" ] || { echo "no registry data in $root"; exit 1; }
+repos=0
+for index in $(find "$root" -name index.json -not -path '*/_*' -not -path '*/.uploads/*'); do
+  python3 -m json.tool "$index" >/dev/null
+  repos=$((repos + 1))
+done
+checked=0
+for blob in $(find "$root" -path '*/blobs/sha256/*' -type f -size -64M | head -n 20); do
+  [ "$(sha256sum "$blob" | cut -d' ' -f1)" = "$(basename "$blob")" ] || { echo "digest mismatch: $blob"; exit 1; }
+  checked=$((checked + 1))
+done
+echo "registry restore ok: $repos repositories, $checked blobs verified"

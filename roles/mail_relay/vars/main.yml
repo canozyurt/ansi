@@ -1,0 +1,7 @@
+---
+# Derived values; set the variables in defaults/main.yml instead.
+mail_relay_tls_dir: /etc/postfix/tls
+mail_relay_relayhost: >-
+  {{ '[' ~ (mail_relay_smarthost.rsplit(':', 1) | first) ~ ']:' ~ (mail_relay_smarthost.rsplit(':', 1) | last)
+     if ':' in mail_relay_smarthost else '[' ~ mail_relay_smarthost ~ ']:587' }}
+mail_relay_dkim_key_dir: /etc/opendkim/keys

@@ -1,0 +1,70 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Install the test SMTP sink (stands in for the recipients' MX)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/smtp-sink.py
+        mode: "0755"
+        content: |
+          #!/usr/bin/env python3
+          # Minimal SMTP server: accepts every message and stores it in /var/tmp/sink.
+          import os, socketserver, time
+          OUT = "/var/tmp/sink"
+          os.makedirs(OUT, exist_ok=True)
+          class Handler(socketserver.StreamRequestHandler):
+              def send(self, line):
+                  self.wfile.write((line + "\r\n").encode())
+              def handle(self):
+                  self.send("220 sink.test ESMTP")
+                  data, in_data = [], False
+                  for raw in self.rfile:
+                      line = raw.decode(errors="replace").rstrip("\r\n")
+                      if in_data:
+                          if line == ".":
+                              name = os.path.join(OUT, "%d-%d.eml" % (time.time() * 1000, os.getpid()))
+                              with open(name + ".tmp", "w") as fh:
+                                  fh.write("\n".join(data) + "\n")
+                              os.rename(name + ".tmp", name)
+                              data, in_data = [], False
+                              self.send("250 OK stored")
+                          else:
+                              data.append(line[1:] if line.startswith("..") else line)
+                          continue
+                      cmd = line[:4].upper()
+                      if cmd in ("EHLO", "HELO"):
+                          self.send("250 sink.test")
+                      elif cmd == "DATA":
+                          in_data = True
+                          self.send("354 go ahead")
+                      elif cmd == "QUIT":
+                          self.send("221 bye")
+                          return
+                      else:
+                          self.send("250 OK")
+          class Server(socketserver.ThreadingTCPServer):
+              allow_reuse_address = True
+          Server(("127.0.0.1", 2525), Handler).serve_forever()
+
+    - name: Run the sink as a service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/smtp-sink.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Test SMTP sink
+          [Service]
+          ExecStart=/usr/local/bin/smtp-sink.py
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start the sink
+      ansible.builtin.systemd_service:
+        name: smtp-sink
+        state: started
+        enabled: true
+        daemon_reload: true
+
+  roles:
+    - role: mail_relay

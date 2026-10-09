@@ -1,0 +1,164 @@
+---
+- name: Require two relays (HA-01)
+  ansible.builtin.assert:
+    that: groups[mail_relay_group] | default([]) | length >= mail_relay_min_nodes or mail_relay_allow_single_node | bool
+    fail_msg: >-
+      The mail relay needs {{ mail_relay_min_nodes }} nodes in group {{ mail_relay_group }}.
+      Set mail_relay_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Refuse an open relay and an unverified upstream
+  ansible.builtin.assert:
+    that:
+      - mail_relay_allowed_cidrs | length > 0
+      - mail_relay_allowed_cidrs | select('match', '^(0\.0\.0\.0|::)/0$') | list | length == 0
+      - mail_relay_smarthost | length == 0 or mail_relay_smarthost_tls_level in ['encrypt', 'verify', 'secure']
+      - mail_relay_smarthost | length == 0 or mail_relay_smarthost_username | length == 0 or mail_relay_smarthost_password | length > 0
+      - not (mail_relay_dkim_enabled | bool) or mail_relay_dkim_domains | length > 0
+    fail_msg: >-
+      Set mail_relay_allowed_cidrs to the internal networks (never 0.0.0.0/0), a TLS level of
+      encrypt/verify/secure for the smarthost, its password from the vault when a username is set,
+      and mail_relay_dkim_domains when DKIM is on.
+    quiet: true
+  tags: [chk_net_01]
+
+- name: Preseed Postfix so the package does not configure itself
+  ansible.builtin.debconf:
+    name: postfix
+    question: "{{ item.question }}"
+    value: "{{ item.value }}"
+    vtype: "{{ item.vtype }}"
+  loop:
+    - { question: postfix/main_mailer_type, value: No configuration, vtype: select }
+    - { question: postfix/mailname, value: "{{ mail_relay_origin_domain }}", vtype: string }
+
+- name: Install Postfix and OpenDKIM (distribution packages)
+  ansible.builtin.apt:
+    name: "{{ ['postfix', 'ca-certificates', 'python3', 'libsasl2-modules']
+              + (['opendkim', 'opendkim-tools'] if mail_relay_dkim_enabled | bool else []) }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Set the mail name
+  ansible.builtin.copy:
+    content: "{{ mail_relay_origin_domain }}\n"
+    dest: /etc/mailname
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart postfix
+
+- name: Get the TLS certificate for client submission
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: mail-relay
+    tls_cert_dir: "{{ mail_relay_tls_dir }}"
+    tls_cert_owner: root
+    tls_cert_group: root
+    tls_cert_dir_mode: "0750"
+    tls_cert_key_mode: "0600"
+    tls_cert_common_name: "{{ mail_relay_hostname }}"
+    tls_cert_alt_names: "{{ mail_relay_tls_alt_names }}"
+    tls_cert_src_cert: "{{ mail_relay_tls_cert_file }}"
+    tls_cert_src_key: "{{ mail_relay_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Reload Postfix when the certificate changed
+  ansible.builtin.debug:
+    msg: The TLS certificate changed; Postfix restarts to load it.
+  changed_when: tls_cert_changed | bool
+  notify: Restart postfix
+
+- name: Store the smarthost login (0600 root)
+  ansible.builtin.copy:
+    content: "{{ mail_relay_relayhost }} {{ mail_relay_smarthost_username }}:{{ mail_relay_smarthost_password }}\n"
+    dest: /etc/postfix/sasl_passwd
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - mail_relay_smarthost | length > 0
+    - mail_relay_smarthost_username | length > 0
+  no_log: true
+  notify: Restart postfix
+  tags: [chk_sec_02]
+
+- name: Remove a smarthost login that is no longer used
+  ansible.builtin.file:
+    path: /etc/postfix/sasl_passwd
+    state: absent
+  when: mail_relay_smarthost | length == 0 or mail_relay_smarthost_username | length == 0
+
+- name: Write the Postfix configuration
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/postfix/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [main.cf, master.cf]
+  notify: Restart postfix
+  tags: [chk_net_01, chk_sec_03]
+
+- name: Check the Postfix configuration
+  ansible.builtin.command: postfix check
+  changed_when: false
+
+- name: Configure DKIM signing
+  ansible.builtin.import_tasks: dkim.yml
+  when: mail_relay_dkim_enabled | bool
+
+- name: Start Postfix
+  ansible.builtin.systemd_service:
+    name: postfix
+    enabled: true
+    state: started
+
+- name: Install the queue metrics script
+  ansible.builtin.copy:
+    src: mail-relay-textfile-metrics
+    dest: /usr/local/sbin/mail-relay-textfile-metrics
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [chk_log_05]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ mail_relay_metrics_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the metrics service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - mail-relay-textfile-metrics.service
+    - mail-relay-textfile-metrics.timer
+  tags: [chk_log_05]
+
+- name: Start the metrics timer
+  ansible.builtin.systemd_service:
+    name: mail-relay-textfile-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_log_05]
+
+- name: Flush handlers so health checks see the final state
+  ansible.builtin.meta: flush_handlers
+
+- name: Check the relay
+  ansible.builtin.import_tasks: health.yml
+
+- name: Print the DNS records the domain owner must publish
+  ansible.builtin.import_tasks: dns_records.yml

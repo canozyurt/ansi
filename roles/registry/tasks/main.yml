@@ -1,0 +1,63 @@
+---
+- name: Check required settings
+  ansible.builtin.assert:
+    that:
+      - registry_hostname is match('^https://')
+      - registry_admin_password | length >= 16
+      - registry_metrics_password | length >= 16
+      - registry_robots | map(attribute='password') | map('length') | select('lt', 24) | list | length == 0
+      - registry_robots | map(attribute='name') | select('match', '^[a-z0-9][a-z0-9._-]*$') | list | length == registry_robots | length
+      - registry_storage in ['local', 's3']
+      - registry_signature_policy in ['off', 'warn', 'enforce']
+      - not (registry_oidc_enabled | bool) or registry_oidc_client_secret | length >= 32
+      - >-
+        not (registry_oidc_enabled | bool) or registry_redis_url | length > 0
+        or (registry_session_hash_key | length >= 32 and registry_session_encrypt_key | length == 32)
+      - registry_storage != 's3' or (registry_s3_endpoint is match('^https://') and registry_s3_secret_key | length > 0)
+    fail_msg: >-
+      Set an https registry_hostname, registry_admin_password and registry_metrics_password (16+ characters),
+      robot passwords of 24+ characters with names [a-z0-9._-], the OIDC client secret (32+) and session keys
+      (hash key 32+, encrypt key exactly 32 characters) when OIDC is on, and the S3 settings for s3 storage.
+      Keep every secret in Ansible Vault or OpenBao.
+    quiet: true
+  no_log: true
+  tags: [chk_sec_02]
+
+# Local storage cannot be shared between instances: HA needs S3 storage (and Redis for the shared
+# dedupe cache, metadata and sessions).
+- name: Require a highly available deployment (HA-01)
+  ansible.builtin.assert:
+    that: >-
+      registry_allow_single_node | bool
+      or (registry_cluster_hosts | length >= registry_min_nodes and registry_storage == 's3' and registry_redis_url | length > 0)
+    fail_msg: >-
+      The registry needs at least {{ registry_min_nodes }} instances on shared S3 storage with registry_redis_url
+      (found {{ registry_cluster_hosts | length }} on {{ registry_storage }} storage). Set registry_allow_single_node
+      for a single node with local storage (labs, small sites).
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Deploy the registry
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Load the signature trust stores
+  ansible.builtin.import_tasks: trust.yml
+
+- name: Declare the local storage for backup
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: registry
+    backup_register_paths: ["{{ registry_data_dir }}/data"]
+    # Caches and the CVE database are rebuilt by Zot after a restore.
+    backup_register_exclude:
+      - "{{ registry_data_dir }}/data/_trivy"
+      - "{{ registry_data_dir }}/data/_tmp"
+      - "{{ registry_data_dir }}/data/cache.db"
+      - "{{ registry_data_dir }}/data/meta.db"
+      - "{{ registry_data_dir }}/data/**/.uploads"
+    backup_register_verify_command: /usr/local/sbin/registry-verify-restore
+    backup_register_rpo_hours: "{{ registry_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ registry_backup_rto_hours }}"
+  when: registry_storage == 'local'
+  tags: [chk_bck_01, chk_bck_04]

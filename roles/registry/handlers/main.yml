@@ -1,0 +1,12 @@
+---
+- name: Restart registry
+  community.docker.docker_container:
+    name: "{{ registry_container_name }}"
+    image: "{{ registry_effective_image }}"
+    state: started
+    restart: true
+    # The other parameters are unchanged; only a restart is needed to reload files.
+    comparisons:
+      '*': ignore
+  throttle: 1  # rolling restart keeps the other instances serving
+  when: not (registry_container.changed | default(false))

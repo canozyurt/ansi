@@ -1,0 +1,15 @@
+---
+- name: Wait until Postfix accepts connections on submission
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ mail_relay_submission_port }}"
+    search_regex: "^220 "
+    timeout: 60
+  tags: [chk_log_05]
+
+- name: Wait until OpenDKIM accepts connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ mail_relay_dkim_port }}"
+    timeout: 60
+  when: mail_relay_dkim_enabled | bool

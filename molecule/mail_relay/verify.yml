@@ -1,0 +1,158 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    verify_own_address: "{{ ansible_facts.default_ipv4.address }}"
+    verify_smtp: |
+      import json, smtplib, ssl, sys
+      host, sender, rcpt, tls = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "tls"
+      result = {}
+      s = smtplib.SMTP(host, 587, timeout=20)
+      s.ehlo("verify.test")
+      result["starttls_offered"] = s.has_extn("starttls")
+      if tls:
+          ctx = ssl.create_default_context()
+          ctx.check_hostname = False
+          ctx.verify_mode = ssl.CERT_NONE
+          s.starttls(context=ctx)
+          result["tls_version"] = s.sock.version()
+          s.ehlo("verify.test")
+      code, msg = s.mail(sender)
+      result["mail"] = [code, msg.decode()]
+      if code == 250:
+          code, msg = s.rcpt(rcpt)
+          result["rcpt"] = [code, msg.decode()]
+          if code == 250:
+              body = "From: %s\r\nTo: %s\r\nSubject: verify %s\r\n\r\nhello from molecule\r\n" % (sender, rcpt, host)
+              code, msg = s.data(body)
+              result["data"] = [code, msg.decode()]
+      s.quit()
+      print(json.dumps(result))
+  tasks:
+    - name: Submit a message over TLS from an allowed source (127.0.0.1)
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ verify_smtp }}", 127.0.0.1, ops@example.com, alice@sink.test, tls]
+      register: verify_allowed
+      changed_when: false
+
+    - name: The allowed source relays over TLS 1.2+
+      ansible.builtin.assert:
+        that:
+          - (verify_allowed.stdout | from_json).starttls_offered
+          - (verify_allowed.stdout | from_json).tls_version in ['TLSv1.2', 'TLSv1.3']
+          - (verify_allowed.stdout | from_json).rcpt[0] == 250
+          - (verify_allowed.stdout | from_json).data[0] == 250
+        fail_msg: "{{ verify_allowed.stdout }}"
+      tags: [chk_sec_03, chk_net_01]
+
+    - name: Submit from the container's own address (not an allowed network)
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ verify_smtp }}", "{{ verify_own_address }}", ops@example.com, bob@sink.test, tls]
+      register: verify_denied
+      changed_when: false
+
+    - name: The relay refuses a source outside the allowed networks (no open relay)
+      ansible.builtin.assert:
+        that:
+          - (verify_denied.stdout | from_json).rcpt[0] >= 500
+          - "'Access denied' in (verify_denied.stdout | from_json).rcpt[1]"
+          - (verify_denied.stdout | from_json).data is not defined
+        fail_msg: "{{ verify_denied.stdout }}"
+      tags: [chk_net_01]
+
+    - name: Try to send without STARTTLS on submission
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ verify_smtp }}", 127.0.0.1, ops@example.com, carol@sink.test, plain]
+      register: verify_plain
+      changed_when: false
+
+    - name: Submission requires TLS before MAIL FROM
+      ansible.builtin.assert:
+        that: (verify_plain.stdout | from_json).mail[0] == 530
+        fail_msg: "{{ verify_plain.stdout }}"
+      tags: [chk_sec_03]
+
+    - name: Try a sender domain that is not allowed
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ verify_smtp }}", 127.0.0.1, spoof@other.example, dave@sink.test, tls]
+      register: verify_sender
+      changed_when: false
+
+    - name: Unlisted sender domains are refused
+      ansible.builtin.assert:
+        that: (verify_sender.stdout | from_json).rcpt[0] >= 500 or (verify_sender.stdout | from_json).mail[0] >= 500
+        fail_msg: "{{ verify_sender.stdout }}"
+
+    - name: Wait for the relayed message at the sink
+      ansible.builtin.shell: grep -l "verify 127.0.0.1" /var/tmp/sink/*.eml
+      register: verify_sink
+      until: verify_sink.rc == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Read the delivered message
+      ansible.builtin.slurp:
+        src: "{{ verify_sink.stdout_lines | first }}"
+      register: verify_message
+
+    - name: The relayed message carries a DKIM signature for the domain and this relay's selector
+      ansible.builtin.assert:
+        that:
+          - "'DKIM-Signature:' in verify_message.content | b64decode"
+          - "'d=example.com' in verify_message.content | b64decode"
+          - "('s=relay-' ~ inventory_hostname_short) in verify_message.content | b64decode"
+        fail_msg: "{{ verify_message.content | b64decode }}"
+      tags: [chk_sec_03]
+
+    - name: Only the allowed message reached the sink
+      ansible.builtin.find:
+        paths: /var/tmp/sink
+        patterns: "*.eml"
+      register: verify_all
+      failed_when: verify_all.matched != 1
+
+    - name: Read the effective Postfix settings
+      ansible.builtin.command:
+        argv: [postconf, -h, mynetworks, smtpd_client_message_rate_limit, smtpd_client_event_limit_exceptions, smtpd_tls_mandatory_protocols, inet_interfaces]
+      register: verify_postconf
+      changed_when: false
+
+    - name: Relaying is limited to the declared networks and every client is rate limited
+      ansible.builtin.assert:
+        that:
+          - verify_postconf.stdout_lines[0] == '127.0.0.0/8 [::1]/128 10.99.0.0/24'
+          - verify_postconf.stdout_lines[1] == '120'
+          - verify_postconf.stdout_lines[2] == ''
+          - verify_postconf.stdout_lines[3] == '>=TLSv1.2'
+        fail_msg: "{{ verify_postconf.stdout_lines }}"
+      tags: [chk_net_01]
+
+    - name: Write the queue metrics now
+      ansible.builtin.systemd_service:
+        name: mail-relay-textfile-metrics.service
+        state: started
+      changed_when: false
+
+    - name: Read the textfile metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/mail_relay.prom
+      register: verify_metrics
+
+    - name: Queue size, deferred count and DKIM state are exported
+      ansible.builtin.assert:
+        that:
+          - "'postfix_up 1' in verify_metrics.content | b64decode"
+          - "'postfix_queue_messages{queue=\"deferred\"}' in verify_metrics.content | b64decode"
+          - "'opendkim_up 1' in verify_metrics.content | b64decode"
+        fail_msg: "{{ verify_metrics.content | b64decode }}"
+      tags: [chk_log_05]
+
+    - name: Postfix logs reach the journal
+      ansible.builtin.command: journalctl --no-pager -q -t postfix/smtp -n 20
+      register: verify_journal
+      changed_when: false
+      failed_when: "'status=sent' not in verify_journal.stdout"
+      tags: [chk_log_01]

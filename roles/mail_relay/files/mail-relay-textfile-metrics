@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Write Postfix queue and OpenDKIM state as node_exporter textfile metrics (LOG-05).
+
+Usage: mail-relay-textfile-metrics <textfile directory> [dkim port or 0]
+The file is written to a temporary name and renamed, so node_exporter never reads half a file.
+"""
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+QUEUES = ["maildrop", "incoming", "active", "deferred", "hold", "corrupt"]
+
+
+def main() -> int:
+    outdir = sys.argv[1]
+    dkim_port = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    now = time.time()
+    counts = dict.fromkeys(QUEUES, 0)
+    sizes = dict.fromkeys(QUEUES, 0)
+    oldest = 0.0
+    up = subprocess.run(["postfix", "status"], capture_output=True).returncode == 0
+    if up:
+        out = subprocess.run(["postqueue", "-j"], capture_output=True, text=True)
+        up = out.returncode == 0
+        for line in out.stdout.splitlines():
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            queue = msg.get("queue_name", "unknown")
+            counts[queue] = counts.get(queue, 0) + 1
+            sizes[queue] = sizes.get(queue, 0) + int(msg.get("message_size", 0))
+            arrival = float(msg.get("arrival_time", now))
+            oldest = max(oldest, now - arrival)
+    lines = [
+        "# HELP postfix_up Whether Postfix is running and its queue can be read.",
+        "# TYPE postfix_up gauge",
+        f"postfix_up {int(up)}",
+        "# HELP postfix_queue_messages Messages in each Postfix queue.",
+        "# TYPE postfix_queue_messages gauge",
+    ]
+    lines += [f'postfix_queue_messages{{queue="{q}"}} {n}' for q, n in sorted(counts.items())]
+    lines += ["# HELP postfix_queue_bytes Total size of the messages in each Postfix queue.",
+              "# TYPE postfix_queue_bytes gauge"]
+    lines += [f'postfix_queue_bytes{{queue="{q}"}} {n}' for q, n in sorted(sizes.items())]
+    lines += [
+        "# HELP postfix_queue_oldest_message_age_seconds Age of the oldest queued message.",
+        "# TYPE postfix_queue_oldest_message_age_seconds gauge",
+        f"postfix_queue_oldest_message_age_seconds {oldest:.0f}",
+    ]
+    if dkim_port:
+        try:
+            with socket.create_connection(("127.0.0.1", dkim_port), timeout=2):
+                dkim_up = 1
+        except OSError:
+            dkim_up = 0
+        lines += ["# HELP opendkim_up Whether the OpenDKIM milter accepts connections.",
+                  "# TYPE opendkim_up gauge", f"opendkim_up {dkim_up}"]
+    lines += ["# HELP mail_relay_metrics_timestamp_seconds When these metrics were written.",
+              "# TYPE mail_relay_metrics_timestamp_seconds gauge", f"mail_relay_metrics_timestamp_seconds {now:.0f}"]
+    fd, tmp = tempfile.mkstemp(dir=outdir, prefix=".mail_relay.prom.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(outdir, "mail_relay.prom"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

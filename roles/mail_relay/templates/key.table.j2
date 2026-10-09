@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+{% for domain in mail_relay_dkim_domains %}
+{{ mail_relay_dkim_selector }}._domainkey.{{ domain }} {{ domain }}:{{ mail_relay_dkim_selector }}:{{ mail_relay_dkim_key_dir }}/{{ domain }}/{{ mail_relay_dkim_selector }}.private
+{% endfor %}

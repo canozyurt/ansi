@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# DKIM signing for the outbound relay. Logs go to syslog (journald).
+Syslog                  yes
+SyslogSuccess           yes
+LogWhy                  yes
+UMask                   007
+Mode                    s
+Canonicalization        relaxed/simple
+SignatureAlgorithm      rsa-sha256
+OversignHeaders         From
+RequireSafeKeys         yes
+Socket                  inet:{{ mail_relay_dkim_port }}@127.0.0.1
+PidFile                 /run/opendkim/opendkim.pid
+UserID                  opendkim
+KeyTable                file:/etc/opendkim/key.table
+SigningTable            refile:/etc/opendkim/signing.table
+# Mail from these clients is signed (Postfix passes the original client address to the milter).
+InternalHosts           /etc/opendkim/internal.hosts
+ExternalIgnoreList      /etc/opendkim/internal.hosts

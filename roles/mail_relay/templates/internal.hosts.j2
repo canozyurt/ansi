@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+127.0.0.1
+::1
+{% for cidr in mail_relay_allowed_cidrs %}
+{{ cidr }}
+{% endfor %}
