@@ -1,0 +1,27 @@
+# gitleaks configuration (SEC-01). Used by CI (.github/workflows/ci.yml) and the pre-commit hook.
+# Default rules plus an allowlist for values that are placeholders by construction. Never allowlist a
+# real secret: rotate it, remove it from history, then fix the code.
+title = "compliant-infra-ansible"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Example inventory placeholders, Molecule throwaway credentials and variable references"
+regexTarget = "secret"
+regexes = [
+  # Molecule lab credentials are named so they can never be mistaken for real ones.
+  '''(?i)^test-only-[a-z0-9-]+$''',
+  '''^molecule-test-value$''',
+  '''^not-the-password-at-all$''',
+  # Jinja references to vaulted variables, e.g. "{{ vault_forgejo_db_password }}".
+  '''^\{\{.*\}\}$''',
+  '''^vault_[a-z0-9_]+$''',
+  # Obvious placeholders in inventories/example and docs.
+  '''(?i)^(changeme|change-me|replace-me|example|placeholder|secret|password|x{4,})$''',
+  '''^<[^>]+>$''',
+]
+paths = [
+  # Lockfile-like hashes, not secrets.
+  '''^roles/versions/defaults/main\.yml$''',
+]

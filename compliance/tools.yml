@@ -1,0 +1,366 @@
+---
+# Adopted tools and what their free editions cover (EVD-04, project rule).
+#
+# Every entry in roles/versions (versions_images, versions_tools, versions_packages, versions_postgres)
+# must be listed under some tool's `versions` (tools/tool_registry.py fails CI otherwise). Distribution
+# packages that are tools in their own right are listed under `packages`; libraries and base utilities
+# (python3-*, curl, gnupg, ca-certificates, sudo, iproute2, bzip2, ...) are dependencies, not adopted tools.
+#
+# Fields:
+#   license       SPDX expression of what we run (the free/community edition)
+#   osi_approved  every licence in the expression is OSI-approved
+#   sso, audit_log, ha:  status "yes" | "no" | "n.a." and a note (required unless "yes" is self-evident)
+#   exceptions    required for every "no" and for osi_approved false: why the tool is still acceptable
+#                 and what compensates. Reviewed in the pull request that adds or bumps the tool.
+# Licence and edition facts were checked against the pinned releases' repositories when each tool was
+# adopted (docs/architecture.md); re-check them when bumping a major version.
+tools:
+  - name: Keycloak
+    versions: [images/keycloak]
+    roles: [keycloak]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "yes", note: "The IdP itself (OIDC/SAML, WebAuthn)."}
+    audit_log: {status: "yes", note: "User and admin events logged to journald and the SIEM."}
+    ha: {status: "yes", note: "3-node Infinispan cluster on a shared PostgreSQL."}
+
+  - name: OpenBao
+    versions: [images/openbao]
+    roles: [openbao]
+    license: MPL-2.0
+    osi_approved: true
+    sso: {status: "yes", note: "OIDC auth method against Keycloak."}
+    audit_log: {status: "yes", note: "Two declarative audit devices (journald and file for the SIEM)."}
+    ha: {status: "yes", note: "Integrated Raft storage, 3 nodes."}
+
+  - name: PostgreSQL
+    versions:
+      - images/postgres_client
+      - images/postgres_base
+      - postgres/postgresql-18
+      - postgres/postgresql-client-18
+      - postgres/postgresql-18-pgaudit
+    roles: [postgres_cluster, keycloak]
+    license: PostgreSQL
+    osi_approved: true
+    sso: {status: "n.a.", note: "Database accessed by services with per-instance credentials; people use psql through the bastion."}
+    audit_log: {status: "yes", note: "pgaudit (PostgreSQL licence) for DDL and role changes, connection logging."}
+    ha: {status: "yes", note: "Patroni with etcd, 3 nodes."}
+    components:
+      - {name: Ubuntu base image (postgres_base), license: "LicenseRef-Ubuntu-archive", note: "Packages from Ubuntu main; DFSG-free licences."}
+
+  - name: Patroni and etcd
+    versions: [postgres/patroni, images/etcd]
+    roles: [postgres_cluster]
+    license: MIT AND Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Machine-to-machine cluster components; REST API with basic auth and TLS."}
+    audit_log: {status: "n.a.", note: "Failover actions are logged to journald as JSON."}
+    ha: {status: "yes", note: "They provide the HA."}
+
+  - name: pgBackRest
+    versions: [postgres/pgbackrest]
+    roles: [postgres_cluster]
+    license: MIT
+    osi_approved: true
+    sso: {status: "n.a.", note: "Backup tool without a UI."}
+    audit_log: {status: "n.a.", note: "Runs are logged and exported as metrics."}
+    ha: {status: "yes", note: "Several repositories (posix and S3)."}
+
+  - name: postgres_exporter
+    versions: [images/postgres_exporter]
+    roles: [postgres_cluster]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Metrics endpoint, basic auth over TLS for Prometheus."}
+    audit_log: {status: "n.a.", note: "Exporter."}
+    ha: {status: "yes", note: "One per node."}
+
+  - name: Prometheus and Alertmanager
+    versions: [images/prometheus, images/alertmanager]
+    roles: [prometheus, alertmanager]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "no", note: "Only TLS and basic auth (web config); people use Grafana."}
+    audit_log: {status: "no", note: "No audit log; requests are logged at the edge proxy."}
+    ha: {status: "yes", note: "2+ Prometheus replicas; 3-node Alertmanager gossip cluster."}
+    exceptions:
+      - >-
+        Prometheus has basic auth only, behind the edge: its accounts are for machines and break-glass use,
+        admin-only path at the edge (docs/architecture.md, Monitoring).
+      - "No audit log: the API is read-only for people (no admin API enabled), and access is logged by HAProxy with the user's source and path."
+
+  - name: Prometheus exporters (node_exporter, blackbox_exporter)
+    versions: [images/node_exporter, images/blackbox_exporter]
+    roles: [node_exporter, blackbox_exporter]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Metrics endpoints for Prometheus (basic auth over TLS)."}
+    audit_log: {status: "n.a.", note: "Exporters."}
+    ha: {status: "yes", note: "Per host / per Prometheus replica."}
+
+  - name: Grafana OSS
+    versions: [images/grafana]
+    roles: [grafana]
+    license: AGPL-3.0-only
+    osi_approved: true
+    sso: {status: "yes", note: "Generic OAuth with Keycloak in the OSS edition."}
+    audit_log: {status: "no", note: "Audit logging is a Grafana Enterprise feature."}
+    ha: {status: "yes", note: "2+ stateless nodes; everything is provisioned."}
+    exceptions:
+      - >-
+        Grafana OSS has no audit log: logins go through Keycloak (its events are audited), Grafana's router
+        log records every request in journald, and dashboards/datasources are provisioned from git (changes
+        are reviewed pull requests).
+
+  - name: HAProxy
+    versions: [images/haproxy]
+    roles: [edge, garage_cluster, postgres_cluster]
+    license: GPL-2.0-or-later AND LGPL-2.1-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "Proxy; services behind it do SSO."}
+    audit_log: {status: "yes", note: "JSON access logs with request ID and WAF verdict."}
+    ha: {status: "yes", note: "Edge pair with keepalived VIPs."}
+
+  - name: Coraza SPOA (OWASP CRS)
+    versions: [images/coraza_spoa, images/coraza_spoa_builder]
+    roles: [edge]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "WAF agent."}
+    audit_log: {status: "yes", note: "Every rule match logged as JSON."}
+    ha: {status: "yes", note: "One agent per edge node; HAProxy fails closed."}
+    components:
+      - {name: Go toolchain image (coraza_spoa_builder), license: BSD-3-Clause, note: "Build stage only."}
+
+  - name: restic and rest-server
+    versions: [tools/restic, images/rest_server]
+    roles: [backup, backup_server]
+    license: BSD-2-Clause
+    osi_approved: true
+    sso: {status: "n.a.", note: "No UI; per-host REST logins derived from a vaulted seed."}
+    audit_log: {status: "yes", note: "rest-server access log to journald; append-only repositories."}
+    ha: {status: "yes", note: "2+ backup servers in separate failure domains, each with a full copy."}
+
+  - name: Forgejo
+    versions: [images/forgejo]
+    roles: [forgejo]
+    license: GPL-3.0-or-later
+    osi_approved: true
+    sso: {status: "yes", note: "OIDC with Keycloak."}
+    audit_log: {status: "no", note: "No dedicated audit log in Forgejo 15."}
+    ha: {status: "yes", note: "Active/passive pair behind a VIP with failover."}
+    exceptions:
+      - >-
+        Forgejo has no admin audit log: sign-ins are audited in Keycloak, the router log of every request goes
+        to the SIEM, and repository changes are themselves the audit trail (protected branches, required
+        approvals, CHG-01).
+
+  - name: Forgejo runner
+    versions: [images/forgejo_runner, images/forgejo_runner_job]
+    roles: [forgejo_runner]
+    license: GPL-3.0-or-later
+    osi_approved: true
+    sso: {status: "n.a.", note: "Registered to Forgejo with a token; no UI."}
+    audit_log: {status: "n.a.", note: "Job logs are kept by Forgejo."}
+    ha: {status: "yes", note: "2+ runner hosts."}
+    components:
+      - {name: Node.js job image (forgejo_runner_job), license: MIT, note: "Default job container."}
+
+  - name: Gatus
+    versions: [images/gatus]
+    roles: [status_page]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Public read-only status page; documented IAM-01 exception."}
+    audit_log: {status: "n.a.", note: "No writable state; configuration comes from git."}
+    ha: {status: "yes", note: "Two independent instances."}
+
+  - name: CISO Assistant Community
+    versions: [images/ciso_assistant_backend, images/ciso_assistant_frontend]
+    roles: [grc]
+    license: AGPL-3.0-only
+    osi_approved: true
+    sso: {status: "yes", note: "OIDC and SAML are in the community edition (docs/grc.md)."}
+    audit_log: {status: "yes", note: "django-auditlog, 365 days."}
+    ha: {status: "no", note: "Single active node by design."}
+    exceptions:
+      - "Single node: an internal GRC tool with no customer impact; restored from backup within its RTO (docs/grc.md, playbooks/restore.yml)."
+
+  - name: Trivy
+    versions: [images/trivy]
+    roles: [trivy_scan, registry]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "CLI scanner."}
+    audit_log: {status: "n.a.", note: "Reports are evidence files."}
+    ha: {status: "n.a.", note: "Scheduled job; a missed run alerts."}
+
+  - name: Wazuh
+    versions: [images/wazuh_indexer, images/wazuh_manager, images/wazuh_dashboard, packages/wazuh_agent]
+    roles: [wazuh_indexer, wazuh_manager, wazuh_dashboard, wazuh_agent, wazuh_certs]
+    license: GPL-2.0-only AND Apache-2.0
+    osi_approved: true
+    sso: {status: "yes", note: "OpenSearch security plugin OIDC in the dashboard."}
+    audit_log: {status: "yes", note: "OpenSearch security audit log, kept 90 days searchable."}
+    ha: {status: "yes", note: "3-node indexer, manager cluster, 2 dashboards."}
+
+  - name: Zot registry
+    versions: [images/zot, images/zot_build_base, tools/zot]
+    roles: [registry]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "yes", note: "OIDC with Keycloak."}
+    audit_log: {status: "yes", note: "Audit log of authenticated requests for the SIEM."}
+    ha: {status: "yes", note: "2+ instances on shared S3 storage."}
+    components:
+      - {name: Debian base image (zot_build_base), license: "LicenseRef-Debian-main", note: "DFSG-free packages."}
+
+  - name: Valkey
+    versions: [images/valkey, images/redis_exporter]
+    roles: [valkey_cluster]
+    license: BSD-3-Clause AND MIT
+    osi_approved: true
+    sso: {status: "n.a.", note: "Data service for applications; ACL users per application."}
+    audit_log: {status: "no", note: "No audit log (ACL LOG only records denials)."}
+    ha: {status: "yes", note: "Primary/replicas with Sentinel, 3 nodes."}
+    exceptions:
+      - >-
+        Valkey has no audit log: only services connect, with per-application ACL users and keys; admin access
+        is through the bastion (session_audit records the commands) and ACL denials are in ACL LOG.
+
+  - name: RabbitMQ
+    versions: [images/rabbitmq]
+    roles: [rabbitmq_cluster]
+    license: MPL-2.0
+    osi_approved: true
+    sso: {status: "yes", note: "Management UI via the OAuth 2 plugin and Keycloak."}
+    audit_log: {status: "no", note: "No audit log in the open-source broker."}
+    ha: {status: "yes", note: "3 nodes, quorum queues, pause_minority."}
+    exceptions:
+      - >-
+        RabbitMQ has no audit log: management UI sign-ins are audited in Keycloak, definitions are managed
+        from git, and connection/authentication events are in the broker log shipped to the SIEM.
+
+  - name: Garage
+    versions: [images/garage]
+    roles: [garage_cluster]
+    license: AGPL-3.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "S3 API with per-bucket keys; no web UI."}
+    audit_log: {status: "no", note: "No S3 access audit log."}
+    ha: {status: "yes", note: "3 nodes in 3 zones, replication factor 3."}
+    exceptions:
+      - >-
+        Garage has no S3 access audit log: keys are per bucket and per application, the TLS sidecar logs every
+        connection (source, bytes; TCP mode, no per-request log) to journald and the SIEM, and bucket and key
+        changes are made only from the playbook (git history).
+
+  # Distribution packages that are tools in their own right (Debian/Ubuntu archive or vendor repositories).
+  - name: Docker Engine
+    packages: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin, docker-buildx-plugin]
+    roles: [container_runtime]
+    license: Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Local daemon; root-only socket."}
+    audit_log: {status: "n.a.", note: "Local daemon behind a root-only socket; who ran docker as root is recorded by session_audit (execve, sudo I/O)."}
+    ha: {status: "n.a.", note: "Per host; services are HA across hosts."}
+
+  - name: nftables
+    packages: [nftables]
+    roles: [firewall, wireguard_gateway]
+    license: GPL-2.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "Host firewall."}
+    audit_log: {status: "n.a.", note: "Ruleset comes from git; drops are logged."}
+    ha: {status: "n.a.", note: "Per host."}
+
+  - name: OpenSSH
+    packages: [openssh-server]
+    roles: [ssh_hardening, bastion]
+    license: SSH-OpenSSH
+    osi_approved: false
+    sso: {status: "yes", note: "Short-lived SSH certificates from the OpenBao SSH CA after OIDC login (IAM-06)."}
+    audit_log: {status: "yes", note: "sshd log with certificate key ID; session_audit."}
+    ha: {status: "yes", note: "Two bastions."}
+    exceptions:
+      - >-
+        OpenSSH's licence is a set of permissive BSD/ISC-style notices (SPDX SSH-OpenSSH) that is free
+        software but not on the OSI list as such; it is the base system SSH server of every supported
+        distribution.
+
+  - name: Linux audit and AppArmor
+    packages: [auditd, audispd-plugins, apparmor, apparmor-utils, libpam-pwquality]
+    roles: [common, os_hardening, session_audit]
+    license: GPL-2.0-or-later AND GPL-2.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "Host hardening."}
+    audit_log: {status: "yes", note: "They are the host audit log."}
+    ha: {status: "n.a.", note: "Per host."}
+
+  - name: chrony
+    packages: [chrony]
+    roles: [common]
+    license: GPL-2.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "Time sync."}
+    audit_log: {status: "n.a.", note: "Drift is a metric (LOG-03)."}
+    ha: {status: "yes", note: "Several time sources."}
+
+  - name: Unbound and systemd-resolved
+    packages: [unbound, dns-root-data, systemd-resolved]
+    roles: [dns_resolver, dns_client]
+    license: BSD-3-Clause AND LGPL-2.1-or-later
+    osi_approved: true
+    sso: {status: "n.a.", note: "DNS."}
+    audit_log: {status: "n.a.", note: "Query logging optional; configuration from git."}
+    ha: {status: "yes", note: "Two resolvers."}
+
+  - name: WireGuard
+    packages: [wireguard-tools]
+    roles: [wireguard_gateway]
+    license: GPL-2.0-only
+    osi_approved: true
+    sso: {status: "no", note: "Device keys, not per-user SSO."}
+    audit_log: {status: "n.a.", note: "Handshakes exported as metrics; peers come from git."}
+    ha: {status: "yes", note: "Two gateways."}
+    exceptions:
+      - >-
+        WireGuard has no SSO: peers are device keys declared in git through reviewed pull requests
+        (docs/access.md); SSH and every service behind the VPN still require SSO.
+
+  - name: keepalived
+    packages: [keepalived]
+    roles: [keepalived]
+    license: GPL-2.0-or-later
+    osi_approved: true
+    sso: {status: "n.a.", note: "VRRP daemon."}
+    audit_log: {status: "n.a.", note: "State changes logged and exported."}
+    ha: {status: "yes", note: "It provides the VIP failover."}
+
+  - name: Postfix
+    packages: [postfix, libsasl2-modules]
+    roles: [mail_relay]
+    license: IPL-1.0 OR EPL-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "Outbound relay for services."}
+    audit_log: {status: "yes", note: "Mail log to journald and the SIEM."}
+    ha: {status: "yes", note: "Two relays."}
+
+  - name: ClamAV
+    packages: [clamav-daemon, clamav-freshclam, clamdscan, clamav-base]
+    roles: [clamav]
+    license: GPL-2.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "Scanner."}
+    audit_log: {status: "n.a.", note: "Detections logged to the SIEM."}
+    ha: {status: "n.a.", note: "Per host."}
+
+  - name: unattended-upgrades and needrestart
+    packages: [unattended-upgrades, apt-listchanges, needrestart]
+    roles: [common]
+    license: GPL-2.0-or-later
+    osi_approved: true
+    sso: {status: "n.a.", note: "Patch automation."}
+    audit_log: {status: "n.a.", note: "apt history; pending updates exported as metrics (HRD-04)."}
+    ha: {status: "n.a.", note: "Per host."}

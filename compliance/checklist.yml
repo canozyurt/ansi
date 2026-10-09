@@ -5,8 +5,11 @@
 # status: not_started | designed | implemented | verified
 # Tasks that contribute to an item carry the tag chk_<id> (e.g. chk_iam_06 for IAM-06).
 # A person sets the status; tools/checklist.py fails CI when the status claims more than the code backs:
-#   implemented -> needs at least one tagged task in roles/ or playbooks/
+#   implemented -> needs at least one tagged task in roles/ or playbooks/, or a tagged CI step in .github/workflows/
 #   verified    -> additionally needs a tagged task in a Molecule verify playbook
+# core: true marks Core items (identity, secrets, logging/monitoring, hardening, network, backup, change).
+# They need a tagged Molecule verify task: CI fails for a Core item marked verified without one and warns
+# for one marked implemented (tools/checklist.py --strict-core makes that an error; see EVD-01).
 #
 # Control references: SOC 2 = 2017 Trust Services Criteria, iso27001 = ISO/IEC 27001:2022 Annex A,
 # iso27017 = ISO/IEC 27017:2015 (CLD.* controls; ext.* = guidance on 27002:2013 controls).
@@ -28,6 +31,7 @@ domains:
 requirements:
   - id: IAM-01
     requirement: "Every web UI, API admin and host login authenticates through the central IdP (OIDC/SAML/LDAP); the only local account is a sealed break-glass account"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["5.15", "5.16", "8.5"]
@@ -37,6 +41,7 @@ requirements:
     progress: "Keycloak deployed (roles/keycloak) as the central IdP with a break-glass admin. Remaining: wire each service to it and disable local logins; break-glass alert. SIEM: SIEM dashboard uses OIDC (security plugin openid backend, \"roles\" claim mapped: admins all_access, auditor readall, operator alerts read-only, others none); the login form is kept only for the break-glass admin; rule 100120 alerts on break-glass use. Tested: redirect to the IdP, mapping, break-glass login (no real Keycloak login). RabbitMQ: management UI login through Keycloak (OAuth 2.0 + PKCE via oidc_client; roles claim mapped by scope aliases: platform-admin administrator, operator monitoring+policymaker, developer management on its vhosts, auditor monitoring); basic auth disabled in the UI, kept for the HTTP API break-glass admin (not tested)."
   - id: IAM-02
     requirement: "MFA required for all users; phishing-resistant MFA (WebAuthn) for admins"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["8.5"]
@@ -46,6 +51,7 @@ requirements:
     progress: "Keycloak browser flow forces WebAuthn for privileged roles and TOTP for everyone else; verified by molecule/keycloak. Remaining: weekly policy export check."
   - id: IAM-03
     requirement: "Access granted only through IdP groups mapped to roles; no per-user grants"
+    core: true
     controls:
       soc2: [CC6.3]
       iso27001: ["5.15", "5.18", "8.3"]
@@ -55,6 +61,7 @@ requirements:
     progress: "Role model validated by roles/rbac_model; Keycloak maps default groups to roles. Services consume rbac_model_role_groups as they are added."
   - id: IAM-04
     requirement: "Disabling a user in the directory removes all access (web sessions, SSH, VPN) within 24 hours"
+    core: true
     controls:
       soc2: [CC6.2, CC6.3]
       iso27001: ["5.18"]
@@ -64,6 +71,7 @@ requirements:
     progress: "VPN peers carry owner + expiry and are removed at expiry even without an Ansible run (tested); SSH certificates last 8 h and need an SSO login; admin_login_removed_accounts removes principal mappings. Remaining: VPN peers are not tied to the IdP (a disabled user keeps the tunnel until expiry); end-to-end disable test."
   - id: IAM-05
     requirement: "Access review report (users, groups, admins) produced every quarter"
+    core: true
     controls:
       soc2: [CC6.2]
       iso27001: ["5.18"]
@@ -72,6 +80,7 @@ requirements:
     status: not_started
   - id: IAM-06
     requirement: "SSH allows no passwords and no direct root login; admins use short-lived certificates"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["8.2", "8.5"]
@@ -81,6 +90,7 @@ requirements:
     progress: "No passwords, no root, key/cert only (ssh_hardening); OpenBao SSH CA (8 h certs) trusted; principals platform-admin/operator mapped to accounts (roles/admin_login, roles/bastion); bastion refuses passwords, plain keys and other principals (tested). Remaining: ssh_hardening_allow_authorized_keys: false fleet-wide once the CA is rolled out (break-glass only)."
   - id: IAM-07
     requirement: "Privileged sessions are recorded and logged centrally"
+    core: true
     controls:
       soc2: [CC6.1, CC7.2]
       iso27001: ["8.2", "8.15"]
@@ -90,6 +100,7 @@ requirements:
     progress: "auditd execve rules for auid>=1000 (key session_cmd), pam_tty_audit for root sessions, sudo I/O logs, sshd logs the cert key ID and the jump target (roles/session_audit, roles/bastion; rules loaded and checked with auditctl -l in Molecule). Remaining: test that a session reaches the SIEM (depends on the SIEM agent shipping audit.log). Done: audit.log and journald ship to the SIEM through the Wazuh agent (collection configured; molecule/siem tests journald end to end, not a session_cmd audit record specifically)."
   - id: IAM-08
     requirement: "Services use short-lived or rotated credentials from the secrets manager; no shared static passwords"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["5.17"]
@@ -99,6 +110,7 @@ requirements:
     progress: "OpenBao issues expiring AppRole secret_ids and short-lived tokens to tls_cert, periodic narrow tokens for snapshots, and revokes the root token after init. Remaining: move service passwords (Keycloak DB etc.) to OpenBao with rotation. PostgreSQL: OpenBao database secrets engine issues 1-hour users per database and access level, connection password rotated by OpenBao (tested against an OpenBao dev server)."
   - id: IAM-09
     requirement: "Every service deploys the default roles (platform-admin, security-admin, operator, developer, auditor, member) mapped to its native permissions; organizations only assign groups to roles"
+    core: true
     controls:
       soc2: [CC6.1, CC6.3]
       iso27001: ["5.3", "5.15", "5.18", "8.2"]
@@ -108,14 +120,17 @@ requirements:
     progress: "Default roles defined in roles/rbac_model and created as Keycloak realm roles; per-service mappings come with each service role. SIEM: SIEM role mappings for the indexer and the Wazuh API (run_as: admins administrator, auditor readonly)."
   - id: SEC-01
     requirement: "No secrets in git, inventories or images"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["5.17", "8.4"]
       iso27017: []
     check: "Secret scanning (e.g. gitleaks) in CI and on images"
-    status: not_started
+    status: implemented
+    progress: "CI (.github/workflows/ci.yml, lint job): gitleaks v8.28.0 over the whole git history with .gitleaks.toml (default rules; allowlist only for test-only-* Molecule values, Jinja references and obvious placeholders), also as a pre-commit hook; tools/vault_check.py fails on plain-text vault_* values or unencrypted *vault*.yml vars files outside inventories/example (also for operators' private inventory repos); images job: Trivy --scanners vuln,secret on every pinned image, gated by tools/trivy_gate.py (secrets fail unless waived). Gate scripts self-tested on sample files (tools/tests); the CI jobs have not run yet (not tested). docs/supply-chain.md."
   - id: SEC-02
     requirement: "Services read secrets at runtime from the secrets manager; every read is audited"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["5.17", "8.24"]
@@ -125,6 +140,7 @@ requirements:
     progress: "OpenBao (roles/openbao) runs KV v2 with two declarative audit devices (stdout to journald, file for the SIEM); verified by molecule/openbao. Remaining: services read their secrets from OpenBao at runtime instead of inventory variables."
   - id: SEC-03
     requirement: "All traffic, internal included, uses TLS 1.2 or newer with weak ciphers disabled"
+    core: true
     controls:
       soc2: [CC6.7]
       iso27001: ["8.20", "8.24"]
@@ -134,6 +150,7 @@ requirements:
     progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT. SIEM: SIEM: TLS 1.2+ on indexer (9200/9300), manager API, enrollment and dashboard; node certificates from a dedicated SIEM CA (roles/wazuh_certs), HTTP certificates from tls_cert when the internal PKI is set. Valkey: TLS 1.2+ only for clients, replication and Sentinel, plaintext port disabled (tested single node). RabbitMQ: AMQPS, management and Prometheus over TLS only, Erlang distribution and CLI tools over TLS (peer verification with CA-signed certificates; encrypted but unverified with temporary self-signed ones) (not tested). Garage: S3 API and metrics through an HAProxy TLS sidecar, plaintext listeners on loopback, RPC encrypted with the cluster secret (not tested)."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
+    core: true
     controls:
       soc2: [CC6.1, C1.1]
       iso27001: ["8.24"]
@@ -143,6 +160,7 @@ requirements:
     progress: "Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). Remaining: disks, databases and object storage. PostgreSQL: pgBackRest repositories encrypted (aes-256-cbc, tested: no plaintext in the repository); the role checks for a dm-crypt device under the data directory, warns or fails, and exports postgres_data_dir_encrypted (PostgresDataNotEncrypted alert); LUKS itself is a host prerequisite. Valkey, RabbitMQ, Garage: same dm-crypt check and datastore_data_dir_encrypted metric with *DataNotEncrypted alerts; LUKS is a host prerequisite; Garage applications may add SSE-C per object (Valkey tested single node; RabbitMQ and Garage not tested)."
   - id: SEC-05
     requirement: "Certificates renew automatically; an alert fires 14 days before any expiry"
+    core: true
     controls:
       soc2: [CC6.7]
       iso27001: ["8.24"]
@@ -152,6 +170,7 @@ requirements:
     progress: "Done: tls_cert renews 30 days before expiry; blackbox_exporter probes every https catalog endpoint plus blackbox_extra_targets and CertificateExpiringSoon fires under 14 days. Remaining: expiry scan of certificates not served on a network port. OpenBao root and intermediate CA with role server (90-day EC certs, auto-tidy) and the ansible-pki AppRole that tls_cert uses (molecule/openbao)."
   - id: SEC-06
     requirement: "Encryption keys have a defined rotation period that is enforced"
+    core: true
     controls:
       soc2: [CC6.1]
       iso27001: ["8.24"]
@@ -161,6 +180,7 @@ requirements:
     progress: "OpenBao transit keys rotate automatically every 90 days and cannot be deleted or exported (molecule/openbao). Remaining: weekly key-metadata evidence job; CA and seal key rotation runbooks."
   - id: LOG-01
     requirement: "Every host and service ships auth, admin, audit and application logs to central logging"
+    core: true
     controls:
       soc2: [CC7.2]
       iso27001: ["8.15"]
@@ -170,6 +190,7 @@ requirements:
     progress: "Done: persistent journald, auditd rules, Docker audit rules, Keycloak login and admin events as JSON logs.  Edge access and WAF logs are JSON in journald. OpenBao audit log to stdout and a file. PostgreSQL: pgaudit (DDL, role) plus connection/disconnection logging to journald, Patroni and etcd JSON logs (tested). SIEM: Wazuh agent on every host ships journald (all container output, sshd/sudo/PAM), /var/log/audit/audit.log and the auth log to a 3-node manager cluster; events are indexed in a 3-node indexer (alerts, plus archives when enabled). Tested: a logger marker is searchable in wazuh-archives-* (molecule/siem)."
   - id: LOG-02
     requirement: "Logs are tamper-evident, access-restricted and kept 12 months (at least 90 days searchable)"
+    core: true
     controls:
       soc2: [CC7.2]
       iso27001: ["8.15"]
@@ -179,6 +200,7 @@ requirements:
     progress: "SIEM: ISM policy: searchable 90 days, read-only after that, deleted at 365 days (both variables) on wazuh-alerts/archives/security-auditlog; security-plugin audit log (REST, logins, config changes) on; anonymous access refused. Optional nightly S3 snapshots when wazuh_s3_* are set (not tested)."
   - id: LOG-03
     requirement: "All clocks sync to the same time source; drift raises an alert"
+    core: true
     controls:
       soc2: [CC7.2]
       iso27001: ["8.17"]
@@ -188,6 +210,7 @@ requirements:
     progress: "Done: chrony with common sources, clock changes logged; node_exporter timex metrics with ClockNotSynchronised and ClockDrift (>50 ms) alerts."
   - id: LOG-04
     requirement: "Security events (failed logins, privilege use, file changes, intrusions) alert the on-call with a severity"
+    core: true
     controls:
       soc2: [CC7.2, CC7.3]
       iso27001: ["8.16"]
@@ -197,6 +220,7 @@ requirements:
     progress: "SIEM: Rules at level >= 10 go to Alertmanager through a custom integration (custom-alertmanager); optional e-mail. Test event: logger compliant-infra-siem-test <x> raises rule 100100 (level 12); tested to reach the alerts index and a stand-in Alertmanager. Remaining: test against the real Alertmanager."
   - id: LOG-05
     requirement: "Every service has health metrics, uptime checks and capacity alerts"
+    core: true
     controls:
       soc2: [A1.1, CC7.2]
       iso27001: ["8.6", "8.16"]
@@ -206,6 +230,7 @@ requirements:
     progress: "Done: node_exporter on every host, Prometheus scrape catalog with availability, capacity and pipeline alerts, Grafana dashboards. Remaining: each new service role registers its endpoint and rules."
   - id: LOG-06
     requirement: "A log source or agent going silent raises an alert"
+    core: true
     controls:
       soc2: [CC7.2]
       iso27001: ["8.16"]
@@ -215,6 +240,7 @@ requirements:
     progress: "Done: LogShipperNotRunning on the wazuh-agent unit and LogShipperSilent on log_shipper_last_ack_timestamp_seconds. Remaining: the SIEM agent must export that metric. SIEM: Agent textfile metrics every minute: wazuh_agent_connected, wazuh_agent_last_keepalive_timestamp_seconds and log_shipper_last_ack_timestamp_seconds (the existing LogShipperSilent alert); manager metrics wazuh_manager_up and wazuh_manager_agents{status}; rule 100110 (level 10) on the manager when an agent disconnects. Tested in molecule/siem."
   - id: HRD-01
     requirement: "Hosts pass the CIS Level 1 benchmark for their Debian/Ubuntu version; exceptions are documented"
+    core: true
     controls:
       soc2: [CC6.8, CC7.1]
       iso27001: ["8.9"]
@@ -224,15 +250,17 @@ requirements:
     progress: "Done: CIS L1 subset (sysctl, modules, core dumps, sudo, accounts, services). Remaining: full benchmark scan (OpenSCAP) in CI."
   - id: HRD-02
     requirement: "Containers run as non-root from pinned, signed images with minimal base and read-only filesystem where possible"
+    core: true
     controls:
       soc2: [CC7.1, CC8.1]
       iso27001: ["8.9", "8.19"]
       iso27017: []
     check: "Policy check of compose files; image signature verification"
-    status: designed
-    progress: "Keycloak container runs non-root with all caps dropped, no-new-privileges, memory and pid limits (tested). Remaining: shared policy check, image signature verification."
+    status: implemented
+    progress: "tools/container_policy.py (CI and pre-commit) checks every docker_container task that defines a container: image from versions_images, cap_drop ALL, no-new-privileges, explicit user, read_only, memory and pids limits, not privileged, no host network; exceptions need a reason (inline '# policy-exception:' or compliance/container-policy.yml). Fixed: explicit user for OpenBao and Keycloak. Justified exceptions: host networking project-wide (host nftables is the only filter), read_only for Keycloak, Wazuh indexer/dashboard/manager, user for the Wazuh manager (s6 init). Container settings verified in Molecule for Keycloak and others; the new explicit users are not tested. Signed images: CHG-08 (registry-check-signature)."
   - id: HRD-03
     requirement: "Container hosts pass the CIS Docker benchmark"
+    core: true
     controls:
       soc2: [CC6.8]
       iso27001: ["8.9"]
@@ -242,6 +270,7 @@ requirements:
     progress: "Done: daemon.json hardening, socket permissions, audit rules. Remaining: docker-bench-security run in CI."
   - id: HRD-04
     requirement: "Security patches applied within 14 days for critical and 30 days for high severity"
+    core: true
     controls:
       soc2: [CC7.1]
       iso27001: ["8.8"]
@@ -251,6 +280,7 @@ requirements:
     progress: "Done: unattended security upgrades; textfile metrics for pending security updates, their age and reboot-required, with SecurityUpdatesOverdue (>14 days) and RebootRequiredTooLong (>7 days) alerts; rolling reboot playbook. Remaining: 30-day SLA for high severity (apt has no severity), container images."
   - id: HRD-05
     requirement: "Hosts and images are scanned for vulnerabilities weekly; findings are tracked to closure"
+    core: true
     controls:
       soc2: [CC7.1]
       iso27001: ["8.8"]
@@ -260,6 +290,7 @@ requirements:
     progress: "Done: weekly Trivy scan (roles/trivy_scan) of every running container image and the host root filesystem on container hosts for HIGH/CRITICAL; JSON reports kept 90 days and backed up, journald summary per image, metrics per severity, CriticalVulnerabilityOverdue alert when a CRITICAL finding stays open 14 days; offline DB mirror. Remaining: findings tracked in a ticketing system with risk acceptances; hosts outside container_hosts. SIEM: Wazuh vulnerability detection on every host's package inventory (CTI feed, needs outbound HTTPS to cti.wazuh.com); enabled state tested, findings not (no feed in CI)."
   - id: HRD-06
     requirement: "File integrity monitoring and host intrusion detection run on every host"
+    core: true
     controls:
       soc2: [CC6.8, CC7.1]
       iso27001: ["8.7", "8.16"]
@@ -269,6 +300,7 @@ requirements:
     progress: "SIEM: Wazuh FIM on /etc (real time), /usr/bin, /usr/sbin, /boot and service config files under /opt (hashes only, no diffs), rootcheck and the CIS Ubuntu/Debian SCA policy on every agent; remote commands refused on agents; active response off by default. Tested: FIM change on /etc raises an alert, CIS SCA ran."
   - id: HRD-07
     requirement: "Malware scanning on hosts that accept files, with current signatures"
+    core: true
     controls:
       soc2: [CC6.8]
       iso27001: ["8.7"]
@@ -278,6 +310,7 @@ requirements:
     progress: "Done: ClamAV (roles/clamav) on clamav_hosts with freshclam, a clamd socket for upload scanning, weekly scheduled scan of upload directories, /home and /tmp, findings in journald, metrics and alerts (signatures > 48h, infected files, no scan for 8 days); optional on-access scanning. Remaining: product roles declare clamav_upload_paths_<role> and scan uploads through the socket."
   - id: NET-01
     requirement: "Every host firewall denies inbound by default; only declared ports are open"
+    core: true
     controls:
       soc2: [CC6.6]
       iso27001: ["8.20"]
@@ -287,6 +320,7 @@ requirements:
     progress: "Default-deny nftables with declared ports and published container ports (roles/firewall); verified in Molecule."
   - id: NET-02
     requirement: "SSH, admin UIs and databases are reachable only through the VPN or bastion"
+    core: true
     controls:
       soc2: [CC6.6]
       iso27001: ["8.20", "8.22"]
@@ -296,6 +330,7 @@ requirements:
     progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Remaining: admin UIs and databases of each service restricted to the same sources (several still allow the whole mgmt zone). Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested)."
   - id: NET-03
     requirement: "Management, application and data networks are separated; traffic between them is allowed by explicit rule"
+    core: true
     controls:
       soc2: [CC6.6]
       iso27001: ["8.22"]
@@ -305,6 +340,7 @@ requirements:
     progress: "Zones defined in the inventory; inter-zone rules come with the service roles."
   - id: NET-04
     requirement: "Public endpoints sit behind the reverse proxy with security headers, rate limits and WAF rules"
+    core: true
     controls:
       soc2: [CC6.6]
       iso27001: ["8.20"]
@@ -314,6 +350,7 @@ requirements:
     progress: "Edge HAProxy (roles/edge): HTTPS only with redirect, HSTS and security headers with per-service CSP, per-IP and per-service rate limits (429), Coraza WAF with OWASP CRS 4.25 blocking at PL1 with per-service exclusions; asserted in molecule/edge. Remaining: weekly external header/WAF scan of each real public URL."
   - id: BCK-01
     requirement: "Every stateful service has an automated, encrypted backup with an off-site copy"
+    core: true
     controls:
       soc2: [A1.2, CC9.1]
       iso27001: ["8.13"]
@@ -323,6 +360,7 @@ requirements:
     progress: "restic on every host backs up each backup_register declaration plus /etc to 2+ append-only rest-servers (independent encrypted copies); optional nightly restic copy to S3 (untested); BackupRPOExceeded/BackupFailed alerts in monitoring; tested in molecule/backup. Remaining: CI check that every stateful role registers a backup. OpenBao Raft snapshots registered via backup_register. PostgreSQL: pgBackRest with continuous WAL archiving, weekly full and daily differential backups to encrypted S3/posix repositories, metrics under the backup role's names (tested with a posix repository). SIEM: SIEM manager state, SIEM CA and indexer security config registered with backup_register. Valkey: BGSAVE plus RDB copy registered with backup_register (tested single node). RabbitMQ: definitions export registered with backup_register; messages are transient by design (not tested). Garage: metadata snapshot registered with backup_register; objects rely on replication factor 3 (not tested)."
   - id: BCK-02
     requirement: "Backups are immutable (append-only) for their retention period"
+    core: true
     controls:
       soc2: [A1.2]
       iso27001: ["8.13"]
@@ -332,6 +370,7 @@ requirements:
     progress: "rest-server --append-only and --private-repos; retention runs only on the server; molecule/backup proves client forget/prune and HTTP DELETE get 403. Remaining: Object Lock on the S3 copy is recommended, not enforced."
   - id: BCK-03
     requirement: "Restores are tested automatically at least monthly and timed against the RTO"
+    core: true
     controls:
       soc2: [A1.3]
       iso27001: ["8.13", "5.30"]
@@ -341,6 +380,7 @@ requirements:
     progress: "Monthly timer restores the latest snapshot of each declaration from each server, runs its verify_command, times it against the RTO and writes metrics (RestoreTestOverdue, RestoreSlowerThanRTO alerts); playbooks/restore.yml for manual restores; tested. Remaining: archive results as audit evidence. PostgreSQL: monthly pgBackRest restore into a scratch container with database checks, timed against the RTO (tested)."
   - id: BCK-04
     requirement: "Each service declares an RTO and RPO, and its backup schedule meets the RPO"
+    core: true
     controls:
       soc2: [A1.2]
       iso27001: ["5.30"]
@@ -367,6 +407,7 @@ requirements:
     status: not_started
   - id: CHG-01
     requirement: "All changes go through a pull request with at least one approval on a protected main branch"
+    core: true
     controls:
       soc2: [CC8.1]
       iso27001: ["8.32"]
@@ -376,6 +417,7 @@ requirements:
     progress: "roles/forgejo org_setup creates organisations and repositories with main protected (no direct/force push, 1+ approval, stale approvals dismissed, rejected reviews and status checks block, admins included), checks each rule against the policy and exports it to JSON evidence; molecule/forgejo proves the settings and that a direct push to main is rejected. Remaining: archive the evidence file in the evidence store (EVD-02)."
   - id: CHG-02
     requirement: "Production changes run only from CI, with each run logged (who, what, when)"
+    core: true
     controls:
       soc2: [CC8.1]
       iso27001: ["8.32", "8.15"]
@@ -385,6 +427,7 @@ requirements:
     progress: "Forgejo Actions runners (roles/forgejo_runner, registered with a vault secret, jobs in unprivileged containers on an isolated network) and a documented deploy pipeline fetching the vault password from OpenBao. Remaining: deploy runner and pipeline in production, deny ad-hoc Ansible runs on hosts, ship CI run logs to the SIEM."
   - id: CHG-03
     requirement: "Drift from the declared state is detected and alerted"
+    core: true
     controls:
       soc2: [CC7.1, CC8.1]
       iso27001: ["8.9"]
@@ -393,32 +436,37 @@ requirements:
     status: not_started
   - id: CHG-04
     requirement: "Dev, test and production use separate inventories, and production data is never copied to test"
+    core: true
     controls:
       soc2: [CC8.1]
       iso27001: ["8.31", "8.33"]
       iso27017: []
     check: "Inventory lint; no production hosts in test groups"
-    status: not_started
+    status: implemented
+    progress: "tools/inventory_lint.py (CI lint job and pre-commit): every inventory sets inventory_environment (production|staging|test|dev; not 'environment', a reserved Ansible keyword), no host or ansible_host in two inventories, and no production backup/S3 target, restore source or host referenced from a non-production inventory. Layout and limits in docs/inventories.md; inventories/example declares production. Self-tested on sample inventories; real inventories live outside this repo, so operators must run it in their inventory repo's CI (not tested there)."
   - id: CHG-05
     requirement: "Collections, roles and images are pinned, scanned and listed in an SBOM"
+    core: true
     controls:
       soc2: [CC7.1, CC8.1]
       iso27001: ["8.8", "8.19"]
       iso27017: []
     check: "CI generates the SBOM and fails on unpinned dependencies"
-    status: designed
-    progress: "Collections pinned in requirements.yml; images pinned in roles/versions. Remaining: digest pinning, image scanning, SBOM in CI."
+    status: implemented
+    progress: "Collections, Python tools, packages and downloads pinned and checked by tools/pins.py (CI and pre-commit; fails on floating/missing tags, inexact versions, get_url without checksum, CI downloads without sha256sum). images job: syft v1.18.1 SBOM (SPDX JSON) of every versions_images entry and of the repo, Trivy (digest-pinned from roles/versions) scan failing on CRITICAL unless waived with reason and expiry in compliance/vuln-waivers.yml; SBOMs and reports kept as a CI artifact (90 days). Rule: image:tag@sha256 (docs/supply-chain.md); only trivy has a digest so far, the other 30 images warn until digests are added from registry output. GitHub Actions are tag-pinned (warning). CI jobs not run yet (not tested)."
   - id: CHG-06
     requirement: "Every role has Molecule tests on all supported OS versions, including its checklist items"
+    core: true
     controls:
       soc2: [CC8.1]
       iso27001: ["8.29"]
       iso27017: []
     check: "CI matrix; coverage report of checklist IDs"
-    status: designed
-    progress: "Molecule scenarios exist for the service roles (molecule/forgejo covers forgejo and forgejo_runner on Ubuntu 24.04). Remaining: Debian 12 and Ubuntu 22.04 platforms for every scenario, checklist coverage report in CI."
+    status: implemented
+    progress: "Every service scenario takes its platform image from MOLECULE_DISTRO; CI runs each scenario on debian12, ubuntu2204 and ubuntu2404 (matrix, molecule-services job); molecule/default already covered all three. tools/checklist.py coverage lists roles without a scenario (none today) and checklist items without a tagged verify task, published in the CI job summary. Debian 12 and Ubuntu 22.04 runs of the service scenarios have never executed (tests on hold), so OS-specific failures are possible (not tested)."
   - id: CHG-07
     requirement: "Upgrades ship as tested release bundles: pinned versions, a CI-tested path from the previous release, a backup first, one node at a time with health gates"
+    core: true
     controls:
       soc2: [CC8.1, A1.2]
       iso27001: ["8.32", "8.13", "8.8"]
@@ -428,6 +476,7 @@ requirements:
     progress: "Keycloak: versions role, playbooks/upgrade.yml (compatibility check, rolling or recreate, pre-upgrade pg_dump), molecule/keycloak-upgrade. Remaining: every other service as it is added; release tagging."
   - id: CHG-08
     requirement: "Images deployed come from the internal registry, are scanned for vulnerabilities and carry a trusted signature"
+    core: true
     controls:
       soc2: [CC7.1, CC8.1]
       iso27001: ["8.8", "8.19", "8.32"]
@@ -468,8 +517,8 @@ requirements:
       iso27001: ["5.36"]
       iso27017: []
     check: "CI coverage check"
-    status: designed
-    progress: "tools/evidence_export.py exports every item with status, controls and the implementing/verifying tasks (JSON/CSV), verified in molecule/governance. Remaining: CI job that fails when a Core item has no test."
+    status: implemented
+    progress: "checklist.yml marks Core items (core: true: IAM, SEC, LOG, HRD, NET, BCK, CHG). tools/checklist.py check fails CI when a Core item marked verified has no tagged Molecule verify task and warns for Core items marked implemented without one; --strict-core makes that blocking. Not blocking for implemented yet because tests are on hold: Core items moved to implemented without a verify task (SEC-01, CHG-04, CHG-05, CHG-06 here, and others in parallel work) would break CI; switch on --strict-core when Molecule runs again. CI workflow steps tagged chk_* now count as implementation evidence. tools/evidence_export.py exports item evidence (verified in molecule/governance)."
   - id: EVD-02
     requirement: "Evidence from every run is stored for 12 months in tamper-evident storage"
     controls:
@@ -496,7 +545,8 @@ requirements:
       iso27017: []
     project_rule: true
     check: "Reviewed in the pull request that adds the tool"
-    status: not_started
+    status: implemented
+    progress: "compliance/tools.yml lists every adopted tool (all roles/versions entries plus tool-like distribution packages) with SPDX licence, OSI status and SSO/audit log/HA (yes/no/n.a. with notes) and documented exceptions: Grafana OSS and Forgejo have no audit log, Prometheus has basic auth only behind the edge and no audit log, Valkey, RabbitMQ and Garage have no audit log, CISO Assistant is single-node, WireGuard has no SSO, OpenSSH's licence is not OSI-listed. tools/tool_registry.py fails CI when a versions entry has no tools.yml entry or a 'no' lacks an exception. Licence and edition facts are a desk review, to be re-checked on major bumps (not tested)."
   - id: INC-01
     requirement: "Incidents follow a documented process with severity, timeline and postmortem; records kept 12 months"
     controls:

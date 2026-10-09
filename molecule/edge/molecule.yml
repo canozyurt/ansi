@@ -6,7 +6,7 @@ driver:
   name: docker
 platforms:
   - name: edge-1
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -25,7 +25,7 @@ platforms:
       - name: edge-molecule
         ipv4_address: 172.31.250.11
   - name: edge-2
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
