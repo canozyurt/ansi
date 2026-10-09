@@ -1,0 +1,23 @@
+---
+# Valkey instances (playbooks/valkey.yml, roles/valkey_cluster). Each entry is an independent instance on the
+# hosts of its own inventory group (a child of "valkey"), with its own ports, data directory, ACL users and
+# secrets (DAT-01). Keep every password in Ansible Vault or OpenBao; no two instances may share one.
+valkey_clusters:
+  - name: cache-main
+    group: valkey_cache_main
+    admin_password: "{{ vault_valkey_cache_main_admin_password }}"
+    replication_password: "{{ vault_valkey_cache_main_replication_password }}"
+    sentinel_password: "{{ vault_valkey_cache_main_sentinel_password }}"
+    exporter_password: "{{ vault_valkey_cache_main_exporter_password }}"
+    backup_password: "{{ vault_valkey_cache_main_backup_password }}"
+    maxmemory: 2gb
+    resources: { memory: 3g }
+    # One ACL user per application, limited to its key prefix and data commands.
+    users:
+      - { name: orders, password: "{{ vault_valkey_cache_main_orders_password }}" }
+      - name: reports
+        password: "{{ vault_valkey_cache_main_reports_password }}"
+        key_patterns: ["%R~orders:*", "~reports:*"]
+        commands: "-@all +@read +@connection +set +expire"
+# Set once the data directory sits on LUKS or a provider-encrypted volume (SEC-04).
+valkey_cluster_require_encrypted_storage: true

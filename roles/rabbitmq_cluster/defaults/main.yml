@@ -1,0 +1,117 @@
+---
+# One RabbitMQ cluster per call. playbooks/rabbitmq.yml includes this role once for every entry of
+# rabbitmq_clusters whose inventory group contains the host, with the entry in the variable
+# rabbitmq_cluster. The entry is merged over rabbitmq_cluster_defaults (below), so it only needs what
+# differs. Pattern: docs/product-playbooks.md.
+
+# Every cluster of the inventory; used to check that no two clusters share a secret (DAT-01).
+rabbitmq_cluster_all: "{{ rabbitmq_clusters | default([]) }}"
+
+# High availability (HA-01): 3 nodes; quorum queues keep a majority of replicas.
+rabbitmq_cluster_min_nodes: 3
+rabbitmq_cluster_allow_single_node: false
+
+rabbitmq_cluster_image: "{{ versions_images.rabbitmq }}"
+# The upstream Alpine image runs as rabbitmq (uid 100, gid 101).
+rabbitmq_cluster_uid: 100
+rabbitmq_cluster_gid: 101
+
+rabbitmq_cluster_base_dir: /opt/rabbitmq
+rabbitmq_cluster_secrets_dir: /etc/compliant-infra/rabbitmq
+rabbitmq_cluster_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# How the other members reach this node: the host part of the Erlang node name and the name in every
+# certificate. Must resolve on every member.
+rabbitmq_cluster_node_address: "{{ inventory_hostname }}"
+rabbitmq_cluster_node_ip: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+
+# Data at rest (SEC-04): message stores are not encrypted by RabbitMQ; the data directory must sit on
+# an encrypted volume (LUKS) or one the provider encrypts (attested).
+rabbitmq_cluster_require_encrypted_storage: false
+rabbitmq_cluster_storage_encryption_attested: false
+
+# Version changes (new image) only through playbooks/upgrade.yml (CHG-07), one node at a time.
+rabbitmq_cluster_upgrade: false
+
+# ---------------------------------------------------------------- management UI login (IAM-01)
+# The management UI signs users in with Keycloak (OAuth 2.0 authorization code + PKCE, public client).
+# Tokens carry the default roles in the "roles" claim; scope aliases map them to RabbitMQ tags and
+# permissions (rabbitmq_cluster_role_scopes). Basic auth stays for the HTTP API (break-glass and
+# automation) but is disabled in the UI.
+rabbitmq_cluster_oidc_register: "{{ oidc_clients_enabled | default(true) }}"
+rabbitmq_cluster_oidc_issuer: "{{ keycloak_hostname | default('https://sso.example.internal') }}/realms/{{ keycloak_realm | default('org') }}"
+# CA bundle (file on the host) that signs Keycloak's certificate; empty uses the container's store.
+rabbitmq_cluster_oidc_ca_file: "{{ pki_openbao_ca_file | default('') }}"
+
+# Default role -> RabbitMQ scopes ("<resource>." is prepended to each). {vhosts} expands to the
+# entry's developer_vhosts. Operators get monitoring and policymaker and a permission on a resource
+# name that matches nothing, which grants vhost access (needed for policies) without message access.
+rabbitmq_cluster_role_scopes:
+  platform-admin: [tag:administrator, "configure:*/*", "write:*/*", "read:*/*"]
+  operator: [tag:monitoring, tag:policymaker, "read:*/amq.compliant-infra.no-access"]
+  security-admin: [tag:monitoring]
+  auditor: [tag:monitoring]
+  developer: [tag:management, "configure:{vhosts}/*", "write:{vhosts}/*", "read:{vhosts}/*"]
+
+# ---------------------------------------------------------------- per-cluster defaults
+# Every key can be set per entry of rabbitmq_clusters (merged recursively).
+rabbitmq_cluster_defaults:
+  name: ""                 # [a-z][a-z0-9-]*; prefixes containers, directories, node names and metrics
+  group: ""                # inventory group of the nodes (3+)
+  data_dir: ""             # default: <rabbitmq_cluster_base_dir>/<name>/data (put it on the encrypted volume)
+  ports:
+    amqps: 5671            # AMQP 0-9-1 over TLS (no plaintext listener)
+    management: 15671      # management UI and HTTP API (HTTPS)
+    prometheus: 15691      # Prometheus plugin (HTTPS, no plaintext 15692)
+    dist: 25672            # Erlang distribution between members (TLS, mutual, per-cluster CA)
+    epmd: 4369             # Erlang port mapper (names only; distribution itself is on the dist port)
+  # Secrets (from Ansible Vault or OpenBao). No two clusters may share one (DAT-01).
+  erlang_cookie: ""        # 32+ characters; authenticates members to each other
+  admin_user: admin        # break-glass/automation administrator (HTTP API basic auth, rabbitmqctl)
+  admin_password: ""       # 16+ characters
+  # Per-application vhosts and users (least privilege). Users get permissions only on their vhost and
+  # no management tags. configure/write/read are regular expressions (default ".*").
+  #   - name: orders
+  #     users:
+  #       - { name: orders-api, password: "{{ vault_rmq_orders_api_password }}" }
+  #       - { name: orders-worker, password: "...", configure: "^$", write: "^$", read: "^orders\\." }
+  vhosts: []
+  # Remove users that are not declared here (except the admin user). Keeps the declared state the only
+  # source of access.
+  prune_users: true
+  # Vhosts developers manage through the UI (OAuth role developer).
+  developer_vhosts: []
+  # OAuth 2.0 client and resource server name in Keycloak; default rabbitmq-<name>.
+  oidc_client_id: ""
+  # URL users open (a load balancer name); every node's https://<node>:<management port> also works.
+  management_url: ""
+  oauth:
+    enabled: true
+  # Networks of the applications and of the people using the UI (firewall rules in the inventory).
+  client_cidrs: []
+  # Memory and disk alarms (publishers are blocked while one is raised).
+  vm_memory_high_watermark: 0.6     # of the container memory limit
+  disk_free_limit: 2GB
+  resources:
+    memory: 1g
+    pids: 4096
+  backup:
+    enabled: true
+    rpo_hours: 24
+    rto_hours: 4
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_ca_file: ""
+  tls_alt_names: []
+
+# Account Prometheus presents to the Prometheus plugin (same as node_exporter). The role creates it as
+# a RabbitMQ user without tags or vhost permissions in every cluster; it is the monitoring system's
+# credential, not one of the cluster's.
+rabbitmq_cluster_scrape_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+rabbitmq_cluster_scrape_password: "{{ monitoring_scrape_password | default('') }}"
+
+# Users the role never removes (besides the admin user and the scrape user).
+rabbitmq_cluster_keep_users: []
+
+# Open-file limit of the node container (connections and queue segment files); 0 keeps Docker's default.
+rabbitmq_cluster_nofile: 65536

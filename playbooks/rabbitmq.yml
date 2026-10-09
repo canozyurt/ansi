@@ -1,0 +1,26 @@
+---
+# RabbitMQ product playbook (docs/product-playbooks.md). Deploys every entry of rabbitmq_clusters: each is
+# an independent RabbitMQ cluster (3 nodes, quorum queues, TLS, Keycloak login for the management UI) on
+# the hosts of its own inventory group, with its own Erlang cookie, certificates, ports, data directories,
+# vhosts, users and backups (DAT-01). A host belongs to at most one RabbitMQ cluster.
+#
+#   ansible-playbook -i inventories/<company> playbooks/rabbitmq.yml [-e rabbitmq_only=mq-main]
+#
+# The "rabbitmq" group must contain every cluster group (see inventories/example/hosts.yml).
+# Version changes are refused here; they go through playbooks/upgrade.yml.
+
+- name: Deploy the RabbitMQ clusters
+  hosts: rabbitmq
+  become: true
+  tasks:
+    - name: Deploy each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: rabbitmq_cluster
+      loop: >-
+        {{ rabbitmq_clusters | default([]) | selectattr('group', 'in', group_names)
+           | selectattr('name', 'in', (rabbitmq_only | default('')).split(',') if rabbitmq_only | default('') | length > 0
+                                      else rabbitmq_clusters | default([]) | map(attribute='name') | list)
+           | list }}
+      loop_control:
+        loop_var: rabbitmq_cluster
+        label: "{{ rabbitmq_cluster.name }}"

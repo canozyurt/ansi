@@ -1,0 +1,45 @@
+---
+- name: Write the Garage configuration
+  ansible.builtin.template:
+    src: garage.toml.j2
+    dest: "{{ garage_cluster_dir }}/conf/garage.toml"
+    owner: "{{ garage_cluster_uid }}"
+    group: "{{ garage_cluster_uid }}"
+    mode: "0600"
+  register: garage_cluster_conf
+  tags: [chk_sec_03]
+
+- name: Create the secrets directory
+  ansible.builtin.file:
+    path: "{{ garage_cluster_dir }}/conf/secrets"
+    state: directory
+    owner: "{{ garage_cluster_uid }}"
+    group: "{{ garage_cluster_uid }}"
+    mode: "0700"
+
+- name: Write the RPC secret, admin token and metrics token
+  ansible.builtin.copy:
+    content: "{{ garage_cluster_cfg[item] }}"
+    dest: "{{ garage_cluster_dir }}/conf/secrets/{{ item }}"
+    owner: "{{ garage_cluster_uid }}"
+    group: "{{ garage_cluster_uid }}"
+    mode: "0600"
+  loop: [rpc_secret, admin_token, metrics_token]
+  register: garage_cluster_secret_files
+  no_log: true
+  tags: [chk_sec_02, chk_dat_01]
+
+- name: Write the TLS sidecar configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ garage_cluster_dir }}/proxy/haproxy.cfg"
+    owner: root
+    group: "{{ garage_cluster_proxy_uid }}"
+    mode: "0640"
+  register: garage_cluster_proxy_conf
+  tags: [chk_sec_03]
+
+- name: Note what must restart
+  ansible.builtin.set_fact:
+    garage_cluster_config_changed: "{{ garage_cluster_conf is changed or garage_cluster_secret_files is changed }}"
+    garage_cluster_proxy_changed: "{{ garage_cluster_proxy_conf is changed or garage_cluster_cert_changed | bool }}"

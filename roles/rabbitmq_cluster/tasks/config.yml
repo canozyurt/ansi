@@ -1,0 +1,67 @@
+---
+- name: Write the RabbitMQ configuration (contains the initial admin password)
+  ansible.builtin.template:
+    src: rabbitmq.conf.j2
+    dest: "{{ rabbitmq_cluster_dir }}/conf/rabbitmq.conf"
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0600"
+  register: rabbitmq_cluster_conf
+  no_log: true
+  tags: [chk_sec_02, chk_sec_03, chk_ha_01, chk_iam_01]
+
+- name: Write the inter-node TLS settings
+  ansible.builtin.template:
+    src: inter_node_tls.config.j2
+    dest: "{{ rabbitmq_cluster_dir }}/conf/inter_node_tls.config"
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0600"
+  register: rabbitmq_cluster_dist_conf
+  tags: [chk_sec_03]
+
+- name: Write the enabled plugins
+  ansible.builtin.template:
+    src: enabled_plugins.j2
+    dest: "{{ rabbitmq_cluster_dir }}/conf/enabled_plugins"
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0600"
+  register: rabbitmq_cluster_plugins
+
+- name: Create the empty conf.d directory
+  ansible.builtin.file:
+    path: "{{ rabbitmq_cluster_dir }}/conf/conf.d"
+    state: directory
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0700"
+
+- name: Write the Erlang cookie (authenticates the members to each other)
+  ansible.builtin.copy:
+    content: "{{ rabbitmq_cluster_cfg.erlang_cookie }}"
+    dest: "{{ rabbitmq_cluster_data_dir }}/.erlang.cookie"
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0400"
+  register: rabbitmq_cluster_cookie
+  no_log: true
+  tags: [chk_sec_02, chk_dat_01]
+
+- name: Copy the CA that signs Keycloak's certificate
+  ansible.builtin.copy:
+    src: "{{ rabbitmq_cluster_oidc_ca_file }}"
+    dest: "{{ rabbitmq_cluster_dir }}/tls/oidc-ca.crt"
+    remote_src: true
+    owner: "{{ rabbitmq_cluster_uid }}"
+    group: "{{ rabbitmq_cluster_gid }}"
+    mode: "0644"
+  register: rabbitmq_cluster_oidc_ca
+  when: rabbitmq_cluster_oidc_ca_file | length > 0 and rabbitmq_cluster_cfg.oauth.enabled | bool
+
+- name: Note whether the node must restart
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_config_changed: >-
+      {{ rabbitmq_cluster_conf is changed or rabbitmq_cluster_dist_conf is changed or rabbitmq_cluster_plugins is changed
+         or rabbitmq_cluster_cookie is changed or rabbitmq_cluster_oidc_ca is changed
+         or rabbitmq_cluster_cert_changed | bool or rabbitmq_cluster_bundle is changed }}

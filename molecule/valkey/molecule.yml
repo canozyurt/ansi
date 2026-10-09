@@ -1,0 +1,61 @@
+---
+# Valkey on a single node (lab mode): one instance with its primary, one Sentinel and redis_exporter,
+# TLS only, ACL users and the backup snapshot script.
+driver:
+  name: docker
+platforms:
+  - name: valkey-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [valkey, valkey_lab, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        monitoring_scrape_password: test-only-scrape-password
+        valkey_cluster_allow_single_node: true
+        valkey_clusters:
+          - name: cache-lab
+            group: valkey_lab
+            admin_password: test-only-valkey-admin-pw
+            replication_password: test-only-valkey-repl-pw
+            sentinel_password: test-only-valkey-sentinel-pw
+            exporter_password: test-only-valkey-exporter-pw
+            backup_password: test-only-valkey-backup-pw
+            maxmemory: 64mb
+            resources: { memory: 192m }
+            users:
+              - { name: orders, password: test-only-valkey-orders-pw }
+              - { name: reports, password: test-only-valkey-reports-pw, commands: "-@all +@read +@connection -@dangerous" }
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves space over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

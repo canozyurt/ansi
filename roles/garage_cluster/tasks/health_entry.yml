@@ -1,0 +1,16 @@
+---
+# Entry point for other playbooks (rolling_reboot.yml, upgrade.yml preflight):
+#   include_role: { name: garage_cluster, tasks_from: health_entry }  with garage_cluster set.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    garage_cluster_cfg: "{{ garage_cluster_defaults | combine(garage_cluster, recursive=true) }}"
+  no_log: true
+
+- name: Point at the local admin API
+  ansible.builtin.set_fact:
+    garage_cluster_admin: "http://127.0.0.1:{{ garage_cluster_cfg.ports.admin_local }}"
+
+- name: Wait for the node and the cluster
+  ansible.builtin.include_tasks: health.yml
+  vars:
+    garage_cluster_health_cluster: true

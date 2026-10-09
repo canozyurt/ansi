@@ -56,6 +56,11 @@ versions_images:
   zot: ghcr.io/project-zot/zot:v2.1.21
   # Base for registry_build (the same Zot release binary on Debian; the upstream image is distroless Debian).
   zot_build_base: docker.io/library/debian:13.7-slim
+  # Product playbooks: Valkey (playbooks/valkey.yml), RabbitMQ (playbooks/rabbitmq.yml), Garage (playbooks/garage.yml)
+  valkey: docker.io/valkey/valkey:9.1.2-alpine
+  redis_exporter: docker.io/oliver006/redis_exporter:v1.93.0
+  rabbitmq: docker.io/library/rabbitmq:4.3.6-alpine
+  garage: docker.io/dxflrs/garage:v2.4.1
 
 # Host packages installed from upstream repositories (pinned, held).
 versions_packages:

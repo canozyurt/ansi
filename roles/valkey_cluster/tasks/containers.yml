@@ -1,0 +1,147 @@
+---
+# Container specifications. They do not depend on the host (node-specific settings live in files
+# under valkey_cluster_dir), so the first node can apply them to every member during a rolling replacement.
+- name: Describe the containers of the instance
+  ansible.builtin.set_fact:
+    valkey_cluster_specs:
+      valkey:
+        name: "{{ valkey_cluster_ct.valkey }}"
+        image: "{{ valkey_cluster_image }}"
+        command: [valkey-server, /etc/valkey/valkey.conf]
+        user: "{{ valkey_cluster_uid }}:{{ valkey_cluster_gid }}"
+        volumes:
+          - "{{ valkey_cluster_data_dir }}:/data"
+          # Writable: Sentinel runs CONFIG REWRITE after a failover.
+          - "{{ valkey_cluster_dir }}/conf:/etc/valkey"
+          - "{{ valkey_cluster_dir }}/tls:/tls:ro"
+        memory: "{{ valkey_cluster_cfg.resources.memory }}"
+        pids: "{{ valkey_cluster_cfg.resources.pids }}"
+        stop_timeout: 60
+      sentinel:
+        name: "{{ valkey_cluster_ct.sentinel }}"
+        image: "{{ valkey_cluster_image }}"
+        command: [valkey-server, /etc/sentinel/sentinel.conf, --sentinel]
+        user: "{{ valkey_cluster_uid }}:{{ valkey_cluster_gid }}"
+        volumes:
+          # Writable: Sentinel records what it learns in its configuration file.
+          - "{{ valkey_cluster_dir }}/sentinel:/etc/sentinel"
+          - "{{ valkey_cluster_dir }}/tls:/tls:ro"
+        memory: "{{ valkey_cluster_cfg.resources.sentinel_memory }}"
+        pids: 64
+      exporter:
+        name: "{{ valkey_cluster_ct.exporter }}"
+        image: "{{ valkey_cluster_exporter_image }}"
+        user: "{{ valkey_cluster_exporter_uid }}:{{ valkey_cluster_exporter_uid }}"
+        env_file: "{{ valkey_cluster_instance_secrets_dir }}/exporter.env"
+        volumes:
+          - "{{ valkey_cluster_dir }}/exporter-tls:/etc/redis_exporter/tls:ro"
+          - "{{ valkey_cluster_dir }}/tls/ca-bundle.crt:/etc/redis_exporter/ca-bundle.crt:ro"
+        memory: "{{ valkey_cluster_cfg.resources.exporter_memory }}"
+        pids: 64
+
+- name: Read the running containers
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  loop: ["{{ valkey_cluster_ct.valkey }}", "{{ valkey_cluster_ct.sentinel }}"]
+  register: valkey_cluster_running
+
+- name: Note the running state
+  ansible.builtin.set_fact:
+    valkey_cluster_valkey_exists: "{{ valkey_cluster_running.results[0].exists }}"
+    valkey_cluster_sentinel_exists: "{{ valkey_cluster_running.results[1].exists }}"
+    valkey_cluster_version_change: >-
+      {{ valkey_cluster_running.results | selectattr('exists') | map(attribute='container.Config.Image')
+         | reject('equalto', valkey_cluster_image) | list | length > 0 }}
+
+- name: Change versions only through playbooks/upgrade.yml (CHG-07)
+  ansible.builtin.assert:
+    that: not valkey_cluster_version_change or valkey_cluster_upgrade | bool
+    fail_msg: >-
+      Valkey instance {{ valkey_cluster_cfg.name }} on {{ inventory_hostname }} runs another image than the pinned
+      {{ valkey_cluster_image }}. Run playbooks/upgrade.yml, which backs up first and replaces one member at a
+      time (replicas, then a failover, then the former primary).
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Compare the Valkey container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.valkey }}"
+    valkey_cluster_check: true
+  when: valkey_cluster_valkey_exists | bool
+
+- name: Note whether Valkey must be replaced or restarted
+  ansible.builtin.set_fact:
+    valkey_cluster_valkey_change: "{{ valkey_cluster_valkey_exists | bool and valkey_cluster_run is changed }}"
+    valkey_cluster_valkey_restart: >-
+      {{ valkey_cluster_valkey_exists | bool and valkey_cluster_run is not changed
+         and (valkey_cluster_base is changed or valkey_cluster_cert_changed | bool or valkey_cluster_bundle is changed) }}
+
+- name: Compare the Sentinel container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.sentinel }}"
+    valkey_cluster_check: true
+  when: valkey_cluster_sentinel_exists | bool
+
+- name: Note whether Sentinel must be replaced or restarted
+  ansible.builtin.set_fact:
+    valkey_cluster_sentinel_change: "{{ valkey_cluster_sentinel_exists | bool and valkey_cluster_run is changed }}"
+    valkey_cluster_sentinel_restart: >-
+      {{ valkey_cluster_sentinel_exists | bool and valkey_cluster_run is not changed
+         and (valkey_cluster_sentinel_base is changed or valkey_cluster_cert_changed | bool or valkey_cluster_bundle is changed) }}
+
+# A new instance or member starts at once: the first node as primary, the others as its replicas.
+- name: Start Valkey on a new member
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.valkey }}"
+  when: not valkey_cluster_valkey_exists | bool
+  tags: [chk_ha_01]
+
+- name: Start Sentinel on a new member
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.sentinel }}"
+  when: not valkey_cluster_sentinel_exists | bool
+  tags: [chk_ha_01]
+
+# Existing members whose containers or settings change go one at a time: replicas first, then a
+# Sentinel failover away from the primary, then the former primary (HA-01, CHG-07).
+- name: Replace or restart changed Valkey members one at a time
+  ansible.builtin.include_tasks: rolling.yml
+  vars:
+    valkey_cluster_roll: >-
+      {{ (valkey_cluster_hosts | reject('equalto', valkey_cluster_primary_host) | list + [valkey_cluster_primary_host])
+         | select('in', ansible_play_hosts) | list }}
+  when:
+    - inventory_hostname == (valkey_cluster_hosts | select('in', ansible_play_hosts) | first)
+    - valkey_cluster_hosts | select('in', ansible_play_hosts) | map('extract', hostvars, 'valkey_cluster_valkey_change') | select | list | length > 0
+      or valkey_cluster_hosts | select('in', ansible_play_hosts) | map('extract', hostvars, 'valkey_cluster_valkey_restart') | select | list | length > 0
+      or valkey_cluster_hosts | select('in', ansible_play_hosts) | map('extract', hostvars, 'valkey_cluster_sentinel_change') | select | list | length > 0
+      or valkey_cluster_hosts | select('in', ansible_play_hosts) | map('extract', hostvars, 'valkey_cluster_sentinel_restart') | select | list | length > 0
+
+- name: Load changed ACL users without a restart
+  community.docker.docker_container_exec:
+    container: "{{ valkey_cluster_ct.valkey }}"
+    argv: "{{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.valkey | string, 'ACL', 'LOAD'] }}"
+    env:
+      REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+  register: valkey_cluster_acl_load
+  until: valkey_cluster_acl_load.rc == 0 and 'OK' in valkey_cluster_acl_load.stdout
+  retries: 10
+  delay: 3
+  when:
+    - valkey_cluster_acl is changed
+    - valkey_cluster_valkey_exists | bool
+    - not valkey_cluster_valkey_change | bool
+    - not valkey_cluster_valkey_restart | bool
+  no_log: true
+  tags: [chk_dat_01]
+
+- name: Run redis_exporter
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.exporter }}"
+    valkey_cluster_restart: "{{ valkey_cluster_exporter_env is changed or valkey_cluster_exporter_cert_changed | bool or valkey_cluster_bundle is changed }}"
+  tags: [chk_log_05]

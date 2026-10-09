@@ -1,0 +1,30 @@
+---
+- name: Store the backup user's password for the snapshot script
+  ansible.builtin.copy:
+    content: "{{ valkey_cluster_cfg.backup_password }}"
+    dest: "{{ valkey_cluster_instance_secrets_dir }}/backup.pass"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Install the snapshot script
+  ansible.builtin.template:
+    src: valkey-backup.sh.j2
+    dest: "/usr/local/sbin/valkey-{{ valkey_cluster_cfg.name }}-backup"
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [chk_bck_01]
+
+- name: Register the RDB snapshot with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: "valkey-{{ valkey_cluster_cfg.name }}"
+    backup_register_paths: ["{{ valkey_cluster_dir }}/backup"]
+    backup_register_pre_command: "/usr/local/sbin/valkey-{{ valkey_cluster_cfg.name }}-backup"
+    backup_register_rpo_hours: "{{ valkey_cluster_cfg.backup.rpo_hours }}"
+    backup_register_rto_hours: "{{ valkey_cluster_cfg.backup.rto_hours }}"
+  tags: [chk_bck_01]

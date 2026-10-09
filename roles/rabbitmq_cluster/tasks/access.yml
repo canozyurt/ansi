@@ -1,0 +1,122 @@
+---
+# Vhosts, users and permissions through the HTTP API of the first node (the cluster shares them).
+# Application users get permissions on their own vhost only and no management tags (DAT-01); users
+# that are not declared are removed, guest included. Passwords are sent as salted SHA-256 hashes
+# (rabbitmq_password_hash), so a run only changes what differs.
+- name: Declare vhosts, users and permissions
+  when: inventory_hostname == (rabbitmq_cluster_hosts | select('in', ansible_play_hosts) | first)
+  tags: [chk_dat_01]
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ rabbitmq_cluster_cfg.admin_user }}"
+      url_password: "{{ rabbitmq_cluster_cfg.admin_password }}"
+      force_basic_auth: true
+      ca_path: "{{ rabbitmq_cluster_dir }}/tls/ca-bundle.crt"
+      validate_certs: true
+      timeout: 30
+  vars:
+    rabbitmq_cluster_want_perms: >-
+      {{ query('ansible.builtin.template', 'permissions.json.j2') | first | from_json }}
+  block:
+    - name: Wait until the HTTP API answers
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/overview"
+      register: rabbitmq_cluster_overview
+      until: rabbitmq_cluster_overview.status == 200
+      retries: 30
+      delay: 5
+      no_log: true
+
+    - name: Read the vhosts, users and permissions
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/{{ item }}"
+      loop: [vhosts, users, permissions]
+      register: rabbitmq_cluster_current
+      no_log: true
+
+    - name: Work out the declared state
+      ansible.builtin.set_fact:
+        rabbitmq_cluster_have_vhosts: "{{ rabbitmq_cluster_current.results[0].json | items2dict(key_name='name', value_name='default_queue_type') }}"
+        rabbitmq_cluster_have_users: "{{ rabbitmq_cluster_current.results[1].json }}"
+        rabbitmq_cluster_have_perms: "{{ rabbitmq_cluster_current.results[2].json }}"
+        rabbitmq_cluster_want_users: "{{ query('ansible.builtin.template', 'users.json.j2') | first | from_json }}"
+      no_log: true
+
+    - name: Create the application vhosts (quorum queues by default)
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/vhosts/{{ item.name }}"
+        method: PUT
+        body_format: json
+        body:
+          description: "{{ item.description | default('Application vhost ' ~ item.name) }}"
+          default_queue_type: quorum
+        status_code: [201, 204]
+      loop: "{{ rabbitmq_cluster_cfg.vhosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: rabbitmq_cluster_have_vhosts[item.name] | default('') != 'quorum'
+      changed_when: true
+      tags: [chk_ha_01]
+
+    - name: Create or update users (password hash, no tags)
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/users/{{ item.name }}"
+        method: PUT
+        body_format: json
+        body:
+          password_hash: "{{ item.password_hash }}"
+          hashing_algorithm: rabbit_password_hashing_sha256
+          tags: ""
+        status_code: [201, 204]
+      loop: "{{ rabbitmq_cluster_want_users }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: >-
+        rabbitmq_cluster_have_users | selectattr('name', 'equalto', item.name)
+        | selectattr('password_hash', 'equalto', item.password_hash) | rejectattr('tags') | list | length == 0
+      changed_when: true
+      no_log: true
+
+    - name: Grant each user its vhost
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/permissions/{{ item.vhost }}/{{ item.user }}"
+        method: PUT
+        body_format: json
+        body:
+          configure: "{{ item.configure }}"
+          write: "{{ item.write }}"
+          read: "{{ item.read }}"
+        status_code: [201, 204]
+      loop: "{{ rabbitmq_cluster_want_perms }}"
+      loop_control:
+        label: "{{ item.user }}@{{ item.vhost }}"
+      when: rabbitmq_cluster_have_perms | selectattr('vhost', 'equalto', item.vhost) | selectattr('user', 'equalto', item.user)
+            | selectattr('configure', 'equalto', item.configure) | selectattr('write', 'equalto', item.write)
+            | selectattr('read', 'equalto', item.read) | list | length == 0
+      changed_when: true
+
+    - name: Revoke permissions that are not declared (application and scrape users)
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/permissions/{{ item.vhost | urlencode | replace('/', '%2F') }}/{{ item.user }}"
+        method: DELETE
+        status_code: [204]
+      loop: >-
+        {{ rabbitmq_cluster_have_perms | selectattr('user', 'in', rabbitmq_cluster_want_users | map(attribute='name') | list)
+           | list }}
+      loop_control:
+        label: "{{ item.user }}@{{ item.vhost }}"
+      when: (item.vhost ~ '|' ~ item.user) not in (rabbitmq_cluster_want_perms | map(attribute='key') | list)
+      changed_when: true
+
+    - name: Remove users that are not declared (guest included)
+      ansible.builtin.uri:
+        url: "{{ rabbitmq_cluster_api }}/users/{{ item }}"
+        method: DELETE
+        status_code: [204]
+      loop: >-
+        {{ rabbitmq_cluster_have_users | map(attribute='name')
+           | reject('in', rabbitmq_cluster_want_users | map(attribute='name') | list
+                          + [rabbitmq_cluster_cfg.admin_user] + rabbitmq_cluster_keep_users)
+           | list }}
+      when: rabbitmq_cluster_cfg.prune_users | bool or item == 'guest'
+      changed_when: true

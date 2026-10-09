@@ -55,3 +55,39 @@
       when:
         - reboot_done is changed
         - inventory_hostname in groups['postgres'] | default([])
+
+    - name: Wait until every Valkey instance on this host answers and its replica link is up
+      ansible.builtin.include_role:
+        name: valkey_cluster
+        tasks_from: health_entry
+      loop: "{{ valkey_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: valkey_cluster
+        label: "{{ valkey_cluster.name }}"
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['valkey'] | default([])
+
+    - name: Wait until every RabbitMQ cluster on this host has its node back in the cluster
+      ansible.builtin.include_role:
+        name: rabbitmq_cluster
+        tasks_from: health_entry
+      loop: "{{ rabbitmq_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: rabbitmq_cluster
+        label: "{{ rabbitmq_cluster.name }}"
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['rabbitmq'] | default([])
+
+    - name: Wait until every Garage cluster on this host is healthy again
+      ansible.builtin.include_role:
+        name: garage_cluster
+        tasks_from: health_entry
+      loop: "{{ garage_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: garage_cluster
+        label: "{{ garage_cluster.name }}"
+      when:
+        - reboot_done is changed
+        - inventory_hostname in groups['garage'] | default([])

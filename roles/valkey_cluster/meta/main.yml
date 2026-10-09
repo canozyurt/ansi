@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: valkey_cluster
+  author: compliant-infra-ansible contributors
+  description: >-
+    One highly available Valkey instance (primary, replicas and 3 Sentinels, TLS, ACL users,
+    redis_exporter); included once per entry of valkey_clusters
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

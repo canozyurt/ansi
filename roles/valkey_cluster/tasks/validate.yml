@@ -1,0 +1,79 @@
+---
+- name: Check the instance name, group and nodes
+  ansible.builtin.assert:
+    that:
+      - valkey_cluster_cfg.name is match('^[a-z][a-z0-9-]{0,30}$')
+      - valkey_cluster_cfg.group | length > 0
+      - inventory_hostname in valkey_cluster_hosts
+      - valkey_cluster_all | map(attribute='name') | select('equalto', valkey_cluster_cfg.name) | list | length == 1
+    fail_msg: >-
+      Each entry of valkey_clusters needs a unique name ([a-z][a-z0-9-], up to 31 characters) and the
+      inventory group of its nodes (this host must be in it).
+    quiet: true
+
+- name: Require a highly available instance (HA-01)
+  ansible.builtin.assert:
+    that: valkey_cluster_hosts | length >= valkey_cluster_min_nodes or valkey_cluster_allow_single_node | bool
+    fail_msg: >-
+      Valkey instance {{ valkey_cluster_cfg.name }} needs at least {{ valkey_cluster_min_nodes }} nodes (a primary, replicas
+      and a Sentinel majority); group {{ valkey_cluster_cfg.group }} has {{ valkey_cluster_hosts | length }}. Set
+      valkey_cluster_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Check the secrets of the instance
+  ansible.builtin.assert:
+    that:
+      - valkey_cluster_secrets | map('string') | map('length') | min >= 16
+      - valkey_cluster_secrets | unique | length == valkey_cluster_secrets | length
+      - valkey_cluster_secrets | select('match', '^[\x21-\x7e]+$') | list | length == valkey_cluster_secrets | length
+      - valkey_cluster_scrape_password | length >= 16
+    fail_msg: >-
+      Valkey instance {{ valkey_cluster_cfg.name }}: every password (admin, replication, sentinel, exporter, backup and each
+      application user) must have 16+ printable ASCII characters without spaces and differ from the others,
+      and monitoring_scrape_password must be set. Keep them in Ansible Vault or OpenBao.
+    quiet: true
+  vars:
+    valkey_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: No secret is shared with another instance (DAT-01)
+  ansible.builtin.assert:
+    that: valkey_cluster_secrets | intersect(valkey_cluster_other_secrets) | length == 0
+    fail_msg: >-
+      Valkey instance {{ valkey_cluster_cfg.name }} shares a password with another instance. Each instance must have its own
+      credentials (DAT-01).
+    quiet: true
+  vars:
+    valkey_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+    valkey_cluster_other_secrets: >-
+      {{ query('ansible.builtin.template', 'secrets.json.j2',
+               template_vars={'valkey_cluster_secret_entries': valkey_cluster_all | rejectattr('name', 'equalto', valkey_cluster_cfg.name) | list})
+         | first | from_json }}
+  no_log: true
+  tags: [chk_dat_01]
+
+- name: Check the application users
+  ansible.builtin.assert:
+    that:
+      - valkey_cluster_cfg.users | map(attribute='name') | reject('match', '^[a-z][a-z0-9_-]{0,40}$') | list | length == 0
+      - valkey_cluster_cfg.users | map(attribute='name') | unique | length == valkey_cluster_cfg.users | length
+      - valkey_cluster_cfg.users | map(attribute='name') | intersect(['default', 'admin', 'replicator', 'sentinel', 'exporter', 'backup']) | length == 0
+      - valkey_cluster_cfg.users | map(attribute='key_patterns', default=['~x']) | flatten | reject('match', '^(~|%R~|%W~|%RW~)\S+$') | list | length == 0
+      - valkey_cluster_cfg.users | map(attribute='channels', default=['&x']) | flatten | reject('match', '^&\S+$') | list | length == 0
+      - valkey_cluster_cfg.users | map(attribute='commands', default='') | select('search', '[\r\n#>]') | list | length == 0
+    fail_msg: >-
+      Valkey instance {{ valkey_cluster_cfg.name }}: user names must be lower-case and unique and must not be default, admin,
+      replicator, sentinel, exporter or backup; keys are ~patterns, channels &patterns, and commands may not
+      contain passwords (#, >) or line breaks.
+    quiet: true
+  tags: [chk_dat_01]
+
+- name: No two instances on this host use the same port
+  ansible.builtin.assert:
+    that: valkey_cluster_ports | unique | length == valkey_cluster_ports | length
+    fail_msg: "Valkey instances on {{ inventory_hostname }} share ports: {{ valkey_cluster_ports | sort | join(', ') }}"
+    quiet: true
+  vars:
+    valkey_cluster_ports: "{{ query('ansible.builtin.template', 'ports.json.j2') | first | from_json }}"

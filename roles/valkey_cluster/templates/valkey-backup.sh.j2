@@ -1,0 +1,33 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Consistent copy of Valkey instance {{ valkey_cluster_cfg.name }} for the backup role (BCK-01): BGSAVE, wait for it
+# to finish, then copy the RDB snapshot into {{ valkey_cluster_dir }}/backup. Runs as root.
+set -eu
+umask 077
+CT={{ valkey_cluster_ct.valkey | quote }}
+REDISCLI_AUTH=$(cat {{ (valkey_cluster_instance_secrets_dir ~ '/backup.pass') | quote }})
+export REDISCLI_AUTH
+cli() {
+  docker exec -e REDISCLI_AUTH "$CT" valkey-cli --tls --cacert /tls/ca-bundle.crt -h 127.0.0.1 \
+    -p {{ valkey_cluster_cfg.ports.valkey }} --user backup --no-auth-warning "$@"
+}
+before=$(cli LASTSAVE)
+sleep 1
+cli BGSAVE >/dev/null
+i=0
+while :; do
+  info=$(cli INFO persistence | tr -d '\r')
+  now=$(cli LASTSAVE)
+  if echo "$info" | grep -q '^rdb_bgsave_in_progress:0' && [ "$now" -gt "$before" ]; then
+    break
+  fi
+  i=$((i + 1))
+  if [ "$i" -gt 1800 ]; then
+    echo "valkey-backup: BGSAVE did not finish within 30 minutes" >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "$info" | grep -q '^rdb_last_bgsave_status:ok' || { echo "valkey-backup: BGSAVE failed" >&2; exit 1; }
+cp {{ (valkey_cluster_data_dir ~ '/dump.rdb') | quote }} {{ (valkey_cluster_dir ~ '/backup/dump.rdb.tmp') | quote }}
+mv {{ (valkey_cluster_dir ~ '/backup/dump.rdb.tmp') | quote }} {{ (valkey_cluster_dir ~ '/backup/dump.rdb') | quote }}

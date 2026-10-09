@@ -1,0 +1,97 @@
+---
+# One Valkey instance (primary + replicas watched by Sentinel, plus redis_exporter) per call.
+# playbooks/valkey.yml includes this role once for every entry of valkey_clusters whose inventory
+# group contains the host, with the entry in the variable valkey_cluster. The entry is merged over
+# valkey_cluster_defaults (below), so it only needs what differs. Pattern: docs/product-playbooks.md.
+
+# Every instance of the inventory; used to check that no two instances share a secret (DAT-01).
+valkey_cluster_all: "{{ valkey_clusters | default([]) }}"
+
+# High availability (HA-01): a primary, 2+ replicas and one Sentinel per node (3 Sentinels, quorum 2).
+valkey_cluster_min_nodes: 3
+valkey_cluster_allow_single_node: false
+
+valkey_cluster_image: "{{ versions_images.valkey }}"
+valkey_cluster_exporter_image: "{{ versions_images.redis_exporter }}"
+# Container users: valkey (999:1000 in the upstream image) and redis_exporter (59000).
+valkey_cluster_uid: 999
+valkey_cluster_gid: 1000
+valkey_cluster_exporter_uid: 59000
+
+valkey_cluster_base_dir: /opt/valkey
+valkey_cluster_secrets_dir: /etc/compliant-infra/valkey
+valkey_cluster_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# How the other members, Sentinels and clients reach this node (in every certificate and announced
+# by Sentinel). Must resolve on every member.
+valkey_cluster_node_address: "{{ inventory_hostname }}"
+valkey_cluster_node_ip: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+
+# Data at rest (SEC-04): Valkey does not encrypt its RDB/AOF files; the data directory must sit on
+# an encrypted volume (LUKS) or one the provider encrypts (attested).
+valkey_cluster_require_encrypted_storage: false
+valkey_cluster_storage_encryption_attested: false
+
+# Version changes (new image) only through playbooks/upgrade.yml (CHG-07): replicas first, then a
+# Sentinel failover, then the former primary.
+valkey_cluster_upgrade: false
+
+# Account Prometheus presents to redis_exporter (same as node_exporter).
+valkey_cluster_scrape_user: "{{ monitoring_scrape_user | default('prometheus') }}"
+valkey_cluster_scrape_password: "{{ monitoring_scrape_password | default('') }}"
+
+# ---------------------------------------------------------------- per-instance defaults
+# Every key can be set per entry of valkey_clusters (merged recursively).
+valkey_cluster_defaults:
+  name: ""                 # [a-z][a-z0-9-]*; prefixes containers, directories and metrics
+  group: ""                # inventory group of the nodes (3+)
+  data_dir: ""             # default: <valkey_cluster_base_dir>/<name>/data (put it on the encrypted volume)
+  ports:
+    valkey: 6379           # TLS only (the plaintext port is disabled)
+    sentinel: 26379        # TLS only
+    exporter: 9121         # redis_exporter (HTTPS, basic auth)
+  # Secrets (16+ printable characters each, from Ansible Vault or OpenBao). No two instances may share
+  # one (DAT-01).
+  admin_password: ""       # user "admin": automation and break-glass, all commands (Valkey and Sentinel)
+  replication_password: ""  # user "replicator": PSYNC/REPLCONF only
+  sentinel_password: ""    # user "sentinel": what Sentinel needs on Valkey, and Sentinel-to-Sentinel
+  exporter_password: ""    # user "exporter": INFO and a few read-only diagnostics
+  backup_password: ""      # user "backup": BGSAVE/LASTSAVE/INFO only
+  # Application users (least privilege). Each gets the same password on the Sentinels, where it may
+  # only discover the primary.
+  #   - name: orders
+  #     password: "{{ vault_valkey_main_orders_password }}"
+  #     key_patterns: ["~orders:*"]  # key patterns (default ~<name>:*)
+  #     channels: ["&orders:*"]      # pub/sub channel patterns (default &<name>:*)
+  #     commands: "-@all +@read +@write"   # default valkey_cluster_app_commands
+  users: []
+  # Networks of the applications (firewall rules in the inventory; documented here).
+  client_cidrs: []
+  maxmemory: 256mb
+  maxmemory_policy: noeviction
+  # Persistence: AOF fsync every second plus RDB snapshots (used by the backup).
+  appendfsync: everysec
+  save: "3600 1 300 100 60 10000"
+  sentinel:
+    down_after_ms: 5000
+    failover_timeout_ms: 60000
+    parallel_syncs: 1
+  resources:
+    memory: 512m           # container limit; keep it above maxmemory plus fork overhead
+    sentinel_memory: 64m
+    exporter_memory: 64m
+    pids: 256
+  backup:
+    enabled: true
+    rpo_hours: 24
+    rto_hours: 2
+  # Organisation-supplied certificate files on the hosts (optional) and their CA bundle.
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_ca_file: ""
+  tls_alt_names: []
+
+# Commands application users get unless their entry sets "commands": data commands only. CONFIG,
+# DEBUG, FLUSHALL/FLUSHDB, KEYS, SHUTDOWN, REPLICAOF, MODULE, ACL and the other @admin/@dangerous
+# commands are denied.
+valkey_cluster_app_commands: "-@all +@read +@write +@connection +@transaction +@pubsub -@admin -@dangerous"

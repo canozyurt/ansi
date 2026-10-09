@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+# TLS sidecar of Garage cluster {{ garage_cluster_cfg.name }} on {{ inventory_hostname }} (SEC-03).
+global
+    log stdout format raw local0 info
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+    tune.ssl.default-dh-param 2048
+
+defaults
+    log global
+    timeout connect 5s
+    timeout client 10m
+    timeout server 10m
+
+# S3 API: TLS terminated here, the request stream passed unchanged (SigV4 signatures stay valid).
+frontend s3
+    mode tcp
+    option tcplog
+    bind :{{ garage_cluster_cfg.ports.s3 }} ssl crt /usr/local/etc/haproxy/tls/tls.crt
+    default_backend garage_s3
+
+backend garage_s3
+    mode tcp
+    server garage 127.0.0.1:{{ garage_cluster_cfg.ports.s3_local }}
+
+# Monitoring: only /metrics (metrics token required by Garage) and /health; the rest of the admin API
+# stays on the loopback interface.
+frontend monitoring
+    mode http
+    option httplog
+    bind :{{ garage_cluster_cfg.ports.metrics }} ssl crt /usr/local/etc/haproxy/tls/tls.crt
+    http-request deny deny_status 403 unless { path /metrics } || { path /health }
+    default_backend garage_admin
+
+backend garage_admin
+    mode http
+    server garage 127.0.0.1:{{ garage_cluster_cfg.ports.admin_local }}

@@ -1,0 +1,10 @@
+{#- Declared users with their password hashes: application users and the Prometheus scrape user. -#}
+{%- set out = [] -%}
+{%- for v in rabbitmq_cluster_cfg.vhosts -%}
+{%-   for u in v.users | default([]) -%}
+{%-     set _ = out.append({'name': u.name, 'password_hash': u.password | rabbitmq_password_hash(rabbitmq_cluster_cfg.name ~ ':' ~ u.name)}) -%}
+{%-   endfor -%}
+{%- endfor -%}
+{%- set _ = out.append({'name': rabbitmq_cluster_scrape_user,
+                        'password_hash': rabbitmq_cluster_scrape_password | rabbitmq_password_hash(rabbitmq_cluster_cfg.name ~ ':' ~ rabbitmq_cluster_scrape_user)}) -%}
+{{ out | to_json }}

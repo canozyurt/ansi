@@ -1,0 +1,48 @@
+---
+# Deploys one Garage cluster (garage_cluster, an entry of garage_clusters) on this host.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    garage_cluster_cfg: "{{ garage_cluster_defaults | combine(garage_cluster, recursive=true) }}"
+  no_log: true
+
+- name: Work out the cluster layout
+  ansible.builtin.set_fact:
+    garage_cluster_hosts: "{{ groups[garage_cluster_cfg.group] | default([]) }}"
+    garage_cluster_dir: "{{ garage_cluster_base_dir }}/{{ garage_cluster_cfg.name }}"
+    garage_cluster_data_dir: "{{ garage_cluster_cfg.data_dir | default('', true) or (garage_cluster_base_dir ~ '/' ~ garage_cluster_cfg.name ~ '/data') }}"
+    garage_cluster_meta_dir: "{{ garage_cluster_cfg.meta_dir | default('', true) or (garage_cluster_base_dir ~ '/' ~ garage_cluster_cfg.name ~ '/meta') }}"
+    garage_cluster_ct:
+      garage: "{{ garage_cluster_cfg.name }}-garage"
+      proxy: "{{ garage_cluster_cfg.name }}-garage-tls"
+    garage_cluster_my_address: "{{ garage_cluster_node_address }}"
+    garage_cluster_my_zone: "{{ garage_cluster_zone }}"
+    garage_cluster_my_capacity: "{{ garage_cluster_cfg.capacity | string | upper | human_to_bytes }}"
+    garage_cluster_admin: "http://127.0.0.1:{{ garage_cluster_cfg.ports.admin_local }}"
+
+- name: Check the cluster settings
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Check that the data directories are on encrypted storage
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Issue the certificate
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Write the configuration
+  ansible.builtin.import_tasks: config.yml
+
+- name: Start or roll the containers
+  ansible.builtin.import_tasks: containers.yml
+
+- name: Wait for the node
+  ansible.builtin.import_tasks: health.yml
+
+- name: Connect the members and apply the layout
+  ansible.builtin.import_tasks: layout.yml
+
+- name: Declare keys, buckets and grants
+  ansible.builtin.import_tasks: access.yml
+
+- name: Configure backups
+  ansible.builtin.import_tasks: backup.yml
+  when: garage_cluster_cfg.backup.enabled | bool

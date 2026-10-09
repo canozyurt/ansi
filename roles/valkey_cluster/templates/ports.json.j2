@@ -1,0 +1,7 @@
+{#- Every port used by the Valkey instances on this host as a JSON list. -#}
+{%- set out = [] -%}
+{%- for e in valkey_cluster_all if e.group | default('') in group_names -%}
+{%-   set p = valkey_cluster_defaults.ports | combine(e.ports | default({})) -%}
+{%-   set _ = out.extend([p.valkey, p.sentinel, p.exporter]) -%}
+{%- endfor -%}
+{{ out | map('int') | list | to_json }}

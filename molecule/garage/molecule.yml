@@ -1,0 +1,69 @@
+---
+# Garage on a single node (lab mode, replication factor 1): layout applied by Ansible, S3 API and
+# metrics over TLS through the HAProxy sidecar, per-application keys and buckets, metadata snapshots.
+driver:
+  name: docker
+platforms:
+  - name: garage-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [garage, garage_lab, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        garage_cluster_allow_single_node: true
+        garage_clusters:
+          - name: s3-lab
+            group: garage_lab
+            replication_factor: 1
+            capacity: 1G
+            rpc_secret: 253180cd3eea5d22545d9e059b8e1d376ba2bdae82b333213c86c7f4ad421230
+            admin_token: test-only-garage-admin-token-0123456789
+            metrics_token: test-only-garage-metrics-token-0123456789
+            resources: { memory: 256m }
+            keys:
+              - name: orders-api
+                access_key_id: GK3bcabd5f1d6668823225ba40
+                secret_access_key: e6dcf76321bc8f746c960f556d695cc092876274a43767f65aac250e5e1362a8
+              - name: reports
+                access_key_id: GKd74b3bf77070853fc426f564
+                secret_access_key: 8dcbe4a278e11fa770978857223c053360049dbe4a532fb2c388706840dc2f53
+            buckets:
+              - name: orders-files
+                access:
+                  - { key: orders-api, read: true, write: true }
+              - name: reports-files
+                access:
+                  - { key: reports, read: true, write: true }
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves space over vfs.
+          storage-driver: overlay2
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

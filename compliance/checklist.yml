@@ -34,7 +34,7 @@ requirements:
       iso27017: []
     check: "Molecule test: local login disabled; break-glass use raises an alert"
     status: designed
-    progress: "Keycloak deployed (roles/keycloak) as the central IdP with a break-glass admin. Remaining: wire each service to it and disable local logins; break-glass alert. SIEM: SIEM dashboard uses OIDC (security plugin openid backend, \"roles\" claim mapped: admins all_access, auditor readall, operator alerts read-only, others none); the login form is kept only for the break-glass admin; rule 100120 alerts on break-glass use. Tested: redirect to the IdP, mapping, break-glass login (no real Keycloak login)."
+    progress: "Keycloak deployed (roles/keycloak) as the central IdP with a break-glass admin. Remaining: wire each service to it and disable local logins; break-glass alert. SIEM: SIEM dashboard uses OIDC (security plugin openid backend, \"roles\" claim mapped: admins all_access, auditor readall, operator alerts read-only, others none); the login form is kept only for the break-glass admin; rule 100120 alerts on break-glass use. Tested: redirect to the IdP, mapping, break-glass login (no real Keycloak login). RabbitMQ: management UI login through Keycloak (OAuth 2.0 + PKCE via oidc_client; roles claim mapped by scope aliases: platform-admin administrator, operator monitoring+policymaker, developer management on its vhosts, auditor monitoring); basic auth disabled in the UI, kept for the HTTP API break-glass admin (not tested)."
   - id: IAM-02
     requirement: "MFA required for all users; phishing-resistant MFA (WebAuthn) for admins"
     controls:
@@ -131,7 +131,7 @@ requirements:
       iso27017: []
     check: "TLS scanner (e.g. testssl.sh) against every endpoint weekly"
     status: designed
-    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT. SIEM: SIEM: TLS 1.2+ on indexer (9200/9300), manager API, enrollment and dashboard; node certificates from a dedicated SIEM CA (roles/wazuh_certs), HTTP certificates from tls_cert when the internal PKI is set."
+    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT. SIEM: SIEM: TLS 1.2+ on indexer (9200/9300), manager API, enrollment and dashboard; node certificates from a dedicated SIEM CA (roles/wazuh_certs), HTTP certificates from tls_cert when the internal PKI is set. Valkey: TLS 1.2+ only for clients, replication and Sentinel, plaintext port disabled (tested single node). RabbitMQ: AMQPS, management and Prometheus over TLS only, Erlang distribution and CLI tools over TLS (peer verification with CA-signed certificates; encrypted but unverified with temporary self-signed ones) (not tested). Garage: S3 API and metrics through an HAProxy TLS sidecar, plaintext listeners on loopback, RPC encrypted with the cluster secret (not tested)."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
     controls:
@@ -140,7 +140,7 @@ requirements:
       iso27017: []
     check: "Host facts check for LUKS or provider encryption; service config tests"
     status: designed
-    progress: "Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). Remaining: disks, databases and object storage. PostgreSQL: pgBackRest repositories encrypted (aes-256-cbc, tested: no plaintext in the repository); the role checks for a dm-crypt device under the data directory, warns or fails, and exports postgres_data_dir_encrypted (PostgresDataNotEncrypted alert); LUKS itself is a host prerequisite."
+    progress: "Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). Remaining: disks, databases and object storage. PostgreSQL: pgBackRest repositories encrypted (aes-256-cbc, tested: no plaintext in the repository); the role checks for a dm-crypt device under the data directory, warns or fails, and exports postgres_data_dir_encrypted (PostgresDataNotEncrypted alert); LUKS itself is a host prerequisite. Valkey, RabbitMQ, Garage: same dm-crypt check and datastore_data_dir_encrypted metric with *DataNotEncrypted alerts; LUKS is a host prerequisite; Garage applications may add SSE-C per object (Valkey tested single node; RabbitMQ and Garage not tested)."
   - id: SEC-05
     requirement: "Certificates renew automatically; an alert fires 14 days before any expiry"
     controls:
@@ -320,7 +320,7 @@ requirements:
       iso27017: []
     check: "CI asserts each stateful role defines a backup job; backup age alert"
     status: implemented
-    progress: "restic on every host backs up each backup_register declaration plus /etc to 2+ append-only rest-servers (independent encrypted copies); optional nightly restic copy to S3 (untested); BackupRPOExceeded/BackupFailed alerts in monitoring; tested in molecule/backup. Remaining: CI check that every stateful role registers a backup. OpenBao Raft snapshots registered via backup_register. PostgreSQL: pgBackRest with continuous WAL archiving, weekly full and daily differential backups to encrypted S3/posix repositories, metrics under the backup role's names (tested with a posix repository). SIEM: SIEM manager state, SIEM CA and indexer security config registered with backup_register."
+    progress: "restic on every host backs up each backup_register declaration plus /etc to 2+ append-only rest-servers (independent encrypted copies); optional nightly restic copy to S3 (untested); BackupRPOExceeded/BackupFailed alerts in monitoring; tested in molecule/backup. Remaining: CI check that every stateful role registers a backup. OpenBao Raft snapshots registered via backup_register. PostgreSQL: pgBackRest with continuous WAL archiving, weekly full and daily differential backups to encrypted S3/posix repositories, metrics under the backup role's names (tested with a posix repository). SIEM: SIEM manager state, SIEM CA and indexer security config registered with backup_register. Valkey: BGSAVE plus RDB copy registered with backup_register (tested single node). RabbitMQ: definitions export registered with backup_register; messages are transient by design (not tested). Garage: metadata snapshot registered with backup_register; objects rely on replication factor 3 (not tested)."
   - id: BCK-02
     requirement: "Backups are immutable (append-only) for their retention period"
     controls:
@@ -356,7 +356,7 @@ requirements:
       iso27017: []
     check: "CI test kills a node and asserts the service keeps working"
     status: designed
-    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI. Edge: 2+ nodes, keepalived VRRP moves the VIP when HAProxy or the WAF fails; failover tested. Monitoring: 2+ Prometheus, 3 Alertmanager. OpenBao: Raft, 3+ nodes, standbys upgraded before the active node. PostgreSQL: Patroni + 3-member etcd per cluster, HAProxy on every node routing to the leader, rolling replacement with switchover; single-node tested only. SIEM: SIEM: 3-node indexer (1 replica), manager cluster (1 master + workers, agents fail over across the list), dashboard on every SIEM node; refuses fewer than 3 (2 for dashboards) outside lab mode. Only a single node was tested."
+    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI. Edge: 2+ nodes, keepalived VRRP moves the VIP when HAProxy or the WAF fails; failover tested. Monitoring: 2+ Prometheus, 3 Alertmanager. OpenBao: Raft, 3+ nodes, standbys upgraded before the active node. PostgreSQL: Patroni + 3-member etcd per cluster, HAProxy on every node routing to the leader, rolling replacement with switchover; single-node tested only. SIEM: SIEM: 3-node indexer (1 replica), manager cluster (1 master + workers, agents fail over across the list), dashboard on every SIEM node; refuses fewer than 3 (2 for dashboards) outside lab mode. Only a single node was tested. Valkey: primary plus replicas with 3 Sentinels per instance, rolling replacement with Sentinel failover; single node tested only. RabbitMQ: 3-node clusters, quorum queues by default, pause_minority, rolling restarts (not tested). Garage: 3 nodes, replication factor 3 across zones, layout applied by Ansible (not tested)."
   - id: HA-02
     requirement: "Each service has a DR runbook, and a DR drill runs every year"
     controls:
@@ -443,7 +443,7 @@ requirements:
       iso27017: ["CLD.9.5.1"]
     check: "Product playbook test: no shared credentials between instances"
     status: implemented
-    progress: "PostgreSQL product playbook (postgres_clusters): each instance has its own containers, ports, data directory, etcd with a per-cluster CA, pgBackRest stanza and passphrase, firewall rule variable and credentials; the role fails when a secret is shared between instances; per-database owner/rw/ro roles with CONNECT revoked from PUBLIC; tested in molecule/postgres with two clusters. Remaining: Valkey, RabbitMQ, Garage."
+    progress: "PostgreSQL product playbook (postgres_clusters): each instance has its own containers, ports, data directory, etcd with a per-cluster CA, pgBackRest stanza and passphrase, firewall rule variable and credentials; the role fails when a secret is shared between instances; per-database owner/rw/ro roles with CONNECT revoked from PUBLIC; tested in molecule/postgres with two clusters. Valkey (valkey_clusters): own containers, ports, data directory, ACL users and secrets per instance, the role fails on a shared secret; application ACL users limited to their key prefix; tested single node in molecule/valkey. RabbitMQ (rabbitmq_clusters): own Erlang cookie, admin, vhosts and per-application users limited to their vhost, guest and undeclared users removed (not tested). Garage (garage_clusters): own RPC secret, admin and metrics tokens, imported per-application keys that cannot create buckets and only reach granted buckets (not tested)."
   - id: DAT-02
     requirement: "Each data service has export and secure-deletion playbooks that produce deletion evidence"
     controls:

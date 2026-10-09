@@ -1,0 +1,86 @@
+---
+# HA-01: every member is connected and holds a role in the cluster layout (zone and capacity), so each
+# object is stored replication_factor times across zones. The first member in the play applies changes.
+# Members are never removed from the layout automatically: retire a node by hand
+# (garage layout remove, then apply) after its data has moved.
+- name: Note this node's identity
+  ansible.builtin.set_fact:
+    garage_cluster_node_id: "{{ (garage_cluster_node_info.json.success | dict2items | first).value.nodeId }}"
+
+- name: Connect the members and apply the layout
+  when: inventory_hostname == (garage_cluster_hosts | select('in', ansible_play_hosts) | first)
+  tags: [chk_ha_01]
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        Authorization: "Bearer {{ garage_cluster_cfg.admin_token }}"
+      timeout: 30
+  vars:
+    garage_cluster_members: >-
+      {{ garage_cluster_hosts | select('in', ansible_play_hosts) | map('extract', hostvars) | list }}
+    # Roles the layout must hold that it does not hold yet (new members, changed zone or capacity).
+    garage_cluster_role_changes: "{{ query('ansible.builtin.template', 'layout_changes.json.j2') | first | from_json }}"
+  block:
+    - name: Read the cluster status
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetClusterStatus"
+      register: garage_cluster_status
+      no_log: true
+
+    - name: Connect the members that are not connected yet
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/ConnectClusterNodes"
+        method: POST
+        body_format: json
+        body: >-
+          {{ garage_cluster_members | rejectattr('garage_cluster_node_id', 'in', garage_cluster_up_ids)
+             | map(attribute='garage_cluster_node_id')
+             | zip(garage_cluster_members | rejectattr('garage_cluster_node_id', 'in', garage_cluster_up_ids)
+                   | map(attribute='garage_cluster_my_address'))
+             | map('join', '@') | map('regex_replace', '$', ':' ~ garage_cluster_cfg.ports.rpc) | list }}
+      register: garage_cluster_connect
+      failed_when: garage_cluster_connect.status != 200 or garage_cluster_connect.json | rejectattr('success') | list | length > 0
+      changed_when: true
+      when: garage_cluster_members | rejectattr('garage_cluster_node_id', 'in', garage_cluster_up_ids) | list | length > 0
+      vars:
+        garage_cluster_up_ids: "{{ garage_cluster_status.json.nodes | selectattr('isUp') | map(attribute='id') | list }}"
+      no_log: true
+
+    - name: Wait until every member is up
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetClusterStatus"
+      register: garage_cluster_status
+      until: >-
+        garage_cluster_members | map(attribute='garage_cluster_node_id')
+        | difference(garage_cluster_status.json.nodes | selectattr('isUp') | map(attribute='id') | list) | length == 0
+      retries: 30
+      delay: 3
+      no_log: true
+
+    - name: Read the layout
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetClusterLayout"
+      register: garage_cluster_layout
+      no_log: true
+
+    - name: Stage the missing or changed roles
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/UpdateClusterLayout"
+        method: POST
+        body_format: json
+        body:
+          roles: "{{ garage_cluster_role_changes }}"
+      changed_when: true
+      when: garage_cluster_role_changes | length > 0
+      no_log: true
+
+    - name: Apply the layout
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/ApplyClusterLayout"
+        method: POST
+        body_format: json
+        # A whole-dict expression keeps the version an integer (Garage rejects a string).
+        body: "{{ {'version': (garage_cluster_layout.json.version | int) + 1} }}"
+      register: garage_cluster_apply
+      changed_when: true
+      when: garage_cluster_role_changes | length > 0 or garage_cluster_layout.json.stagedRoleChanges | length > 0

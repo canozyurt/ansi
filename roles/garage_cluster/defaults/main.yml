@@ -1,0 +1,93 @@
+---
+# One Garage cluster per call. playbooks/garage.yml includes this role once for every entry of
+# garage_clusters whose inventory group contains the host, with the entry in the variable
+# garage_cluster. The entry is merged over garage_cluster_defaults (below), so it only needs what
+# differs. Pattern: docs/product-playbooks.md.
+
+# Every cluster of the inventory; used to check that no two clusters share a secret (DAT-01).
+garage_cluster_all: "{{ garage_clusters | default([]) }}"
+
+# High availability (HA-01): 3 nodes, every object stored on 3 of them (replication_factor 3).
+garage_cluster_min_nodes: 3
+garage_cluster_allow_single_node: false
+
+garage_cluster_image: "{{ versions_images.garage }}"
+# Garage does not terminate TLS; an HAProxy sidecar (the edge role's pinned image) does.
+garage_cluster_proxy_image: "{{ versions_images.haproxy }}"
+# The Garage image is a single static binary and runs as any user; HAProxy's image uses uid 99.
+garage_cluster_uid: 3900
+garage_cluster_proxy_uid: 99
+
+garage_cluster_base_dir: /opt/garage
+garage_cluster_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# How the other members and the clients reach this node (in the certificate and in the layout).
+garage_cluster_node_address: "{{ inventory_hostname }}"
+garage_cluster_node_ip: "{{ ansible_facts['default_ipv4']['address'] | default('127.0.0.1') }}"
+# Failure domain of this node in the layout (set per host: rack, room or availability zone). With
+# 3+ distinct zones, Garage keeps each object's copies in different zones.
+garage_cluster_zone: "{{ inventory_hostname }}"
+
+# Data at rest (SEC-04): Garage does not encrypt stored blocks or metadata. The data and metadata
+# directories must sit on encrypted volumes (LUKS) or ones the provider encrypts (attested).
+# Applications can add SSE-C (customer-provided keys, supported by Garage) per object.
+garage_cluster_require_encrypted_storage: false
+garage_cluster_storage_encryption_attested: false
+
+# Version changes (new image) only through playbooks/upgrade.yml (CHG-07), one node at a time.
+garage_cluster_upgrade: false
+
+# ---------------------------------------------------------------- per-cluster defaults
+# Every key can be set per entry of garage_clusters (merged recursively).
+garage_cluster_defaults:
+  name: ""                 # [a-z][a-z0-9-]*; prefixes containers, directories and metrics
+  group: ""                # inventory group of the nodes (3+)
+  data_dir: ""             # default: <garage_cluster_base_dir>/<name>/data (object blocks)
+  meta_dir: ""             # default: <garage_cluster_base_dir>/<name>/meta (metadata database; SSD)
+  # Set once at creation; Garage cannot change it later.
+  replication_factor: 3
+  consistency_mode: consistent
+  region: garage           # S3 region name clients sign with
+  # Capacity this node offers to the layout (bytes, or with a K/M/G/T suffix).
+  capacity: 100G
+  ports:
+    s3: 3900               # S3 API over TLS (HAProxy) for clients
+    rpc: 3901              # Garage RPC between members (encrypted and authenticated with the RPC secret)
+    metrics: 3904          # /metrics and /health over TLS (HAProxy); metrics token required
+    s3_local: 3910         # Garage's plaintext S3 listener, loopback only
+    admin_local: 3903      # Garage's admin API, loopback only
+  # Secrets (from Ansible Vault or OpenBao). No two clusters may share one (DAT-01).
+  rpc_secret: ""           # 64 hex characters (openssl rand -hex 32)
+  admin_token: ""          # 32+ characters; full admin API (loopback only, used by Ansible)
+  metrics_token: ""        # 32+ characters; Prometheus bearer token for /metrics
+  # Application access keys (least privilege: no bucket creation, access only to the buckets that
+  # name them). Generate them outside Garage in its own format and keep them in Vault/OpenBao:
+  #   access_key_id: GK + 24 hex characters (echo GK$(openssl rand -hex 12))
+  #   secret_access_key: 64 hex characters (openssl rand -hex 32)
+  #   - { name: orders-api, access_key_id: "{{ vault_garage_orders_key_id }}", secret_access_key: "{{ vault_garage_orders_secret }}" }
+  keys: []
+  # Buckets and which keys may use them (read, write, owner = manage the bucket's settings).
+  #   - name: orders-files
+  #     access:
+  #       - { key: orders-api, read: true, write: true }
+  #       - { key: reports, read: true }
+  buckets: []
+  # Remove grants that are not declared here from declared buckets (the declared state is the only
+  # source of access).
+  prune_grants: true
+  # Networks of the applications (firewall rules in the inventory; documented here).
+  client_cidrs: []
+  # Metadata snapshots (consistent copies of the metadata database, used by the backup).
+  metadata_auto_snapshot_interval: 6h
+  resources:
+    memory: 1g
+    proxy_memory: 128m
+    pids: 1024
+  backup:
+    enabled: true
+    rpo_hours: 24
+    rto_hours: 8
+  tls_cert_file: ""
+  tls_key_file: ""
+  tls_ca_file: ""
+  tls_alt_names: []        # e.g. the load-balanced S3 name clients use

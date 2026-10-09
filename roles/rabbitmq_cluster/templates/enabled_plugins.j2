@@ -1,0 +1,1 @@
+[rabbitmq_management,rabbitmq_prometheus{{ ',rabbitmq_auth_backend_oauth2' if rabbitmq_cluster_cfg.oauth.enabled | bool else '' }}].

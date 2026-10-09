@@ -1,0 +1,55 @@
+---
+- name: Move the primary away before restarting {{ valkey_cluster_member }}
+  when:
+    - hostvars[valkey_cluster_member].valkey_cluster_valkey_change | bool or hostvars[valkey_cluster_member].valkey_cluster_valkey_restart | bool
+    - valkey_cluster_member == valkey_cluster_primary_host
+    - valkey_cluster_hosts | length > 1
+  tags: [chk_ha_01]
+  block:
+    - name: Ask Sentinel for a failover
+      community.docker.docker_container_exec:
+        container: "{{ valkey_cluster_ct.sentinel }}"
+        argv: "{{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.sentinel | string, 'SENTINEL', 'FAILOVER', valkey_cluster_cfg.name] }}"
+        env:
+          REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+      delegate_to: "{{ valkey_cluster_member }}"
+      changed_when: true
+      no_log: true
+
+    - name: Wait until another node is primary
+      community.docker.docker_container_exec:
+        container: "{{ valkey_cluster_ct.sentinel }}"
+        argv: "{{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.sentinel | string, 'SENTINEL', 'get-primary-addr-by-name', valkey_cluster_cfg.name] }}"
+        env:
+          REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+      delegate_to: "{{ valkey_cluster_member }}"
+      register: valkey_cluster_new_primary
+      until: >-
+        valkey_cluster_new_primary.rc == 0 and valkey_cluster_new_primary.stdout_lines | length > 0
+        and valkey_cluster_new_primary.stdout_lines[0] not in [hostvars[valkey_cluster_member].valkey_cluster_my_address,
+                                                               hostvars[valkey_cluster_member].valkey_cluster_my_ip]
+      retries: 30
+      delay: 2
+      changed_when: false
+      no_log: true
+
+- name: Replace or restart Valkey on {{ valkey_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.valkey }}"
+    valkey_cluster_target: "{{ valkey_cluster_member }}"
+    valkey_cluster_restart: "{{ hostvars[valkey_cluster_member].valkey_cluster_valkey_restart | bool }}"
+  when: hostvars[valkey_cluster_member].valkey_cluster_valkey_change | bool or hostvars[valkey_cluster_member].valkey_cluster_valkey_restart | bool
+
+- name: Replace or restart Sentinel on {{ valkey_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    valkey_cluster_spec: "{{ valkey_cluster_specs.sentinel }}"
+    valkey_cluster_target: "{{ valkey_cluster_member }}"
+    valkey_cluster_restart: "{{ hostvars[valkey_cluster_member].valkey_cluster_sentinel_restart | bool }}"
+  when: hostvars[valkey_cluster_member].valkey_cluster_sentinel_change | bool or hostvars[valkey_cluster_member].valkey_cluster_sentinel_restart | bool
+
+- name: Wait until healthy before the next member, {{ valkey_cluster_member }}
+  ansible.builtin.include_tasks: health.yml
+  vars:
+    valkey_cluster_health_target: "{{ valkey_cluster_member }}"

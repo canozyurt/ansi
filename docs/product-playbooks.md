@@ -4,7 +4,8 @@ Product playbooks deploy the data services applications use: databases, caches, 
 storage. Unlike service roles (one Keycloak, one OpenBao), an organisation runs **many independent
 instances** of each product: one PostgreSQL cluster per application or team, a separate one for
 regulated data, and so on. PostgreSQL (`playbooks/postgres.yml`, `roles/postgres_cluster`) is the
-first one and sets the pattern; Valkey, RabbitMQ and Garage copy it.
+first one and sets the pattern; Valkey, RabbitMQ and Garage copy it (their design notes:
+docs/datastores.md).
 
 ## The pattern
 

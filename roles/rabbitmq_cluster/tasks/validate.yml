@@ -1,0 +1,89 @@
+---
+- name: Check the cluster name, group and nodes
+  ansible.builtin.assert:
+    that:
+      - rabbitmq_cluster_cfg.name is match('^[a-z][a-z0-9-]{0,30}$')
+      - rabbitmq_cluster_cfg.group | length > 0
+      - inventory_hostname in rabbitmq_cluster_hosts
+      - rabbitmq_cluster_all | map(attribute='name') | select('equalto', rabbitmq_cluster_cfg.name) | list | length == 1
+    fail_msg: >-
+      Each entry of rabbitmq_clusters needs a unique name ([a-z][a-z0-9-], up to 31 characters) and the
+      inventory group of its nodes (this host must be in it).
+    quiet: true
+
+# All Erlang nodes of a host register with one port mapper (epmd, port 4369) that lives in whichever
+# container started it; a second cluster on the same host would lose its registration when that
+# container stops. Give each cluster its own hosts.
+- name: Run at most one RabbitMQ cluster per host
+  ansible.builtin.assert:
+    that: rabbitmq_cluster_all | selectattr('group', 'in', group_names) | list | length == 1
+    fail_msg: >-
+      {{ inventory_hostname }} belongs to more than one RabbitMQ cluster group
+      ({{ rabbitmq_cluster_all | selectattr('group', 'in', group_names) | map(attribute='name') | join(', ') }}).
+      Each cluster needs its own hosts (they share the Erlang port mapper otherwise).
+    quiet: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that: rabbitmq_cluster_hosts | length >= rabbitmq_cluster_min_nodes or rabbitmq_cluster_allow_single_node | bool
+    fail_msg: >-
+      RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }} needs at least {{ rabbitmq_cluster_min_nodes }} nodes (quorum queues
+      keep a majority); group {{ rabbitmq_cluster_cfg.group }} has {{ rabbitmq_cluster_hosts | length }}. Set
+      rabbitmq_cluster_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Check the secrets of the cluster
+  ansible.builtin.assert:
+    that:
+      - rabbitmq_cluster_cfg.erlang_cookie | string | length >= 32
+      - rabbitmq_cluster_cfg.erlang_cookie is match('^[A-Za-z0-9]+$')
+      # The admin password is written into rabbitmq.conf (first start), which has no quoting.
+      - rabbitmq_cluster_cfg.admin_password is match('^[A-Za-z0-9._~+/=-]+$')
+      - rabbitmq_cluster_secrets | map('string') | map('length') | min >= 16
+      - rabbitmq_cluster_secrets | unique | length == rabbitmq_cluster_secrets | length
+      - rabbitmq_cluster_scrape_password | length >= 16
+    fail_msg: >-
+      RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }}: the Erlang cookie needs 32+ letters and digits, every password (admin
+      and each application user) 16+ characters (admin: letters, digits, ._~+/=-), all different, and monitoring_scrape_password must be set.
+      Keep them in Ansible Vault or OpenBao.
+    quiet: true
+  vars:
+    rabbitmq_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: No secret is shared with another cluster (DAT-01)
+  ansible.builtin.assert:
+    that: rabbitmq_cluster_secrets | intersect(rabbitmq_cluster_other_secrets) | length == 0
+    fail_msg: >-
+      RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }} shares a password or its Erlang cookie with another cluster. Each
+      cluster must have its own credentials (DAT-01).
+    quiet: true
+  vars:
+    rabbitmq_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+    rabbitmq_cluster_other_secrets: >-
+      {{ query('ansible.builtin.template', 'secrets.json.j2',
+               template_vars={'rabbitmq_cluster_secret_entries': rabbitmq_cluster_all | rejectattr('name', 'equalto', rabbitmq_cluster_cfg.name) | list})
+         | first | from_json }}
+  no_log: true
+  tags: [chk_dat_01]
+
+- name: Check the vhosts and users
+  ansible.builtin.assert:
+    that:
+      - rabbitmq_cluster_vhost_names | reject('match', '^[a-z][a-z0-9_.-]{0,62}$') | list | length == 0
+      - rabbitmq_cluster_vhost_names | unique | length == rabbitmq_cluster_vhost_names | length
+      - rabbitmq_cluster_user_names | reject('match', '^[a-z][a-z0-9_.-]{0,62}$') | list | length == 0
+      - rabbitmq_cluster_user_names | unique | length == rabbitmq_cluster_user_names | length
+      - rabbitmq_cluster_user_names | intersect(['guest', rabbitmq_cluster_cfg.admin_user, rabbitmq_cluster_scrape_user]) | length == 0
+      - rabbitmq_cluster_cfg.developer_vhosts | difference(rabbitmq_cluster_vhost_names) | length == 0
+    fail_msg: >-
+      RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }}: vhost and user names must be lower-case and unique, users may not be
+      named guest, {{ rabbitmq_cluster_cfg.admin_user }} or {{ rabbitmq_cluster_scrape_user }}, and developer_vhosts must
+      be declared vhosts.
+    quiet: true
+  vars:
+    rabbitmq_cluster_vhost_names: "{{ rabbitmq_cluster_cfg.vhosts | map(attribute='name') | list }}"
+    rabbitmq_cluster_user_names: "{{ rabbitmq_cluster_cfg.vhosts | map(attribute='users', default=[]) | flatten | map(attribute='name') | list }}"
+  tags: [chk_dat_01]

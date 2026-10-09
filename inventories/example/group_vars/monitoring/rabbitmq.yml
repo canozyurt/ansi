@@ -1,0 +1,64 @@
+---
+# Scrape targets for every RabbitMQ cluster in rabbitmq_clusters (LOG-05): one job per cluster,
+# rabbitmq-<name>, the Prometheus plugin on every node (HTTPS + basic auth with the scrape account).
+rabbitmq_scrape_catalog: >-
+  {%- set out = [] -%}
+  {%- for c in rabbitmq_clusters | default([]) -%}
+  {%-   set ports = {'prometheus': 15691} | combine(c.ports | default({})) -%}
+  {%-   set _ = out.append({'name': 'rabbitmq-' ~ c.name, 'group': c.group, 'port': ports.prometheus,
+                           'path': '/metrics', 'scheme': 'https', 'basic_auth': true}) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+prometheus_scrape_extra_rabbitmq: "{{ rabbitmq_scrape_catalog | from_json }}"
+
+# RabbitMQ alert rules (collected by roles/prometheus as prometheus_rules_*). Scrape jobs are named
+# rabbitmq-<cluster>; the Prometheus plugin of every node is scraped on port 15691.
+prometheus_rules_rabbitmq:
+  - name: rabbitmq
+    rules:
+      - alert: RabbitMQNodeDown
+        expr: up{job=~"rabbitmq-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "A RabbitMQ node does not answer its metrics endpoint (see the job and instance labels)" }
+      - alert: RabbitMQClusterPartitioned
+        # Each node should see every other member over Erlang distribution (state 3 = up).
+        expr: >-
+          (count by (job, instance) (erlang_vm_dist_node_state{job=~"rabbitmq-.*"} == 3)
+           or on (job, instance) (rabbitmq_identity_info{job=~"rabbitmq-.*"} * 0))
+          < on (job) group_left () (count by (job) (rabbitmq_identity_info{job=~"rabbitmq-.*"}) - 1)
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "A RabbitMQ node does not see every other member (network partition; pause_minority stops the minority)" }
+      - alert: RabbitMQMemoryAlarm
+        expr: rabbitmq_alarms_memory_used_watermark{job=~"rabbitmq-.*"} == 1
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "RabbitMQ raised its memory alarm; publishers are blocked" }
+      - alert: RabbitMQDiskAlarm
+        expr: rabbitmq_alarms_free_disk_space_watermark{job=~"rabbitmq-.*"} == 1
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "RabbitMQ raised its disk alarm; publishers are blocked" }
+      - alert: RabbitMQFileDescriptorAlarm
+        expr: rabbitmq_alarms_file_descriptor_limit{job=~"rabbitmq-.*"} == 1
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "RabbitMQ ran out of file descriptors" }
+      - alert: RabbitMQUnackedMessagesGrowing
+        expr: >-
+          sum by (job) (rabbitmq_queue_messages_unacked{job=~"rabbitmq-.*"}) > 1000
+          and sum by (job) (delta(rabbitmq_queue_messages_unacked{job=~"rabbitmq-.*"}[30m])) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Unacknowledged messages keep growing; consumers are stuck or too slow" }
+      - alert: RabbitMQReadyMessagesBacklog
+        expr: sum by (job) (rabbitmq_queue_messages_ready{job=~"rabbitmq-.*"}) > 100000
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "More than 100000 messages wait for consumers" }
+      - alert: RabbitMQDataNotEncrypted
+        expr: max by (cluster) (datastore_data_dir_encrypted{product="rabbitmq"} + datastore_data_dir_encryption_attested{product="rabbitmq"}) == 0
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "A RabbitMQ data directory is neither on LUKS nor attested as provider-encrypted (SEC-04)" }

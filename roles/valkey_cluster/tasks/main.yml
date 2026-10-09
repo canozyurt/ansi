@@ -1,0 +1,47 @@
+---
+# Deploys one Valkey instance (valkey_cluster, an entry of valkey_clusters) on this host.
+- name: Merge the instance entry over the defaults
+  ansible.builtin.set_fact:
+    valkey_cluster_cfg: "{{ valkey_cluster_defaults | combine(valkey_cluster, recursive=true) }}"
+  no_log: true
+
+- name: Work out the instance layout
+  ansible.builtin.set_fact:
+    valkey_cluster_hosts: "{{ groups[valkey_cluster_cfg.group] | default([]) }}"
+    valkey_cluster_first: "{{ (groups[valkey_cluster_cfg.group] | default([inventory_hostname])) | first }}"
+    valkey_cluster_dir: "{{ valkey_cluster_base_dir }}/{{ valkey_cluster_cfg.name }}"
+    valkey_cluster_data_dir: "{{ valkey_cluster_cfg.data_dir | default('', true) or (valkey_cluster_base_dir ~ '/' ~ valkey_cluster_cfg.name ~ '/data') }}"
+    valkey_cluster_instance_secrets_dir: "{{ valkey_cluster_secrets_dir }}/{{ valkey_cluster_cfg.name }}"
+    valkey_cluster_ct:
+      valkey: "{{ valkey_cluster_cfg.name }}-valkey"
+      sentinel: "{{ valkey_cluster_cfg.name }}-sentinel"
+      exporter: "{{ valkey_cluster_cfg.name }}-exporter"
+    valkey_cluster_my_address: "{{ valkey_cluster_node_address }}"
+    valkey_cluster_my_ip: "{{ valkey_cluster_node_ip }}"
+    valkey_cluster_cli: [valkey-cli, --tls, --cacert, /tls/ca-bundle.crt, -h, 127.0.0.1, --user, admin, --no-auth-warning]
+    valkey_cluster_quorum: "{{ [2, (groups[valkey_cluster_cfg.group] | default([1])) | length] | min }}"
+
+- name: Check the instance settings
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Check that the data directory is on encrypted storage
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Issue the certificates
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Find the current primary
+  ansible.builtin.import_tasks: topology.yml
+
+- name: Write the configuration
+  ansible.builtin.import_tasks: config.yml
+
+- name: Start or roll the containers
+  ansible.builtin.import_tasks: containers.yml
+
+- name: Wait for the node and its replication
+  ansible.builtin.import_tasks: health.yml
+
+- name: Configure backups
+  ansible.builtin.import_tasks: backup.yml
+  when: valkey_cluster_cfg.backup.enabled | bool

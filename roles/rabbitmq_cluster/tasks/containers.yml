@@ -1,0 +1,67 @@
+---
+# Container specification. It does not depend on the host (node-specific settings live in files under
+# rabbitmq_cluster_dir), except for the node name, so the first node can roll every member.
+- name: Describe the container of the node
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_spec:
+      name: "{{ rabbitmq_cluster_ct }}"
+      image: "{{ rabbitmq_cluster_image }}"
+      env:
+        RABBITMQ_NODENAME: "{{ rabbitmq_cluster_nodename }}"
+        RABBITMQ_USE_LONGNAME: "{{ rabbitmq_cluster_longnames | bool | string | lower }}"
+        RABBITMQ_DIST_PORT: "{{ rabbitmq_cluster_cfg.ports.dist | string }}"
+        ERL_EPMD_PORT: "{{ rabbitmq_cluster_cfg.ports.epmd | string }}"
+        # Erlang distribution (members and CLI tools) over TLS (SEC-03).
+        RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-proto_dist inet_tls -ssl_dist_optfile /etc/rabbitmq/inter_node_tls.config"
+        RABBITMQ_CTL_ERL_ARGS: "-proto_dist inet_tls -ssl_dist_optfile /etc/rabbitmq/inter_node_tls.config"
+      volumes:
+        - "{{ rabbitmq_cluster_data_dir }}:/var/lib/rabbitmq"
+        - "{{ rabbitmq_cluster_dir }}/conf:/etc/rabbitmq:ro"
+        - "{{ rabbitmq_cluster_dir }}/tls:/tls:ro"
+
+- name: Read the running container
+  community.docker.docker_container_info:
+    name: "{{ rabbitmq_cluster_ct }}"
+  register: rabbitmq_cluster_running
+
+- name: Change versions only through playbooks/upgrade.yml (CHG-07)
+  ansible.builtin.assert:
+    that: >-
+      not rabbitmq_cluster_running.exists or rabbitmq_cluster_running.container.Config.Image == rabbitmq_cluster_image
+      or rabbitmq_cluster_upgrade | bool
+    fail_msg: >-
+      RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }} on {{ inventory_hostname }} runs another image than the pinned
+      {{ rabbitmq_cluster_image }}. Run playbooks/upgrade.yml, which exports the definitions first and replaces one
+      node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Compare the container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    rabbitmq_cluster_check: true
+  when: rabbitmq_cluster_running.exists
+
+- name: Note whether the node must be replaced or restarted
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_change: "{{ rabbitmq_cluster_running.exists and rabbitmq_cluster_run is changed }}"
+    rabbitmq_cluster_restart: >-
+      {{ rabbitmq_cluster_running.exists and rabbitmq_cluster_run is not changed and rabbitmq_cluster_config_changed | bool }}
+    rabbitmq_cluster_spec_by_host: "{{ rabbitmq_cluster_spec }}"
+
+# New nodes start together; classic peer discovery forms the cluster.
+- name: Start a new node
+  ansible.builtin.include_tasks: run_container.yml
+  when: not rabbitmq_cluster_running.exists
+  tags: [chk_ha_01]
+
+# Existing nodes whose container or settings change restart one at a time, each waiting until the node
+# is back in the cluster and its quorum queues have a majority again (HA-01, CHG-07).
+- name: Replace or restart changed nodes one at a time
+  ansible.builtin.include_tasks: rolling_member.yml
+  loop: "{{ rabbitmq_cluster_hosts | select('in', ansible_play_hosts) | list }}"
+  loop_control:
+    loop_var: rabbitmq_cluster_member
+  when:
+    - inventory_hostname == (rabbitmq_cluster_hosts | select('in', ansible_play_hosts) | first)
+    - hostvars[rabbitmq_cluster_member].rabbitmq_cluster_change | bool or hostvars[rabbitmq_cluster_member].rabbitmq_cluster_restart | bool

@@ -8,10 +8,10 @@ default with **SOC 2** (Security, Availability, Confidentiality), **ISO/IEC 2700
 Every role ships hardened defaults and the evidence an auditor asks for, so compliance is a side effect
 of deploying instead of a separate project.
 
-> Status: early development. The host baseline (OS hardening, SSH, firewall, time sync, audit logging,
-> automatic updates), the container runtime and the Keycloak identity provider are in place. The secrets
-> manager and PKI (OpenBao), logging, monitoring and backup come next. See [the checklist](compliance/checklist.yml) for what is
-> done.
+> Status: every service in the catalog is written. Most roles have passed a single-node Molecule run
+> on Ubuntu 24.04. Multi-node HA, Debian 12 and Ubuntu 22.04, end-to-end SSO, and the RabbitMQ, Garage
+> and registry scenarios have not been tested yet. The [checklist](compliance/checklist.yml) shows each
+> requirement's honest status.
 
 ## Supported platforms
 
@@ -50,20 +50,38 @@ In production, run playbooks only from CI (checklist item CHG-02) and schedule a
 
 ## What is in the repo
 
-| Path | Purpose |
+Platform playbooks (all in `playbooks/site.yml`):
+
+| Playbook | What it deploys |
 | --- | --- |
-| `playbooks/site.yml` | Full deployment: role model validation, host baseline, container hosts, identity provider |
-| `roles/common` | Packages, time sync (chrony), persistent journald, auditd rules, automatic security updates, login banner |
-| `roles/os_hardening` | CIS Level 1 derived kernel, module, core dump, account, cron, sudo and service hardening |
-| `roles/ssh_hardening` | Key or certificate only SSH, no root, modern crypto, verbose logging, SSH CA support |
-| `roles/firewall` | Default-deny nftables, SSH only from management networks, declared ports, control of published container ports |
-| `roles/container_runtime` | Docker Engine from the official repository with CIS Docker Benchmark daemon settings |
-| `roles/keycloak` | Keycloak cluster (3+ nodes, JDBC_PING) with TLS, MFA (WebAuthn for privileged roles, OTP for others), lockout, password policy, audit events and the default roles |
-| `roles/rbac_model` | Default organization roles and the group-to-role map every service role uses |
-| `compliance/checklist.yml` | Machine-readable compliance checklist mapped to SOC 2, ISO 27001 and ISO 27017 |
-| `tools/checklist.py` | Validates the checklist against the code; prints coverage and control matrices |
-| `molecule/default` | Tests the baseline roles on every supported OS: converge, idempotence, verify |
-| `molecule/keycloak` | Deploys Keycloak with PostgreSQL inside a test host and checks realm security settings |
+| `baseline.yml`, `container_hosts.yml` | OS and SSH hardening, nftables firewall, time sync, auditd, automatic updates, Docker |
+| `secrets.yml` | OpenBao (Raft HA): secrets, internal PKI, SSH CA, transit keys |
+| `access.yml` | WireGuard VPN pair, SSH bastion with short-lived certificates, session recording, Unbound DNS |
+| `identity.yml` | Keycloak cluster with MFA and the default roles |
+| `monitoring.yml` | Prometheus pair, Alertmanager cluster, Grafana, node and blackbox exporters |
+| `edge.yml` | HAProxy with the Coraza WAF and a keepalived VIP |
+| `backup.yml` | restic to append-only rest-servers, optional S3 copy, restore tests |
+| `siem.yml` | Wazuh indexer, manager and dashboard, agents on every host (logs, FIM, CIS checks) |
+| `security_scanning.yml` | ClamAV on file-accepting hosts, weekly Trivy image and host scans |
+| `governance.yml` | Gatus status page, CISO Assistant GRC |
+| `delivery.yml` | Forgejo with protected branches, hardened Actions runners |
+| `registry.yml`, `mail_relay.yml` | Optional: Zot OCI registry, Postfix outbound relay with DKIM |
+
+Product playbooks (run separately, any number of instances, see
+[docs/product-playbooks.md](docs/product-playbooks.md)):
+
+| Playbook | What it deploys |
+| --- | --- |
+| `postgres.yml` | PostgreSQL clusters with Patroni, etcd, HAProxy, pgBackRest and OpenBao dynamic credentials |
+| `valkey.yml` | Valkey with Sentinel, TLS and per-application ACL users |
+| `rabbitmq.yml` | RabbitMQ clusters with quorum queues and Keycloak login for the management UI |
+| `garage.yml` | Garage S3-compatible object storage (replication factor 3) |
+
+Operations: `upgrade.yml` (one node at a time, backup first), `rolling_reboot.yml`,
+`postgres_major_upgrade.yml`. Architecture notes per service are in
+[docs/architecture.md](docs/architecture.md); access, upgrades, incident response and GRC have their own
+pages under `docs/`. `tools/checklist.py` validates the checklist and `tools/evidence_export.py` exports
+evidence for auditors.
 
 ## Compliance checklist
 
@@ -103,8 +121,8 @@ bumped by maintainers by hand once an upstream release is judged stable. See [do
 ## Testing
 
 ```bash
-molecule test                              # all platforms
-molecule test --platform-name ubuntu2404   # one platform
+molecule test                              # baseline roles, all platforms
+molecule test -s keycloak                  # one service scenario (see molecule/ and the CI matrix)
 ```
 
 Tests run in privileged systemd containers. Settings that would reach the host kernel (sysctl, auditd,

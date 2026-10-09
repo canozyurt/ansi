@@ -1,0 +1,7 @@
+---
+# Runs on one member for the whole instance; valkey_cluster_roll lists the members, primary last.
+- name: Roll the members one at a time
+  ansible.builtin.include_tasks: rolling_member.yml
+  loop: "{{ valkey_cluster_roll }}"
+  loop_control:
+    loop_var: valkey_cluster_member

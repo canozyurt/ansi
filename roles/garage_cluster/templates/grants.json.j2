@@ -1,0 +1,43 @@
+{#- Compares the grants of each declared bucket with the declaration. allow: permissions to add;
+    deny: permissions to remove (undeclared keys, or flags set that are not declared). -#}
+{%- set allow = [] -%}
+{%- set deny = [] -%}
+{%- set key_ids = dict(garage_cluster_cfg['keys'] | map(attribute='name') | zip(garage_cluster_cfg['keys'] | map(attribute='access_key_id'))) -%}
+{%- for r in garage_cluster_buckets_now.results -%}
+{%-   set b = r.json -%}
+{%-   set want = {} -%}
+{%-   for g in r.item.access | default([]) -%}
+{%-     set _ = want.update({key_ids[g.key]: {'read': g.read | default(false) | bool, 'write': g.write | default(false) | bool,
+                                          'owner': g.owner | default(false) | bool}}) -%}
+{%-   endfor -%}
+{%-   set have = {} -%}
+{%-   for k in b['keys'] -%}
+{%-     set _ = have.update({k.accessKeyId: k.permissions}) -%}
+{%-   endfor -%}
+{%-   for kid, p in want.items() -%}
+{%-     set h = have.get(kid, {}) -%}
+{%-     set add = {} -%}
+{%-     set rem = {} -%}
+{%-     for f in ['read', 'write', 'owner'] -%}
+{%-       if p[f] and not h.get(f, false) -%}{%- set _ = add.update({f: true}) -%}{%- endif -%}
+{%-       if not p[f] and h.get(f, false) -%}{%- set _ = rem.update({f: true}) -%}{%- endif -%}
+{%-     endfor -%}
+{%-     if add -%}
+{%-       set _ = allow.append({'bucket_id': b.id, 'key_id': kid, 'label': r.item.name ~ ' +' ~ (add.keys() | join(',')) ~ ' ' ~ kid,
+                                'permissions': {'read': add.read | default(false), 'write': add.write | default(false), 'owner': add.owner | default(false)}}) -%}
+{%-     endif -%}
+{%-     if rem -%}
+{%-       set _ = deny.append({'bucket_id': b.id, 'key_id': kid, 'label': r.item.name ~ ' -' ~ (rem.keys() | join(',')) ~ ' ' ~ kid,
+                               'permissions': {'read': rem.read | default(false), 'write': rem.write | default(false), 'owner': rem.owner | default(false)}}) -%}
+{%-     endif -%}
+{%-   endfor -%}
+{%-   if garage_cluster_cfg.prune_grants | bool -%}
+{%-     for kid, h in have.items() if kid not in want -%}
+{%-       if h.get('read', false) or h.get('write', false) or h.get('owner', false) -%}
+{%-         set _ = deny.append({'bucket_id': b.id, 'key_id': kid, 'label': r.item.name ~ ' -all ' ~ kid,
+                                 'permissions': {'read': true, 'write': true, 'owner': true}}) -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ {'allow': allow, 'deny': deny} | to_json }}

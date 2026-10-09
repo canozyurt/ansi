@@ -1,0 +1,42 @@
+---
+# Waits until the node runs, has joined the cluster and raises no alarm.
+- name: Wait until the node is running
+  community.docker.docker_container_exec:
+    container: "{{ rabbitmq_cluster_ct }}"
+    argv: [rabbitmq-diagnostics, -q, check_running]
+  delegate_to: "{{ rabbitmq_cluster_health_target | default(inventory_hostname) }}"
+  register: rabbitmq_cluster_health
+  until: rabbitmq_cluster_health.rc | default(1) == 0
+  retries: 60
+  delay: 5
+  changed_when: false
+  check_mode: false
+  tags: [chk_log_05, chk_ha_01]
+
+- name: Wait until every member is in the cluster
+  community.docker.docker_container_exec:
+    container: "{{ rabbitmq_cluster_ct }}"
+    argv: [rabbitmqctl, -q, cluster_status, --formatter, json]
+  delegate_to: "{{ rabbitmq_cluster_health_target | default(inventory_hostname) }}"
+  register: rabbitmq_cluster_status
+  until: >-
+    rabbitmq_cluster_status.rc | default(1) == 0
+    and (rabbitmq_cluster_status.stdout | from_json).running_nodes | length == rabbitmq_cluster_hosts | length
+  retries: 60
+  delay: 5
+  changed_when: false
+  check_mode: false
+  tags: [chk_ha_01]
+
+- name: Check that no resource alarm is raised
+  community.docker.docker_container_exec:
+    container: "{{ rabbitmq_cluster_ct }}"
+    argv: [rabbitmq-diagnostics, -q, check_local_alarms]
+  delegate_to: "{{ rabbitmq_cluster_health_target | default(inventory_hostname) }}"
+  register: rabbitmq_cluster_alarms
+  until: rabbitmq_cluster_alarms.rc | default(1) == 0
+  retries: 12
+  delay: 5
+  changed_when: false
+  check_mode: false
+  tags: [chk_log_05]

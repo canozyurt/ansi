@@ -1,0 +1,35 @@
+---
+# Waits until Valkey answers, a replica's link to the primary is up, and Sentinel answers.
+- name: Wait until Valkey answers over TLS
+  community.docker.docker_container_exec:
+    container: "{{ valkey_cluster_ct.valkey }}"
+    argv: "{{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.valkey | string, 'INFO', 'replication'] }}"
+    env:
+      REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+  delegate_to: "{{ valkey_cluster_health_target | default(inventory_hostname) }}"
+  register: valkey_cluster_health
+  until: >-
+    valkey_cluster_health.rc | default(1) == 0 and 'role:' in valkey_cluster_health.stdout
+    and ('role:master' in valkey_cluster_health.stdout or 'master_link_status:up' in valkey_cluster_health.stdout)
+  retries: 60
+  delay: 3
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [chk_log_05, chk_ha_01]
+
+- name: Wait until Sentinel answers over TLS
+  community.docker.docker_container_exec:
+    container: "{{ valkey_cluster_ct.sentinel }}"
+    argv: "{{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.sentinel | string, 'PING'] }}"
+    env:
+      REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+  delegate_to: "{{ valkey_cluster_health_target | default(inventory_hostname) }}"
+  register: valkey_cluster_sentinel_health
+  until: valkey_cluster_sentinel_health.rc | default(1) == 0 and 'PONG' in valkey_cluster_sentinel_health.stdout
+  retries: 30
+  delay: 2
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [chk_log_05]

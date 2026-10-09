@@ -1,0 +1,26 @@
+---
+# BCK-01: the definitions (vhosts, users with password hashes, permissions, policies, queues, exchanges
+# and bindings) are exported before every backup. Messages are transient by design: a queue's
+# contents are not backed up; producers must be able to re-send, and quorum queues replicate messages
+# across the members (HA-01).
+- name: Install the definitions export script
+  ansible.builtin.template:
+    src: rabbitmq-backup.sh.j2
+    dest: "/usr/local/sbin/rabbitmq-{{ rabbitmq_cluster_cfg.name }}-backup"
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [chk_bck_01]
+
+- name: Register the definitions export with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: "rabbitmq-{{ rabbitmq_cluster_cfg.name }}"
+    backup_register_paths: ["{{ rabbitmq_cluster_dir }}/backup"]
+    backup_register_pre_command: "/usr/local/sbin/rabbitmq-{{ rabbitmq_cluster_cfg.name }}-backup"
+    backup_register_verify_command: >-
+      grep -q '"users"' "$RESTORE_DIR{{ rabbitmq_cluster_dir }}/backup/definitions.json"
+    backup_register_rpo_hours: "{{ rabbitmq_cluster_cfg.backup.rpo_hours }}"
+    backup_register_rto_hours: "{{ rabbitmq_cluster_cfg.backup.rto_hours }}"
+  tags: [chk_bck_01]

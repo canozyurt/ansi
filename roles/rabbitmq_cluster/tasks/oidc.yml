@@ -1,0 +1,24 @@
+---
+# IAM-01: the management UI signs people in with Keycloak (authorization code with PKCE, public client:
+# the browser holds the token). The token must name this cluster in "aud" (audience mapper) and carries
+# the default roles in "roles", which rabbitmq.conf maps to tags and permissions (scope aliases).
+- name: Register the management UI as a Keycloak client
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_enabled: "{{ rabbitmq_cluster_oidc_register | bool and rabbitmq_cluster_cfg.oauth.enabled | bool }}"
+    oidc_client_id: "{{ rabbitmq_cluster_oidc_client_id }}"
+    oidc_client_name: "RabbitMQ {{ rabbitmq_cluster_cfg.name }}"
+    oidc_client_public: true
+    oidc_client_root_url: "{{ rabbitmq_cluster_ui_urls | first }}"
+    oidc_client_redirect_uris: "{{ rabbitmq_cluster_ui_urls | map('regex_replace', '$', '/js/oidc-oauth/login-callback.html') | list }}"
+    oidc_client_post_logout_redirect_uris: "{{ rabbitmq_cluster_ui_urls | map('regex_replace', '$', '/*') | list }}"
+    oidc_client_extra_protocol_mappers:
+      - name: rabbitmq-audience
+        protocol: openid-connect
+        protocolMapper: oidc-audience-mapper
+        config:
+          included.client.audience: "{{ rabbitmq_cluster_oidc_client_id }}"
+          id.token.claim: "false"
+          access.token.claim: "true"
+  tags: [chk_iam_01]

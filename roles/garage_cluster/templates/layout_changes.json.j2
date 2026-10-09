@@ -1,0 +1,11 @@
+{#- Roles to stage: every member whose current layout role differs from its zone and capacity. -#}
+{%- set out = [] -%}
+{%- for h in garage_cluster_hosts if h in ansible_play_hosts -%}
+{%-   set hv = hostvars[h] -%}
+{%-   set have = garage_cluster_layout.json.roles | selectattr('id', 'equalto', hv.garage_cluster_node_id) | list -%}
+{%-   if have | length == 0 or have[0].zone != hv.garage_cluster_my_zone or (have[0].capacity | int) != (hv.garage_cluster_my_capacity | int) -%}
+{%-     set _ = out.append({'id': hv.garage_cluster_node_id, 'zone': hv.garage_cluster_my_zone,
+                            'capacity': hv.garage_cluster_my_capacity | int, 'tags': [h]}) -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ out | to_json }}

@@ -1,0 +1,69 @@
+---
+# SEC-04: Garage does not encrypt object blocks or its metadata database. Both directories must sit on
+# an encrypted block device (LUKS/dm-crypt) or on volumes the provider encrypts (attested by the
+# operator). Applications that need per-object keys can add SSE-C (customer-provided keys).
+- name: Create the cluster directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ garage_cluster_dir }}", mode: "0755" }
+    - { path: "{{ garage_cluster_data_dir }}", owner: "{{ garage_cluster_uid }}", group: "{{ garage_cluster_uid }}", mode: "0700" }
+    - { path: "{{ garage_cluster_meta_dir }}", owner: "{{ garage_cluster_uid }}", group: "{{ garage_cluster_uid }}", mode: "0700" }
+    - { path: "{{ garage_cluster_dir }}/snapshots", owner: "{{ garage_cluster_uid }}", group: "{{ garage_cluster_uid }}", mode: "0700" }
+    - { path: "{{ garage_cluster_dir }}/conf", owner: "{{ garage_cluster_uid }}", group: "{{ garage_cluster_uid }}", mode: "0700" }
+    - { path: "{{ garage_cluster_dir }}/proxy", owner: root, group: "{{ garage_cluster_proxy_uid }}", mode: "0750" }
+    - { path: "{{ garage_cluster_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Find the block devices under the data and metadata directories
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      src=$(findmnt -n -o SOURCE --target {{ item | quote }} | head -n1 | sed 's/\[.*\]$//');
+      echo "source=$src";
+      lsblk -n -s -o TYPE "$src" 2>/dev/null | tr -d ' ' | sort -u | tr '\n' ' ' || true
+    executable: /bin/bash
+  loop: ["{{ garage_cluster_data_dir }}", "{{ garage_cluster_meta_dir }}"]
+  register: garage_cluster_storage
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [chk_sec_04]
+
+- name: Note whether both directories are encrypted
+  ansible.builtin.set_fact:
+    garage_cluster_data_encrypted: >-
+      {{ garage_cluster_storage.results | map(attribute='stdout_lines') | map('last') | map('split')
+         | select('contains', 'crypt') | list | length == 2 }}
+  tags: [chk_sec_04]
+
+- name: Require encrypted storage for the data and metadata directories
+  ansible.builtin.assert:
+    that: garage_cluster_data_encrypted | bool or garage_cluster_storage_encryption_attested | bool
+    fail_msg: >-
+      {{ garage_cluster_data_dir }} or {{ garage_cluster_meta_dir }} is not on a dm-crypt (LUKS) device. Move them to
+      encrypted volumes, or set garage_cluster_storage_encryption_attested when the provider encrypts the volumes.
+    quiet: true
+  when: garage_cluster_require_encrypted_storage | bool
+  tags: [chk_sec_04]
+
+- name: Publish the storage encryption state as a metric
+  ansible.builtin.copy:
+    content: |
+      # HELP datastore_data_dir_encrypted 1 if the data directory is on a dm-crypt (LUKS) device.
+      # TYPE datastore_data_dir_encrypted gauge
+      datastore_data_dir_encrypted{product="garage",cluster="{{ garage_cluster_cfg.name }}"} {{ 1 if garage_cluster_data_encrypted | bool else 0 }}
+      # HELP datastore_data_dir_encryption_attested 1 if the operator attests provider-side volume encryption.
+      # TYPE datastore_data_dir_encryption_attested gauge
+      datastore_data_dir_encryption_attested{product="garage",cluster="{{ garage_cluster_cfg.name }}"} {{
+      1 if garage_cluster_storage_encryption_attested | bool else 0 }}
+    dest: "{{ garage_cluster_textfile_dir }}/garage-{{ garage_cluster_cfg.name }}-storage.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_sec_04]

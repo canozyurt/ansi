@@ -1,0 +1,32 @@
+---
+# The primary is whatever the Sentinels say (it moves on failover). A new instance starts with the
+# first node of the group as primary.
+- name: Ask the running Sentinels for the primary
+  community.docker.docker_container_exec:
+    container: "{{ valkey_cluster_ct.sentinel }}"
+    argv: >-
+      {{ valkey_cluster_cli + ['-p', valkey_cluster_cfg.ports.sentinel | string,
+                               'SENTINEL', 'get-primary-addr-by-name', valkey_cluster_cfg.name] }}
+    env:
+      REDISCLI_AUTH: "{{ valkey_cluster_cfg.admin_password }}"
+  delegate_to: "{{ item }}"
+  loop: "{{ valkey_cluster_hosts }}"
+  register: valkey_cluster_sentinel_answers
+  run_once: true
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Note the current primary
+  ansible.builtin.set_fact:
+    valkey_cluster_primary_host: >-
+      {{ (valkey_cluster_known | select('in', valkey_cluster_addr_to_host)
+          | map('extract', valkey_cluster_addr_to_host) | list + [valkey_cluster_first]) | first }}
+  vars:
+    valkey_cluster_known: >-
+      {{ valkey_cluster_sentinel_answers.results | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0)
+         | map(attribute='stdout_lines') | select | map('first') | list }}
+    valkey_cluster_addr_to_host: >-
+      {{ dict(valkey_cluster_hosts | map('extract', hostvars, 'valkey_cluster_my_address') | zip(valkey_cluster_hosts))
+         | combine(dict(valkey_cluster_hosts | map('extract', hostvars, 'valkey_cluster_my_ip') | zip(valkey_cluster_hosts))) }}

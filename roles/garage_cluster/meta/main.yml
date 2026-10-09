@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: garage_cluster
+  author: compliant-infra-ansible contributors
+  description: >-
+    One Garage S3-compatible object store cluster (3 nodes, replication factor 3, layout applied by
+    Ansible, TLS through an HAProxy sidecar, per-application buckets and keys); included once per
+    entry of garage_clusters
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: rabbitmq_cluster
+  author: compliant-infra-ansible contributors
+  description: >-
+    One RabbitMQ cluster (3 nodes, quorum queues, TLS everywhere, OAuth 2.0 management UI,
+    per-application vhosts and users); included once per entry of rabbitmq_clusters
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions
+  - role: rbac_model

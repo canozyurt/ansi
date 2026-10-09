@@ -1,0 +1,25 @@
+---
+- name: Wait until the quorum queues tolerate a restart of {{ rabbitmq_cluster_member }}
+  community.docker.docker_container_exec:
+    container: "{{ rabbitmq_cluster_ct }}"
+    argv: [rabbitmq-diagnostics, -q, check_if_node_is_quorum_critical]
+  delegate_to: "{{ rabbitmq_cluster_member }}"
+  register: rabbitmq_cluster_quorum_critical
+  until: rabbitmq_cluster_quorum_critical.rc == 0
+  retries: 60
+  delay: 5
+  changed_when: false
+  when: rabbitmq_cluster_hosts | length > 1
+  tags: [chk_ha_01]
+
+- name: Replace or restart the node {{ rabbitmq_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    rabbitmq_cluster_spec: "{{ hostvars[rabbitmq_cluster_member].rabbitmq_cluster_spec_by_host }}"
+    rabbitmq_cluster_target: "{{ rabbitmq_cluster_member }}"
+    rabbitmq_cluster_restart_now: "{{ hostvars[rabbitmq_cluster_member].rabbitmq_cluster_restart | bool }}"
+
+- name: Wait until the restarted node is back, {{ rabbitmq_cluster_member }}
+  ansible.builtin.include_tasks: health.yml
+  vars:
+    rabbitmq_cluster_health_target: "{{ rabbitmq_cluster_member }}"

@@ -1,0 +1,225 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    rmq_ct: mq-lab-rabbitmq
+    rmq_ca: /opt/rabbitmq/mq-lab/tls/ca-bundle.crt
+    rmq_api: https://127.0.0.1:15671/api
+    rmq_admin: { user: admin, password: test-only-rabbitmq-admin-pw }
+  tasks:
+    - name: Read the cluster status
+      community.docker.docker_container_exec:
+        container: "{{ rmq_ct }}"
+        argv: [rabbitmqctl, -q, cluster_status, --formatter, json]
+      register: rmq_status
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: Check the cluster status
+      ansible.builtin.assert:
+        that:
+          - (rmq_status.stdout | from_json).running_nodes == ['rabbit@' ~ inventory_hostname]
+          - (rmq_status.stdout | from_json).cluster_name == 'mq-lab'
+          - (rmq_status.stdout | from_json).alarms | length == 0
+        fail_msg: "{{ rmq_status.stdout }}"
+      tags: [chk_ha_01]
+
+    - name: Ask the node which distribution protocol it runs
+      community.docker.docker_container_exec:
+        container: "{{ rmq_ct }}"
+        argv: [rabbitmqctl, -q, eval, "init:get_argument(proto_dist)."]
+      register: rmq_dist
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: Erlang distribution (members and CLI tools) uses TLS
+      ansible.builtin.assert:
+        that: "'inet_tls' in rmq_dist.stdout"
+        fail_msg: "{{ rmq_dist.stdout }}"
+      tags: [chk_sec_03]
+
+    - name: Declare a queue without a type as the administrator
+      ansible.builtin.uri:
+        url: "{{ rmq_api }}/queues/orders/verify-default-type"
+        method: PUT
+        body_format: json
+        body: { durable: true }
+        url_username: "{{ rmq_admin.user }}"
+        url_password: "{{ rmq_admin.password }}"
+        force_basic_auth: true
+        ca_path: "{{ rmq_ca }}"
+        status_code: [201, 204]
+      tags: [chk_ha_01]
+
+    - name: Read the queue and the vhosts
+      ansible.builtin.uri:
+        url: "{{ rmq_api }}/{{ item }}"
+        url_username: "{{ rmq_admin.user }}"
+        url_password: "{{ rmq_admin.password }}"
+        force_basic_auth: true
+        ca_path: "{{ rmq_ca }}"
+      loop: [queues/orders/verify-default-type, vhosts/orders, users, users/orders-api/permissions]
+      register: rmq_api_reads
+      tags: [chk_ha_01, chk_dat_01]
+
+    - name: Check quorum queues by default, no guest and the application user's permissions
+      ansible.builtin.assert:
+        that:
+          - rmq_api_reads.results[0].json.type == 'quorum'
+          - rmq_api_reads.results[1].json.default_queue_type == 'quorum'
+          - "'guest' not in (rmq_api_reads.results[2].json | map(attribute='name') | list)"
+          - rmq_api_reads.results[2].json | selectattr('name', 'equalto', 'orders-api') | map(attribute='tags') | first | length == 0
+          - rmq_api_reads.results[3].json | map(attribute='vhost') | list == ['orders']
+        fail_msg: "{{ rmq_api_reads.results | map(attribute='json') | list | to_json }}"
+      tags: [chk_ha_01, chk_dat_01]
+
+    - name: Copy the AMQP probe
+      ansible.builtin.copy:
+        src: amqp_probe.py
+        dest: /usr/local/bin/amqp_probe.py
+        mode: "0755"
+
+    - name: Open vhosts over AMQPS as the application users
+      ansible.builtin.command:
+        argv: [/usr/local/bin/amqp_probe.py, 127.0.0.1, "5671", "{{ rmq_ca }}", "{{ item.user }}", "{{ item.vhost }}"]
+      environment:
+        AMQP_PASSWORD: "{{ item.password }}"
+      loop:
+        - { user: orders-api, password: test-only-rabbitmq-orders-pw, vhost: orders }
+        - { user: orders-api, password: test-only-rabbitmq-orders-pw, vhost: invoices }
+        - { user: orders-api, password: test-only-rabbitmq-orders-pw, vhost: / }
+        - { user: orders-api, password: wrong-password-for-the-test, vhost: orders }
+        - { user: guest, password: guest, vhost: / }
+      loop_control:
+        label: "{{ item.user }} -> {{ item.vhost }}"
+      register: rmq_amqp
+      changed_when: false
+      tags: [chk_sec_03, chk_dat_01]
+
+    - name: Check TLS on 5671 and the vhost limits
+      ansible.builtin.assert:
+        that:
+          - rmq_amqp.results[0].stdout is match('^OPEN-OK TLSv1\.[23]$')
+          - rmq_amqp.results[1].stdout is match('^CLOSE 530')
+          - rmq_amqp.results[2].stdout is match('^CLOSE 530')
+          - rmq_amqp.results[3].stdout is match('^(CLOSED|CLOSE 403)')
+          - rmq_amqp.results[4].stdout is match('^(CLOSED|CLOSE 403)')
+        fail_msg: "{{ rmq_amqp.results | map(attribute='stdout') | list | to_json }}"
+      tags: [chk_sec_03, chk_dat_01]
+
+    - name: The application user cannot use the HTTP API (no management tag)
+      ansible.builtin.uri:
+        url: "{{ rmq_api }}/whoami"
+        url_username: orders-api
+        url_password: test-only-rabbitmq-orders-pw
+        force_basic_auth: true
+        ca_path: "{{ rmq_ca }}"
+        status_code: [401]
+      tags: [chk_dat_01]
+
+    - name: The plaintext ports are closed
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ item }}"
+        state: stopped
+        timeout: 3
+      loop: [5672, 15672, 15692]
+      tags: [chk_sec_03]
+
+    - name: Scrape the Prometheus endpoint over TLS with basic auth
+      ansible.builtin.uri:
+        url: https://127.0.0.1:15691/metrics
+        user: prometheus
+        password: test-only-scrape-password
+        force_basic_auth: true
+        ca_path: "{{ rmq_ca }}"
+        return_content: true
+      register: rmq_metrics
+      tags: [chk_log_05]
+
+    - name: The Prometheus endpoint refuses anonymous scrapes
+      ansible.builtin.uri:
+        url: https://127.0.0.1:15691/metrics
+        ca_path: "{{ rmq_ca }}"
+        status_code: [401]
+      tags: [chk_log_05]
+
+    - name: Check the metrics
+      ansible.builtin.assert:
+        that:
+          - "'rabbitmq_identity_info' in rmq_metrics.content"
+          - "'rabbitmq_alarms_memory_used_watermark' in rmq_metrics.content"
+      tags: [chk_log_05]
+
+    - name: Read the management UI login settings
+      ansible.builtin.uri:
+        url: "{{ rmq_api }}/auth"
+        ca_path: "{{ rmq_ca }}"
+      register: rmq_auth
+      tags: [chk_iam_01]
+
+    - name: Check that the management UI logs in through Keycloak only
+      ansible.builtin.assert:
+        that:
+          - rmq_auth.json.oauth_enabled | bool
+          - rmq_auth.json.oauth_disable_basic_auth | default(true) | bool
+          - rmq_auth.json.oauth_client_id | default(rmq_auth.json.oauth_resource_servers | default({}) | string) is search('rabbitmq-mq-lab')
+        fail_msg: "{{ rmq_auth.json | to_json }}"
+      tags: [chk_iam_01]
+
+    - name: Read the role mapping in the configuration
+      ansible.builtin.command: grep -E '^auth_oauth2\.scope_aliases\.[0-9]+\.(alias|scope)' /opt/rabbitmq/mq-lab/conf/rabbitmq.conf
+      register: rmq_aliases
+      changed_when: false
+      tags: [chk_iam_01]
+
+    - name: Check the role mapping
+      ansible.builtin.assert:
+        that:
+          - "'alias = platform-admin' in rmq_aliases.stdout"
+          - "'rabbitmq-mq-lab.tag:administrator' in rmq_aliases.stdout"
+          - "'rabbitmq-mq-lab.tag:policymaker' in rmq_aliases.stdout"
+          - "'rabbitmq-mq-lab.configure:orders/*' in rmq_aliases.stdout"
+      tags: [chk_iam_01]
+
+    - name: Run the definitions export
+      ansible.builtin.command: /usr/local/sbin/rabbitmq-mq-lab-backup
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Read the export
+      ansible.builtin.slurp:
+        src: /opt/rabbitmq/mq-lab/backup/definitions.json
+      register: rmq_defs
+      tags: [chk_bck_01]
+
+    - name: Check the export and its registration
+      ansible.builtin.assert:
+        that:
+          - (rmq_defs.content | b64decode | from_json).users | map(attribute='name') | list | sort == ['admin', 'invoices-worker', 'orders-api', 'prometheus']
+          - (rmq_defs.content | b64decode | from_json).vhosts | map(attribute='name') | list | sort == ['/', 'invoices', 'orders']
+      tags: [chk_bck_01]
+
+    - name: Read the backup declaration
+      ansible.builtin.stat:
+        path: /etc/compliant-infra/backup.d/rabbitmq-mq-lab.json
+      register: rmq_decl
+      failed_when: not rmq_decl.stat.exists
+      tags: [chk_bck_01]
+
+    - name: Inspect the container
+      community.docker.docker_container_info:
+        name: "{{ rmq_ct }}"
+      register: rmq_info
+
+    - name: Check container hardening
+      ansible.builtin.assert:
+        that:
+          - rmq_info.container.HostConfig.ReadonlyRootfs
+          - rmq_info.container.HostConfig.CapDrop == ['ALL']
+          - "'no-new-privileges:true' in rmq_info.container.HostConfig.SecurityOpt"
+          - rmq_info.container.Config.User == '100:101'
+          - rmq_info.container.HostConfig.Memory > 0
+      tags: [chk_hrd_02]

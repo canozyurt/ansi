@@ -1,0 +1,76 @@
+---
+# Valkey and Sentinel share the node certificate; replication and Sentinel connections verify the
+# peer against ca-bundle.crt: the organisation CA, the internal PKI CA, or, with temporary self-signed
+# certificates, the bundle of every member's certificate (SEC-03).
+- name: Get the node certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "valkey-{{ valkey_cluster_cfg.name }}"
+    tls_cert_dir: "{{ valkey_cluster_dir }}/tls"
+    tls_cert_owner: "{{ valkey_cluster_uid }}"
+    tls_cert_group: "{{ valkey_cluster_gid }}"
+    tls_cert_dir_mode: "0750"
+    tls_cert_key_mode: "0600"
+    tls_cert_common_name: "{{ valkey_cluster_my_address }}"
+    tls_cert_alt_names: "{{ ([valkey_cluster_my_address, inventory_hostname, 'localhost'] + valkey_cluster_cfg.tls_alt_names) | unique }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1', valkey_cluster_node_ip] | unique }}"
+    tls_cert_src_cert: "{{ valkey_cluster_cfg.tls_cert_file }}"
+    tls_cert_src_key: "{{ valkey_cluster_cfg.tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the node certificate changed
+  ansible.builtin.set_fact:
+    valkey_cluster_cert_changed: "{{ tls_cert_changed | bool }}"
+    valkey_cluster_cert_source: "{{ tls_cert_source }}"
+
+- name: Get the redis_exporter certificate
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "valkey-{{ valkey_cluster_cfg.name }}-exporter"
+    tls_cert_dir: "{{ valkey_cluster_dir }}/exporter-tls"
+    tls_cert_owner: "{{ valkey_cluster_exporter_uid }}"
+    tls_cert_group: "{{ valkey_cluster_exporter_uid }}"
+    tls_cert_common_name: "{{ valkey_cluster_my_address }}"
+    tls_cert_alt_names: "{{ [valkey_cluster_my_address, inventory_hostname] | unique }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1', valkey_cluster_node_ip] | unique }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the exporter certificate changed
+  ansible.builtin.set_fact:
+    valkey_cluster_exporter_cert_changed: "{{ tls_cert_changed | bool }}"
+
+- name: Check that a CA is known for organisation-supplied certificates
+  ansible.builtin.assert:
+    that: valkey_cluster_cert_source != 'file' or valkey_cluster_cfg.tls_ca_file | length > 0
+    fail_msg: Valkey instance {{ valkey_cluster_cfg.name }} uses supplied certificate files; set tls_ca_file (the CA bundle on the hosts) in its entry.
+    quiet: true
+
+- name: Read the member certificates
+  ansible.builtin.slurp:
+    src: "{{ valkey_cluster_dir }}/tls/tls.crt"
+  delegate_to: "{{ item }}"
+  loop: "{{ valkey_cluster_hosts }}"
+  register: valkey_cluster_member_certs
+  when: valkey_cluster_cert_source == 'selfsigned'
+
+- name: Read the CA certificate
+  ansible.builtin.slurp:
+    src: >-
+      {{ valkey_cluster_cfg.tls_ca_file if valkey_cluster_cert_source == 'file'
+         else (pki_openbao_ca_file | default('', true) or '/usr/local/share/ca-certificates/compliant-infra-ca.crt') }}
+  register: valkey_cluster_ca_cert
+  when: valkey_cluster_cert_source != 'selfsigned'
+
+- name: Write the CA bundle
+  ansible.builtin.copy:
+    content: >-
+      {{ (valkey_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
+         if valkey_cluster_cert_source == 'selfsigned' else (valkey_cluster_ca_cert.content | b64decode | trim) }}
+    dest: "{{ valkey_cluster_dir }}/tls/ca-bundle.crt"
+    owner: "{{ valkey_cluster_uid }}"
+    group: "{{ valkey_cluster_gid }}"
+    mode: "0644"
+  register: valkey_cluster_bundle
+  tags: [chk_sec_03]

@@ -1,0 +1,12 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Takes a consistent snapshot of the metadata database of Garage cluster {{ garage_cluster_cfg.name }} on this node
+# for the backup role (BCK-01). Garage writes it to {{ garage_cluster_dir }}/snapshots and keeps the two most
+# recent. Restore: stop the node, replace the metadata directory with a snapshot, start it. Runs as root.
+set -eu
+dir={{ (garage_cluster_dir ~ '/snapshots') | quote }}
+docker exec {{ garage_cluster_ct.garage | quote }} /garage meta snapshot
+find "$dir" -mindepth 1 -type f -size +0 -mmin -10 | grep -q . || {
+  echo "garage-backup: no fresh snapshot in $dir" >&2
+  exit 1
+}

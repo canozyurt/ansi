@@ -1,0 +1,26 @@
+---
+# RabbitMQ clusters (playbooks/rabbitmq.yml, roles/rabbitmq_cluster). Each entry is an independent cluster on
+# the hosts of its own inventory group (a child of "rabbitmq"; a host belongs to one cluster only), with its
+# own Erlang cookie, admin password, vhosts and users (DAT-01). Keep secrets in Ansible Vault or OpenBao.
+rabbitmq_clusters:
+  - name: mq-main
+    group: rabbitmq_mq_main
+    erlang_cookie: "{{ vault_rabbitmq_mq_main_erlang_cookie }}"
+    admin_password: "{{ vault_rabbitmq_mq_main_admin_password }}"
+    # Load-balanced name of the management UI (Keycloak redirect URI); every node's own URL also works.
+    management_url: https://mq.example.internal:15671
+    resources: { memory: 4g }
+    developer_vhosts: [orders]
+    vhosts:
+      - name: orders
+        users:
+          - { name: orders-api, password: "{{ vault_rabbitmq_mq_main_orders_api_password }}" }
+          - name: orders-worker
+            password: "{{ vault_rabbitmq_mq_main_orders_worker_password }}"
+            configure: "^$"
+            write: "^orders\\.results$"
+            read: "^orders\\.jobs$"
+      - name: billing
+        users:
+          - { name: billing-api, password: "{{ vault_rabbitmq_mq_main_billing_api_password }}" }
+rabbitmq_cluster_require_encrypted_storage: true

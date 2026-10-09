@@ -1,0 +1,68 @@
+---
+# Scrape targets for every Valkey instance in valkey_clusters (LOG-05): one job per instance,
+# valkey-<name>, redis_exporter on every node (HTTPS + basic auth). roles/prometheus collects every
+# prometheus_scrape_extra_<service> variable.
+valkey_scrape_catalog: >-
+  {%- set out = [] -%}
+  {%- for c in valkey_clusters | default([]) -%}
+  {%-   set ports = {'exporter': 9121} | combine(c.ports | default({})) -%}
+  {%-   set _ = out.append({'name': 'valkey-' ~ c.name, 'group': c.group, 'port': ports.exporter,
+                           'path': '/metrics', 'scheme': 'https', 'basic_auth': true}) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+prometheus_scrape_extra_valkey: "{{ valkey_scrape_catalog | from_json }}"
+
+# Valkey alert rules (collected by roles/prometheus as prometheus_rules_*). Scrape jobs are named
+# valkey-<instance>; every node of an instance runs redis_exporter.
+prometheus_rules_valkey:
+  - name: valkey
+    rules:
+      - alert: ValkeyExporterDown
+        expr: up{job=~"valkey-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "A Valkey node or its redis_exporter is unreachable (see the job and instance labels)" }
+      - alert: ValkeyDown
+        expr: redis_up{job=~"valkey-.*"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "redis_exporter cannot reach its Valkey server" }
+      - alert: ValkeyNoPrimary
+        expr: count by (job) (redis_instance_info{job=~"valkey-.*"}) unless count by (job) (redis_instance_info{job=~"valkey-.*", role="master"})
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: "A Valkey instance has no primary; writes fail until Sentinel elects one (HA-01)" }
+      - alert: ValkeyMultiplePrimaries
+        expr: count by (job) (redis_instance_info{job=~"valkey-.*", role="master"}) > 1
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "A Valkey instance has more than one primary (split brain)" }
+      - alert: ValkeyReplicationBroken
+        expr: redis_master_link_up{job=~"valkey-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "A Valkey replica lost its link to the primary" }
+      - alert: ValkeyTooFewReplicas
+        expr: redis_connected_slaves{job=~"valkey-.*"} < 2 and on (job, instance) redis_instance_info{role="master"}
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "A Valkey primary has fewer than 2 connected replicas" }
+      - alert: ValkeyMemoryHigh
+        expr: redis_memory_max_bytes{job=~"valkey-.*"} > 0 and redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "A Valkey server uses more than 90% of maxmemory (writes fail at 100% with noeviction)" }
+      - alert: ValkeyRejectedConnections
+        expr: increase(redis_rejected_connections_total{job=~"valkey-.*"}[5m]) > 0
+        labels: { severity: warning }
+        annotations: { summary: "Valkey rejected client connections (maxclients reached)" }
+      - alert: ValkeyPersistenceFailing
+        expr: redis_rdb_last_bgsave_status{job=~"valkey-.*"} == 0 or redis_aof_last_write_status{job=~"valkey-.*"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Valkey cannot write its RDB snapshot or append-only file (disk full or permissions)" }
+      - alert: ValkeyDataNotEncrypted
+        expr: max by (cluster) (datastore_data_dir_encrypted{product="valkey"} + datastore_data_dir_encryption_attested{product="valkey"}) == 0
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "A Valkey data directory is neither on LUKS nor attested as provider-encrypted (SEC-04)" }

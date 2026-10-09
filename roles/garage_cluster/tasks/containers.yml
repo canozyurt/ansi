@@ -1,0 +1,89 @@
+---
+# Container specifications. They do not depend on the host (node-specific settings live in files under
+# garage_cluster_dir), so the first node can roll every member.
+- name: Describe the containers of the node
+  ansible.builtin.set_fact:
+    garage_cluster_specs:
+      garage:
+        name: "{{ garage_cluster_ct.garage }}"
+        image: "{{ garage_cluster_image }}"
+        command: [/garage, server]
+        user: "{{ garage_cluster_uid }}:{{ garage_cluster_uid }}"
+        env:
+          RUST_LOG: garage=info
+        volumes:
+          - "{{ garage_cluster_dir }}/conf/garage.toml:/etc/garage.toml:ro"
+          - "{{ garage_cluster_dir }}/conf/secrets:/etc/garage/secrets:ro"
+          - "{{ garage_cluster_meta_dir }}:/var/lib/garage/meta"
+          - "{{ garage_cluster_data_dir }}:/var/lib/garage/data"
+          - "{{ garage_cluster_dir }}/snapshots:/var/lib/garage/snapshots"
+        memory: "{{ garage_cluster_cfg.resources.memory }}"
+        pids: "{{ garage_cluster_cfg.resources.pids }}"
+      proxy:
+        name: "{{ garage_cluster_ct.proxy }}"
+        image: "{{ garage_cluster_proxy_image }}"
+        user: "{{ garage_cluster_proxy_uid }}:{{ garage_cluster_proxy_uid }}"
+        env: {}
+        volumes:
+          - "{{ garage_cluster_dir }}/proxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"
+          - "{{ garage_cluster_dir }}/tls/tls.crt:/usr/local/etc/haproxy/tls/tls.crt:ro"
+          - "{{ garage_cluster_dir }}/tls/tls.key:/usr/local/etc/haproxy/tls/tls.crt.key:ro"
+        memory: "{{ garage_cluster_cfg.resources.proxy_memory }}"
+        pids: 256
+
+- name: Read the running containers
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  loop: ["{{ garage_cluster_ct.garage }}", "{{ garage_cluster_ct.proxy }}"]
+  register: garage_cluster_running
+
+- name: Change versions only through playbooks/upgrade.yml (CHG-07)
+  ansible.builtin.assert:
+    that: >-
+      not garage_cluster_running.results[0].exists or garage_cluster_running.results[0].container.Config.Image == garage_cluster_image
+      or garage_cluster_upgrade | bool
+    fail_msg: >-
+      Garage cluster {{ garage_cluster_cfg.name }} on {{ inventory_hostname }} runs another image than the pinned
+      {{ garage_cluster_image }}. Run playbooks/upgrade.yml, which snapshots the metadata first and replaces one node
+      at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Compare the Garage container with its specification
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    garage_cluster_spec: "{{ garage_cluster_specs.garage }}"
+    garage_cluster_check: true
+  when: garage_cluster_running.results[0].exists
+
+- name: Note whether Garage must be replaced or restarted
+  ansible.builtin.set_fact:
+    garage_cluster_change: "{{ garage_cluster_running.results[0].exists and garage_cluster_run is changed }}"
+    garage_cluster_restart: >-
+      {{ garage_cluster_running.results[0].exists and garage_cluster_run is not changed and garage_cluster_config_changed | bool }}
+
+- name: Start Garage on a new node
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    garage_cluster_spec: "{{ garage_cluster_specs.garage }}"
+  when: not garage_cluster_running.results[0].exists
+  tags: [chk_ha_01]
+
+# Existing nodes whose container or settings change restart one at a time, each waiting until the
+# cluster is healthy again (HA-01, CHG-07).
+- name: Replace or restart changed Garage nodes one at a time
+  ansible.builtin.include_tasks: rolling_member.yml
+  loop: "{{ garage_cluster_hosts | select('in', ansible_play_hosts) | list }}"
+  loop_control:
+    loop_var: garage_cluster_member
+  when:
+    - inventory_hostname == (garage_cluster_hosts | select('in', ansible_play_hosts) | first)
+    - hostvars[garage_cluster_member].garage_cluster_change | bool or hostvars[garage_cluster_member].garage_cluster_restart | bool
+
+# The sidecar holds no state; it restarts on its own node when its configuration or certificate changes.
+- name: Run the TLS sidecar
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    garage_cluster_spec: "{{ garage_cluster_specs.proxy }}"
+    garage_cluster_restart_now: "{{ garage_cluster_proxy_changed | bool }}"
+  tags: [chk_sec_03]

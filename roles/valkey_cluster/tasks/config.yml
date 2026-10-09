@@ -1,0 +1,75 @@
+---
+# Restart-relevant settings are tracked in a root-only copy without the replicaof line, so a change of
+# primary (failover) rewrites the live file without restarting anything.
+- name: Write the managed Valkey settings (change tracking, contains secrets)
+  ansible.builtin.template:
+    src: valkey.conf.j2
+    dest: "{{ valkey_cluster_instance_secrets_dir }}/valkey.base.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    valkey_cluster_render_base: true
+  register: valkey_cluster_base
+  no_log: true
+  tags: [chk_sec_02, chk_sec_03]
+
+- name: Write the Valkey configuration (contains the replication password)
+  ansible.builtin.template:
+    src: valkey.conf.j2
+    dest: "{{ valkey_cluster_dir }}/conf/valkey.conf"
+    owner: "{{ valkey_cluster_uid }}"
+    group: "{{ valkey_cluster_gid }}"
+    mode: "0600"
+  no_log: true
+  tags: [chk_sec_02, chk_sec_03, chk_ha_01]
+
+- name: Write the ACL users (password hashes only; default user disabled)
+  ansible.builtin.template:
+    src: users.acl.j2
+    dest: "{{ valkey_cluster_dir }}/conf/users.acl"
+    owner: "{{ valkey_cluster_uid }}"
+    group: "{{ valkey_cluster_gid }}"
+    mode: "0600"
+  register: valkey_cluster_acl
+  no_log: true
+  tags: [chk_dat_01, chk_sec_02]
+
+- name: Write the managed Sentinel settings (change tracking, contains secrets)
+  ansible.builtin.template:
+    src: sentinel.conf.j2
+    dest: "{{ valkey_cluster_instance_secrets_dir }}/sentinel.base.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    valkey_cluster_render_base: true
+  register: valkey_cluster_sentinel_base
+  no_log: true
+
+- name: Check for the live Sentinel configuration
+  ansible.builtin.stat:
+    path: "{{ valkey_cluster_dir }}/sentinel/sentinel.conf"
+  register: valkey_cluster_sentinel_live
+
+- name: Write the Sentinel configuration when its managed settings change
+  ansible.builtin.template:
+    src: sentinel.conf.j2
+    dest: "{{ valkey_cluster_dir }}/sentinel/sentinel.conf"
+    owner: "{{ valkey_cluster_uid }}"
+    group: "{{ valkey_cluster_gid }}"
+    mode: "0600"
+  when: valkey_cluster_sentinel_base is changed or not valkey_cluster_sentinel_live.stat.exists
+  no_log: true
+  tags: [chk_ha_01, chk_sec_03]
+
+- name: Write the redis_exporter environment (contains secrets)
+  ansible.builtin.template:
+    src: exporter.env.j2
+    dest: "{{ valkey_cluster_instance_secrets_dir }}/exporter.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: valkey_cluster_exporter_env
+  no_log: true
+  tags: [chk_sec_02, chk_log_05]

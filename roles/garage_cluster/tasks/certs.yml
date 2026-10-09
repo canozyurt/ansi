@@ -1,0 +1,24 @@
+---
+# Garage serves plaintext HTTP only; the HAProxy sidecar terminates TLS for the S3 API and the metrics
+# endpoint with this node's certificate (SEC-03). Members talk to each other over Garage RPC, which is
+# encrypted and authenticated with the cluster's RPC secret.
+- name: Get the node certificate (internal PKI, supplied files, or temporary self-signed)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "garage-{{ garage_cluster_cfg.name }}"
+    tls_cert_dir: "{{ garage_cluster_dir }}/tls"
+    tls_cert_owner: root
+    tls_cert_group: "{{ garage_cluster_proxy_uid }}"
+    tls_cert_dir_mode: "0750"
+    tls_cert_key_mode: "0640"
+    tls_cert_common_name: "{{ garage_cluster_my_address }}"
+    tls_cert_alt_names: "{{ ([garage_cluster_my_address, inventory_hostname, 'localhost'] + garage_cluster_cfg.tls_alt_names) | unique }}"
+    tls_cert_ip_sans: "{{ ['127.0.0.1', garage_cluster_node_ip] | unique }}"
+    tls_cert_src_cert: "{{ garage_cluster_cfg.tls_cert_file }}"
+    tls_cert_src_key: "{{ garage_cluster_cfg.tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Note whether the certificate changed
+  ansible.builtin.set_fact:
+    garage_cluster_cert_changed: "{{ tls_cert_changed | bool }}"

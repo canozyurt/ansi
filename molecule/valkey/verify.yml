@@ -1,0 +1,216 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    vk_ct: cache-lab-valkey
+    vk_sentinel: cache-lab-sentinel
+    vk_tls: [valkey-cli, --tls, --cacert, /tls/ca-bundle.crt, -h, 127.0.0.1, --no-auth-warning]
+  tasks:
+    - name: Valkey answers over TLS as the admin user
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: "{{ vk_tls + ['-p', '6379', '--user', 'admin', 'PING'] }}"
+        env: { REDISCLI_AUTH: test-only-valkey-admin-pw }
+      register: vk_tls_ping
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: The plaintext port is closed and TLS port refuses plaintext
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: [valkey-cli, -h, 127.0.0.1, -p, "6379", --user, admin, --no-auth-warning, PING]
+        env: { REDISCLI_AUTH: test-only-valkey-admin-pw }
+      register: vk_plain
+      changed_when: false
+      failed_when: false
+      tags: [chk_sec_03]
+
+    - name: Check TLS and plaintext results
+      ansible.builtin.assert:
+        that:
+          - vk_tls_ping.stdout == 'PONG'
+          - "'PONG' not in vk_plain.stdout"
+        fail_msg: "TLS: {{ vk_tls_ping.stdout }} / plaintext: {{ vk_plain.stdout }} {{ vk_plain.stderr | default('') }}"
+      tags: [chk_sec_03]
+
+    - name: The default user is disabled (no unauthenticated access)
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: "{{ vk_tls + ['-p', '6379', 'GET', 'orders:1'] }}"
+      register: vk_anon
+      changed_when: false
+      failed_when: false
+      tags: [chk_dat_01]
+
+    - name: Check that anonymous access is refused
+      ansible.builtin.assert:
+        that: "'NOAUTH' in vk_anon.stdout or 'NOAUTH' in vk_anon.stderr"
+        fail_msg: "{{ vk_anon.stdout }} {{ vk_anon.stderr }}"
+      tags: [chk_dat_01]
+
+    - name: Run commands as the application user
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: "{{ vk_tls + ['-p', '6379', '--user', 'orders'] + item }}"
+        env: { REDISCLI_AUTH: test-only-valkey-orders-pw }
+      loop:
+        - [SET, "orders:1", hello]
+        - [GET, "orders:1"]
+        - [SET, "invoices:1", nope]
+        - [CONFIG, GET, maxmemory]
+        - [FLUSHALL]
+        - [DEBUG, SLEEP, "0"]
+        - [KEYS, "*"]
+      register: vk_app
+      changed_when: false
+      failed_when: false
+      tags: [chk_dat_01]
+
+    - name: Check the application user's least privilege
+      ansible.builtin.assert:
+        that:
+          - vk_app.results[0].stdout == 'OK'
+          - vk_app.results[1].stdout == 'hello'
+          - "'NOPERM' in vk_app.results[2].stdout"
+          - "'NOPERM' in vk_app.results[3].stdout"
+          - "'NOPERM' in vk_app.results[4].stdout"
+          # DEBUG is refused twice: by the ACL and by enable-debug-command no (checked first).
+          - "'NOPERM' in vk_app.results[5].stdout or 'DEBUG command not allowed' in vk_app.results[5].stdout"
+          - "'NOPERM' in vk_app.results[6].stdout"
+        fail_msg: "{{ vk_app.results | map(attribute='stdout') | list | to_json }}"
+      tags: [chk_dat_01]
+
+    - name: The read-only user cannot write
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: "{{ vk_tls + ['-p', '6379', '--user', 'reports', 'SET', 'reports:1', 'x'] }}"
+        env: { REDISCLI_AUTH: test-only-valkey-reports-pw }
+      register: vk_ro
+      changed_when: false
+      failed_when: "'NOPERM' not in vk_ro.stdout"
+      tags: [chk_dat_01]
+
+    - name: Read the persistence settings
+      community.docker.docker_container_exec:
+        container: "{{ vk_ct }}"
+        argv: "{{ vk_tls + ['-p', '6379', '--user', 'admin', 'CONFIG', 'GET', item] }}"
+        env: { REDISCLI_AUTH: test-only-valkey-admin-pw }
+      loop: [appendonly, appendfsync, save, enable-debug-command]
+      register: vk_persist
+      changed_when: false
+
+    - name: Check AOF everysec, RDB snapshots and the disabled DEBUG command
+      ansible.builtin.assert:
+        that:
+          - vk_persist.results[0].stdout_lines | last == 'yes'
+          - vk_persist.results[1].stdout_lines | last == 'everysec'
+          - vk_persist.results[2].stdout_lines | last | length > 0
+          - vk_persist.results[3].stdout_lines | last == 'no'
+        fail_msg: "{{ vk_persist.results | map(attribute='stdout_lines') | list | to_json }}"
+
+    - name: Sentinel reports the primary (asked by the application user)
+      community.docker.docker_container_exec:
+        container: "{{ vk_sentinel }}"
+        argv: "{{ vk_tls + ['-p', '26379', '--user', 'orders', 'SENTINEL', 'get-primary-addr-by-name', 'cache-lab'] }}"
+        env: { REDISCLI_AUTH: test-only-valkey-orders-pw }
+      register: vk_sentinel_primary
+      changed_when: false
+      tags: [chk_ha_01]
+
+    - name: The application user cannot reconfigure Sentinel
+      community.docker.docker_container_exec:
+        container: "{{ vk_sentinel }}"
+        argv: "{{ vk_tls + ['-p', '26379', '--user', 'orders', 'SENTINEL', 'FAILOVER', 'cache-lab'] }}"
+        env: { REDISCLI_AUTH: test-only-valkey-orders-pw }
+      register: vk_sentinel_failover
+      changed_when: false
+      failed_when: false
+      tags: [chk_ha_01]
+
+    - name: Check Sentinel
+      ansible.builtin.assert:
+        that:
+          - vk_sentinel_primary.stdout_lines == [inventory_hostname, '6379']
+          - "'NOPERM' in vk_sentinel_failover.stdout"
+        fail_msg: "{{ vk_sentinel_primary.stdout_lines | to_json }} / {{ vk_sentinel_failover.stdout }}"
+      tags: [chk_ha_01]
+
+    - name: Scrape redis_exporter over TLS with basic auth
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9121/metrics
+        user: prometheus
+        password: test-only-scrape-password
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: vk_metrics
+      until: vk_metrics.status == 200 and vk_metrics.content is search('(?m)^redis_up(\{[^}]*\})? 1$')
+      retries: 10
+      delay: 3
+      tags: [chk_log_05]
+
+    - name: The exporter refuses anonymous scrapes
+      ansible.builtin.uri:
+        url: https://127.0.0.1:9121/metrics
+        validate_certs: false
+        status_code: 401
+      tags: [chk_log_05]
+
+    - name: Check exporter metrics
+      ansible.builtin.assert:
+        that:
+          - "'redis_instance_info' in vk_metrics.content"
+          - "'redis_memory_max_bytes' in vk_metrics.content"
+          - "'redis_rejected_connections_total' in vk_metrics.content"
+      tags: [chk_log_05]
+
+    - name: Run the backup snapshot script
+      ansible.builtin.command: /usr/local/sbin/valkey-cache-lab-backup
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Read the backup declaration and the snapshot
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/compliant-infra/backup.d/valkey-cache-lab.json
+        - /opt/valkey/cache-lab/backup/dump.rdb
+      register: vk_backup
+      tags: [chk_bck_01]
+
+    - name: Check the backup
+      ansible.builtin.assert:
+        that:
+          - vk_backup.results[0].stat.exists
+          - vk_backup.results[1].stat.exists
+          - vk_backup.results[1].stat.size > 0
+          - vk_backup.results[1].stat.mode == '0600'
+      tags: [chk_bck_01]
+
+    - name: Inspect the containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [cache-lab-valkey, cache-lab-sentinel, cache-lab-exporter]
+      register: vk_info
+
+    - name: Check container hardening
+      ansible.builtin.assert:
+        that:
+          - item.container.HostConfig.ReadonlyRootfs
+          - item.container.HostConfig.CapDrop == ['ALL']
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - item.container.Config.User is match('^[1-9][0-9]*:')
+          - item.container.HostConfig.Memory > 0
+      loop: "{{ vk_info.results }}"
+      loop_control:
+        label: "{{ item.container.Name }}"
+      tags: [chk_hrd_02]
+
+    - name: The ACL file holds password hashes, not passwords
+      ansible.builtin.command: grep -c test-only /opt/valkey/cache-lab/conf/users.acl
+      register: vk_acl_plain
+      changed_when: false
+      failed_when: vk_acl_plain.stdout != '0'
+      tags: [chk_sec_02]

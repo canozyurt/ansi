@@ -1,0 +1,63 @@
+---
+# Deploys one RabbitMQ cluster (rabbitmq_cluster, an entry of rabbitmq_clusters) on this host.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_cfg: "{{ rabbitmq_cluster_defaults | combine(rabbitmq_cluster, recursive=true) }}"
+  no_log: true
+
+- name: Work out the cluster layout
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_hosts: "{{ groups[rabbitmq_cluster_cfg.group] | default([]) }}"
+    rabbitmq_cluster_first: "{{ (groups[rabbitmq_cluster_cfg.group] | default([inventory_hostname])) | first }}"
+    rabbitmq_cluster_dir: "{{ rabbitmq_cluster_base_dir }}/{{ rabbitmq_cluster_cfg.name }}"
+    rabbitmq_cluster_data_dir: >-
+      {{ rabbitmq_cluster_cfg.data_dir | default('', true) or (rabbitmq_cluster_base_dir ~ '/' ~ rabbitmq_cluster_cfg.name ~ '/data') }}
+    rabbitmq_cluster_instance_secrets_dir: "{{ rabbitmq_cluster_secrets_dir }}/{{ rabbitmq_cluster_cfg.name }}"
+    rabbitmq_cluster_ct: "{{ rabbitmq_cluster_cfg.name }}-rabbitmq"
+    rabbitmq_cluster_my_address: "{{ rabbitmq_cluster_node_address }}"
+    rabbitmq_cluster_my_ip: "{{ rabbitmq_cluster_node_ip }}"
+    rabbitmq_cluster_oidc_client_id: "{{ rabbitmq_cluster_cfg.oidc_client_id | default('', true) or ('rabbitmq-' ~ rabbitmq_cluster_cfg.name) }}"
+    rabbitmq_cluster_api: "https://127.0.0.1:{{ rabbitmq_cluster_cfg.ports.management }}/api"
+
+- name: Name the Erlang node
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_nodename: "rabbit@{{ rabbitmq_cluster_my_address }}"
+    rabbitmq_cluster_longnames: "{{ '.' in rabbitmq_cluster_my_address }}"
+
+- name: List the management UI addresses
+  ansible.builtin.set_fact:
+    # Where people open the management UI: the load-balanced name first, then every node.
+    rabbitmq_cluster_ui_urls: >-
+      {{ ([rabbitmq_cluster_cfg.management_url | regex_replace('/+$', '')] if rabbitmq_cluster_cfg.management_url | length > 0 else [])
+         + (rabbitmq_cluster_member_addresses | map('regex_replace', '^(.*)$', 'https://\\1:' ~ rabbitmq_cluster_cfg.ports.management) | list) }}
+  vars:
+    rabbitmq_cluster_member_addresses: >-
+      {{ rabbitmq_cluster_hosts | map('extract', hostvars) | map(attribute='rabbitmq_cluster_my_address', default='') | list }}
+
+- name: Check the cluster settings
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Check that the data directory is on encrypted storage
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Issue the certificates
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Register the management UI with Keycloak
+  ansible.builtin.import_tasks: oidc.yml
+
+- name: Write the configuration
+  ansible.builtin.import_tasks: config.yml
+
+- name: Start or roll the containers
+  ansible.builtin.import_tasks: containers.yml
+
+- name: Wait for the node and the cluster
+  ansible.builtin.import_tasks: health.yml
+
+- name: Declare vhosts, users and permissions
+  ansible.builtin.import_tasks: access.yml
+
+- name: Configure backups
+  ansible.builtin.import_tasks: backup.yml
+  when: rabbitmq_cluster_cfg.backup.enabled | bool

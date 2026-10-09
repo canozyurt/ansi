@@ -1,0 +1,90 @@
+---
+- name: Check the cluster name, group and nodes
+  ansible.builtin.assert:
+    that:
+      - garage_cluster_cfg.name is match('^[a-z][a-z0-9-]{0,30}$')
+      - garage_cluster_cfg.group | length > 0
+      - inventory_hostname in garage_cluster_hosts
+      - garage_cluster_all | map(attribute='name') | select('equalto', garage_cluster_cfg.name) | list | length == 1
+      - garage_cluster_cfg.replication_factor | int in [1, 2, 3, 5, 7]
+      - garage_cluster_cfg.replication_factor | int <= garage_cluster_hosts | length
+      - garage_cluster_cfg.consistency_mode in ['consistent', 'degraded', 'dangerous']
+    fail_msg: >-
+      Each entry of garage_clusters needs a unique name ([a-z][a-z0-9-], up to 31 characters), the inventory group
+      of its nodes (this host must be in it) and a replication_factor no larger than the number of nodes.
+    quiet: true
+
+- name: Require a highly available cluster (HA-01)
+  ansible.builtin.assert:
+    that:
+      - garage_cluster_hosts | length >= garage_cluster_min_nodes or garage_cluster_allow_single_node | bool
+      - garage_cluster_cfg.replication_factor | int >= 3 or garage_cluster_allow_single_node | bool
+      - garage_cluster_cfg.consistency_mode == 'consistent' or garage_cluster_allow_single_node | bool
+    fail_msg: >-
+      Garage cluster {{ garage_cluster_cfg.name }} needs at least {{ garage_cluster_min_nodes }} nodes, replication_factor 3
+      and consistency_mode consistent; group {{ garage_cluster_cfg.group }} has {{ garage_cluster_hosts | length }} nodes.
+      Set garage_cluster_allow_single_node only for labs and tests.
+    quiet: true
+  tags: [chk_ha_01]
+
+- name: Check the secrets of the cluster
+  ansible.builtin.assert:
+    that:
+      - garage_cluster_cfg.rpc_secret is match('^[0-9a-f]{64}$')
+      - garage_cluster_cfg.admin_token | length >= 32
+      - garage_cluster_cfg.metrics_token | length >= 32
+      - garage_cluster_cfg.admin_token is match('^[\x21-\x7e]+$')
+      - garage_cluster_cfg.metrics_token is match('^[\x21-\x7e]+$')
+      - garage_cluster_cfg['keys'] | map(attribute='access_key_id') | reject('match', '^GK[0-9a-f]{24}$') | list | length == 0
+      - garage_cluster_cfg['keys'] | map(attribute='secret_access_key') | reject('match', '^[0-9a-f]{64}$') | list | length == 0
+      - garage_cluster_secrets | unique | length == garage_cluster_secrets | length
+    fail_msg: >-
+      Garage cluster {{ garage_cluster_cfg.name }}: rpc_secret must be 64 hex characters, admin_token and metrics_token 32+
+      printable characters, every access key GK followed by 24 hex characters with a 64-hex-character secret, all
+      different. Keep them in Ansible Vault or OpenBao.
+    quiet: true
+  vars:
+    garage_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: No secret is shared with another cluster (DAT-01)
+  ansible.builtin.assert:
+    that: garage_cluster_secrets | intersect(garage_cluster_other_secrets) | length == 0
+    fail_msg: >-
+      Garage cluster {{ garage_cluster_cfg.name }} shares a secret or an access key with another cluster. Each cluster must
+      have its own credentials (DAT-01).
+    quiet: true
+  vars:
+    garage_cluster_secrets: "{{ query('ansible.builtin.template', 'secrets.json.j2') | first | from_json }}"
+    garage_cluster_other_secrets: >-
+      {{ query('ansible.builtin.template', 'secrets.json.j2',
+               template_vars={'garage_cluster_secret_entries': garage_cluster_all | rejectattr('name', 'equalto', garage_cluster_cfg.name) | list})
+         | first | from_json }}
+  no_log: true
+  tags: [chk_dat_01]
+
+- name: Check the keys and buckets
+  ansible.builtin.assert:
+    that:
+      - garage_cluster_key_names | reject('match', '^[a-z][a-z0-9_.-]{0,62}$') | list | length == 0
+      - garage_cluster_key_names | unique | length == garage_cluster_key_names | length
+      - garage_cluster_cfg.buckets | map(attribute='name') | reject('match', '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$') | list | length == 0
+      - garage_cluster_cfg.buckets | map(attribute='name') | unique | length == garage_cluster_cfg.buckets | length
+      - garage_cluster_cfg.buckets | map(attribute='access', default=[]) | flatten | map(attribute='key')
+        | difference(garage_cluster_key_names) | length == 0
+    fail_msg: >-
+      Garage cluster {{ garage_cluster_cfg.name }}: key names must be lower-case and unique, bucket names valid S3 names
+      (3-63 characters, lower case) and unique, and every bucket grant must name a declared key.
+    quiet: true
+  vars:
+    garage_cluster_key_names: "{{ garage_cluster_cfg['keys'] | map(attribute='name') | list }}"
+  tags: [chk_dat_01]
+
+- name: No two clusters on this host use the same port
+  ansible.builtin.assert:
+    that: garage_cluster_ports | unique | length == garage_cluster_ports | length
+    fail_msg: "Garage clusters on {{ inventory_hostname }} share ports: {{ garage_cluster_ports | sort | join(', ') }}"
+    quiet: true
+  vars:
+    garage_cluster_ports: "{{ query('ansible.builtin.template', 'ports.json.j2') | first | from_json }}"

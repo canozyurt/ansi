@@ -1,0 +1,26 @@
+---
+# Garage product playbook (docs/product-playbooks.md). Deploys every entry of garage_clusters: each is
+# an independent Garage object store (3 nodes, replication factor 3, S3 over TLS through an HAProxy
+# sidecar) on the hosts of its own inventory group, with its own RPC secret, admin and metrics tokens,
+# ports, data directories, keys, buckets and metadata snapshots (DAT-01).
+#
+#   ansible-playbook -i inventories/<company> playbooks/garage.yml [-e garage_only=s3-main]
+#
+# The "garage" group must contain every cluster group (see inventories/example/hosts.yml).
+# Version changes are refused here; they go through playbooks/upgrade.yml.
+
+- name: Deploy the Garage clusters
+  hosts: garage
+  become: true
+  tasks:
+    - name: Deploy each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: garage_cluster
+      loop: >-
+        {{ garage_clusters | default([]) | selectattr('group', 'in', group_names)
+           | selectattr('name', 'in', (garage_only | default('')).split(',') if garage_only | default('') | length > 0
+                                      else garage_clusters | default([]) | map(attribute='name') | list)
+           | list }}
+      loop_control:
+        loop_var: garage_cluster
+        label: "{{ garage_cluster.name }}"

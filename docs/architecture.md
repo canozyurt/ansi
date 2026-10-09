@@ -260,6 +260,36 @@ Operator workflow: [docs/access.md](access.md).
   into a new instance (playbooks/postgres_major_upgrade.yml, runbook).
 - Data at rest: LUKS on the data volume is a host prerequisite; the role checks for dm-crypt and warns/fails.
 
+## Valkey (product playbook)
+- `playbooks/valkey.yml` deploys every entry of `valkey_clusters` on its own inventory group under `valkey` (3 nodes; 1 only with
+  `valkey_cluster_allow_single_node`). Design notes in docs/datastores.md.
+- Per node `<name>-valkey` (pinned valkey/valkey), `<name>-sentinel` and `<name>-exporter` (pinned redis_exporter); read-only, no capabilities.
+- First node starts as primary, the others replicate; 3 Sentinels (quorum 2) fail over. Changes roll replicas, failover, former primary.
+- TLS 1.2+ only (`port 0`) for clients, replication and Sentinel; certificate from tls_cert.
+- ACLs: `default` off; one user per application limited to its key prefix and data commands (no CONFIG, DEBUG, FLUSHALL, KEYS).
+- AOF everysec plus RDB; backup_register runs BGSAVE and copies the RDB. Metrics: redis_exporter 9121 (HTTPS, basic auth).
+
+## RabbitMQ (product playbook)
+- `playbooks/rabbitmq.yml` deploys every entry of `rabbitmq_clusters` (3 nodes, classic peer discovery, `pause_minority`,
+  quorum queues by default). Pinned rabbitmq alpine image; management, prometheus and oauth2 plugins enabled by file.
+- TLS only: AMQPS 5671, management 15671, Prometheus 15691. Erlang distribution and the CLI tools use `inet_tls` with one shared
+  option file; peers are verified with CA-signed certificates, only encrypted with temporary self-signed ones (Erlang rejects a lone
+  self-signed peer certificate). Membership is authenticated by the per-cluster Erlang cookie.
+- Management UI login via Keycloak (oidc_client, PKCE): platform-admin administrator, operator monitoring+policymaker, developer
+  management on its vhosts, auditor monitoring. Basic auth stays for the HTTP API (break-glass admin).
+- Per-application vhosts and users with least privilege; guest and undeclared users are removed.
+- backup_register exports the definitions; messages are transient by design and not backed up (quorum queues replicate them).
+
+## Garage (product playbook)
+- `playbooks/garage.yml` deploys every entry of `garage_clusters` (3 nodes, replication factor 3, zones from `garage_cluster_zone`);
+  the layout is applied through the admin API v2.
+- Garage does not terminate TLS: an HAProxy sidecar (edge image) serves S3 on 3900 and only /metrics and /health on 3904;
+  Garage's S3 and admin listeners are loopback only. RPC (3901) is encrypted with the per-cluster RPC secret.
+- Keys are generated in Vault/OpenBao and imported; they cannot create buckets and only get declared grants.
+- Data at rest: LUKS is a host prerequisite (checked, metric, alert); SSE-C per object is available to applications.
+- backup_register keeps metadata snapshots; object data relies on 3 replicas. Garage can serve as the S3 target for
+  `backup_s3_*`, Wazuh snapshots and Forgejo storage.
+
 ## Central logging and SIEM (Wazuh)
 - Wazuh 4.x (GPLv2): indexer and dashboard are OpenSearch forks, so SSO, audit logs and clustering are free.
 - Indexer: 3 nodes on the `siem` group, 1 replica per index, heap as a variable; TLS between nodes and to

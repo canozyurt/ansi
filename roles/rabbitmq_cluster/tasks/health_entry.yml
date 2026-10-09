@@ -1,0 +1,12 @@
+---
+# Entry point for other playbooks (rolling_reboot.yml, upgrade.yml preflight):
+#   include_role: { name: rabbitmq_cluster, tasks_from: health_entry }  with rabbitmq_cluster set.
+- name: Merge the cluster entry over the defaults
+  ansible.builtin.set_fact:
+    rabbitmq_cluster_cfg: "{{ rabbitmq_cluster_defaults | combine(rabbitmq_cluster, recursive=true) }}"
+    rabbitmq_cluster_hosts: "{{ groups[rabbitmq_cluster.group] | default([]) }}"
+    rabbitmq_cluster_ct: "{{ rabbitmq_cluster.name }}-rabbitmq"
+  no_log: true
+
+- name: Wait for the node
+  ansible.builtin.import_tasks: health.yml

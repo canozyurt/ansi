@@ -1,0 +1,182 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    gr_admin: http://127.0.0.1:3903
+    gr_headers: { Authorization: "Bearer test-only-garage-admin-token-0123456789" }
+    gr_ca: /opt/garage/s3-lab/tls/tls.crt
+    gr_s3: https://127.0.0.1:3900
+    gr_orders: { id: GK3bcabd5f1d6668823225ba40, secret: e6dcf76321bc8f746c960f556d695cc092876274a43767f65aac250e5e1362a8 }
+    gr_reports: { id: GKd74b3bf77070853fc426f564, secret: 8dcbe4a278e11fa770978857223c053360049dbe4a532fb2c388706840dc2f53 }
+  tasks:
+    - name: Read the layout and the cluster health
+      ansible.builtin.uri:
+        url: "{{ gr_admin }}/v2/{{ item }}"
+        headers: "{{ gr_headers }}"
+      loop: [GetClusterLayout, GetClusterHealth]
+      register: gr_cluster
+      tags: [chk_ha_01]
+
+    - name: Check that the layout is applied and the cluster healthy
+      ansible.builtin.assert:
+        that:
+          - gr_cluster.results[0].json.version >= 1
+          - gr_cluster.results[0].json.roles | length == 1
+          - gr_cluster.results[0].json.roles[0].zone == inventory_hostname
+          - gr_cluster.results[0].json.roles[0].capacity == 1073741824
+          - gr_cluster.results[0].json.stagedRoleChanges | length == 0
+          - gr_cluster.results[1].json.status == 'healthy'
+        fail_msg: "{{ gr_cluster.results | map(attribute='json') | list | to_json }}"
+      tags: [chk_ha_01]
+
+    - name: Read the buckets and keys
+      ansible.builtin.uri:
+        url: "{{ gr_admin }}/v2/{{ item }}"
+        headers: "{{ gr_headers }}"
+      loop:
+        - GetBucketInfo?globalAlias=orders-files
+        - GetKeyInfo?id={{ gr_orders.id }}
+      register: gr_objects
+      tags: [chk_dat_01]
+
+    - name: Check the bucket grants and key permissions
+      ansible.builtin.assert:
+        that:
+          - gr_objects.results[0].json['keys'] | map(attribute='accessKeyId') | list == [gr_orders.id]
+          - "gr_objects.results[0].json['keys'][0].permissions == {'read': true, 'write': true, 'owner': false}"
+          - not gr_objects.results[1].json.permissions.createBucket
+          - gr_objects.results[1].json.name == 'orders-api'
+        fail_msg: "{{ gr_objects.results | map(attribute='json') | list | to_json }}"
+      tags: [chk_dat_01]
+
+    - name: Copy the S3 probe
+      ansible.builtin.copy:
+        src: s3_probe.py
+        dest: /usr/local/bin/s3_probe.py
+        mode: "0755"
+
+    - name: Use the S3 API over TLS with the application keys
+      ansible.builtin.command:
+        argv: "{{ ['/usr/local/bin/s3_probe.py', item.method, gr_s3 ~ item.path, 'garage', gr_ca] + ([item.body] if item.body is defined else []) }}"
+      environment:
+        AWS_ACCESS_KEY_ID: "{{ item.key.id }}"
+        AWS_SECRET_ACCESS_KEY: "{{ item.key.secret }}"
+      loop:
+        - { key: "{{ gr_orders }}", method: PUT, path: /orders-files/hello.txt, body: hello-from-orders }
+        - { key: "{{ gr_orders }}", method: GET, path: /orders-files/hello.txt }
+        - { key: "{{ gr_reports }}", method: GET, path: /orders-files/hello.txt }
+        - { key: "{{ gr_reports }}", method: PUT, path: /orders-files/evil.txt, body: nope }
+        - { key: "{{ gr_orders }}", method: PUT, path: /new-bucket-by-app }
+        - { key: { id: "{{ gr_orders.id }}", secret: "{{ gr_reports.secret }}" }, method: GET, path: /orders-files/hello.txt }
+      loop_control:
+        label: "{{ item.method }} {{ item.path }}"
+      register: gr_s3_calls
+      changed_when: false
+      tags: [chk_sec_03, chk_dat_01]
+
+    - name: Check put/get with the owner key and refusals for the others
+      ansible.builtin.assert:
+        that:
+          - gr_s3_calls.results[0].stdout is match('^200')
+          - gr_s3_calls.results[1].stdout == '200 hello-from-orders'
+          - gr_s3_calls.results[2].stdout is match('^403')
+          - gr_s3_calls.results[3].stdout is match('^403')
+          - gr_s3_calls.results[4].stdout is match('^403')
+          - gr_s3_calls.results[5].stdout is match('^403')
+        fail_msg: "{{ gr_s3_calls.results | map(attribute='stdout') | list | to_json }}"
+      tags: [chk_sec_03, chk_dat_01]
+
+    - name: The plaintext S3 and admin ports are bound to the loopback interface only
+      ansible.builtin.command: ss -Htln
+      register: gr_listeners
+      changed_when: false
+      tags: [chk_sec_03]
+
+    - name: Check the listeners
+      ansible.builtin.assert:
+        that:
+          - gr_listeners.stdout is search('127\.0\.0\.1:3910\s')
+          - gr_listeners.stdout is search('127\.0\.0\.1:3903\s')
+          - gr_listeners.stdout is not search('(0\.0\.0\.0|\*|\[::\]):(3910|3903)\s')
+        fail_msg: "{{ gr_listeners.stdout }}"
+      tags: [chk_sec_03]
+
+    - name: Scrape the metrics over TLS with the metrics token
+      ansible.builtin.uri:
+        url: https://127.0.0.1:3904/metrics
+        headers: { Authorization: "Bearer test-only-garage-metrics-token-0123456789" }
+        ca_path: "{{ gr_ca }}"
+        return_content: true
+      register: gr_metrics
+      tags: [chk_log_05]
+
+    - name: The metrics endpoint refuses requests without the token, and the admin API is not exposed
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:3904{{ item.path }}"
+        ca_path: "{{ gr_ca }}"
+        headers: { Authorization: "Bearer test-only-garage-admin-token-0123456789" }
+        status_code: "{{ item.status }}"
+      loop:
+        - { path: /v2/ListKeys, status: [403] }
+        - { path: /health, status: [200] }
+      tags: [chk_log_05, chk_sec_03]
+
+    - name: Scrape without a token
+      ansible.builtin.uri:
+        url: https://127.0.0.1:3904/metrics
+        ca_path: "{{ gr_ca }}"
+        status_code: [401, 403]
+      tags: [chk_log_05]
+
+    - name: Check the metrics
+      ansible.builtin.assert:
+        that:
+          - "'cluster_healthy' in gr_metrics.content"
+          - "'cluster_partitions_all_ok' in gr_metrics.content or 'cluster_partitions' in gr_metrics.content"
+      tags: [chk_log_05]
+
+    - name: Run the metadata snapshot
+      ansible.builtin.command: /usr/local/sbin/garage-s3-lab-backup
+      changed_when: true
+      tags: [chk_bck_01]
+
+    - name: Find the snapshot files
+      ansible.builtin.find:
+        paths: /opt/garage/s3-lab/snapshots
+        recurse: true
+      register: gr_snapshots
+      tags: [chk_bck_01]
+
+    - name: Read the backup declaration
+      ansible.builtin.stat:
+        path: /etc/compliant-infra/backup.d/garage-s3-lab.json
+      register: gr_decl
+      tags: [chk_bck_01]
+
+    - name: Check the snapshot and its registration
+      ansible.builtin.assert:
+        that:
+          - gr_snapshots.matched > 0
+          - gr_decl.stat.exists
+      tags: [chk_bck_01]
+
+    - name: Inspect the containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [s3-lab-garage, s3-lab-garage-tls]
+      register: gr_info
+
+    - name: Check container hardening
+      ansible.builtin.assert:
+        that:
+          - item.container.HostConfig.ReadonlyRootfs
+          - item.container.HostConfig.CapDrop == ['ALL']
+          - "'no-new-privileges:true' in item.container.HostConfig.SecurityOpt"
+          - item.container.Config.User is match('^[1-9][0-9]*:')
+          - item.container.HostConfig.Memory > 0
+      loop: "{{ gr_info.results }}"
+      loop_control:
+        label: "{{ item.container.Name }}"
+      tags: [chk_hrd_02]

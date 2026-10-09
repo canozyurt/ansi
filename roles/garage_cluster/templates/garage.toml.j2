@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+# Garage cluster {{ garage_cluster_cfg.name }}, node {{ garage_cluster_my_address }}.
+replication_factor = {{ garage_cluster_cfg.replication_factor | int }}
+consistency_mode = "{{ garage_cluster_cfg.consistency_mode }}"
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+metadata_snapshots_dir = "/var/lib/garage/snapshots"
+metadata_auto_snapshot_interval = "{{ garage_cluster_cfg.metadata_auto_snapshot_interval }}"
+db_engine = "lmdb"
+metadata_fsync = true
+data_fsync = false
+
+# RPC between members: encrypted and authenticated with the cluster's secret (DAT-01: one per cluster).
+rpc_bind_addr = "0.0.0.0:{{ garage_cluster_cfg.ports.rpc }}"
+rpc_public_addr = "{{ garage_cluster_my_address }}:{{ garage_cluster_cfg.ports.rpc }}"
+rpc_secret_file = "/etc/garage/secrets/rpc_secret"
+
+[s3_api]
+# Loopback only: clients reach the S3 API through the TLS sidecar on port {{ garage_cluster_cfg.ports.s3 }}.
+api_bind_addr = "127.0.0.1:{{ garage_cluster_cfg.ports.s3_local }}"
+s3_region = "{{ garage_cluster_cfg.region }}"
+
+[admin]
+# Loopback only: the TLS sidecar exposes /metrics and /health on port {{ garage_cluster_cfg.ports.metrics }}.
+api_bind_addr = "127.0.0.1:{{ garage_cluster_cfg.ports.admin_local }}"
+admin_token_file = "/etc/garage/secrets/admin_token"
+metrics_token_file = "/etc/garage/secrets/metrics_token"
+metrics_require_token = true

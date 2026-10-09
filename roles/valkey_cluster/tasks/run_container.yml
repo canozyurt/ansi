@@ -1,0 +1,31 @@
+---
+# Runs one container of the instance from its specification (valkey_cluster_spec). Used for the first start, for
+# check-mode comparisons and, delegated to another member, by the rolling replacement.
+- name: Run container {{ valkey_cluster_spec.name }}
+  community.docker.docker_container:
+    name: "{{ valkey_cluster_spec.name }}"
+    image: "{{ valkey_cluster_spec.image }}"
+    command: "{{ valkey_cluster_spec.command | default(omit) }}"
+    user: "{{ valkey_cluster_spec.user }}"
+    network_mode: host
+    env_file: "{{ valkey_cluster_spec.env_file | default(omit) }}"
+    volumes: "{{ valkey_cluster_spec.volumes }}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,uid={{ valkey_cluster_uid }},gid={{ valkey_cluster_gid }},mode=0700
+    read_only: true
+    memory: "{{ valkey_cluster_spec.memory }}"
+    memory_swap: "{{ valkey_cluster_spec.memory }}"
+    pids_limit: "{{ valkey_cluster_spec.pids }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    restart_policy: unless-stopped
+    stop_timeout: "{{ valkey_cluster_spec.stop_timeout | default(30) }}"
+    labels:
+      com.compliant-infra.role: valkey_cluster
+      com.compliant-infra.cluster: "{{ valkey_cluster_cfg.name }}"
+    state: started
+    restart: "{{ valkey_cluster_restart | default(false) | bool }}"
+  delegate_to: "{{ valkey_cluster_target | default(inventory_hostname) }}"
+  check_mode: "{{ valkey_cluster_check | default(false) | bool }}"
+  register: valkey_cluster_run
+  tags: [chk_hrd_02]

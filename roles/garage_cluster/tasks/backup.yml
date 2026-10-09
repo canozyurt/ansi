@@ -1,0 +1,27 @@
+---
+# BCK-01: a consistent snapshot of this node's metadata database (buckets, keys, object index, layout)
+# is taken before every backup; Garage keeps the two most recent in the snapshots directory.
+# Object data is not copied by this backup: it is replicated on replication_factor nodes (HA-01).
+# Copy buckets that need an off-cluster copy to another S3 target (rclone, or the backup role for
+# data an application restores itself).
+- name: Install the metadata snapshot script
+  ansible.builtin.template:
+    src: garage-backup.sh.j2
+    dest: "/usr/local/sbin/garage-{{ garage_cluster_cfg.name }}-backup"
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [chk_bck_01]
+
+- name: Register the metadata snapshots with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: "garage-{{ garage_cluster_cfg.name }}"
+    backup_register_paths: ["{{ garage_cluster_dir }}/snapshots"]
+    backup_register_pre_command: "/usr/local/sbin/garage-{{ garage_cluster_cfg.name }}-backup"
+    backup_register_verify_command: >-
+      find "$RESTORE_DIR{{ garage_cluster_dir }}/snapshots" -mindepth 1 -type f -size +0 | grep -q .
+    backup_register_rpo_hours: "{{ garage_cluster_cfg.backup.rpo_hours }}"
+    backup_register_rto_hours: "{{ garage_cluster_cfg.backup.rto_hours }}"
+  tags: [chk_bck_01]

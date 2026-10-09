@@ -1,0 +1,37 @@
+---
+# Garage object stores (playbooks/garage.yml, roles/garage_cluster). Each entry is an independent cluster on
+# the hosts of its own inventory group (a child of "garage"), with its own RPC secret, tokens, keys and
+# buckets (DAT-01). Keep secrets in Ansible Vault or OpenBao.
+#
+# Garage is an S3 target for the rest of the repo: the backup role (backup_s3_* settings), Wazuh index
+# snapshots and Forgejo's object storage can each use their own bucket and key here. Point them at
+# https://<node or load-balanced name>:3900 with region "garage" and path-style addressing.
+garage_clusters:
+  - name: s3-main
+    group: garage_s3_main
+    rpc_secret: "{{ vault_garage_s3_main_rpc_secret }}"
+    admin_token: "{{ vault_garage_s3_main_admin_token }}"
+    metrics_token: "{{ vault_garage_s3_main_metrics_token }}"
+    capacity: 500G
+    tls_alt_names: [s3.example.internal]
+    keys:
+      - name: orders-api
+        access_key_id: "{{ vault_garage_s3_main_orders_api_key_id }}"
+        secret_access_key: "{{ vault_garage_s3_main_orders_api_secret }}"
+      - name: forgejo
+        access_key_id: "{{ vault_garage_s3_main_forgejo_key_id }}"
+        secret_access_key: "{{ vault_garage_s3_main_forgejo_secret }}"
+      - name: wazuh-snapshots
+        access_key_id: "{{ vault_garage_s3_main_wazuh_key_id }}"
+        secret_access_key: "{{ vault_garage_s3_main_wazuh_secret }}"
+    buckets:
+      - name: orders-files
+        access:
+          - { key: orders-api, read: true, write: true }
+      - name: forgejo
+        access:
+          - { key: forgejo, read: true, write: true }
+      - name: wazuh-snapshots
+        access:
+          - { key: wazuh-snapshots, read: true, write: true }
+garage_cluster_require_encrypted_storage: true

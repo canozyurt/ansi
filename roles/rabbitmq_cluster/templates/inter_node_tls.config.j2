@@ -1,0 +1,30 @@
+%% {{ ansible_managed }}
+%% Erlang distribution over TLS between the members of {{ rabbitmq_cluster_cfg.name }} and for the CLI tools.
+%% The server process and the CLI tools (rabbitmqctl, rabbitmq-diagnostics) both load this file
+%% (RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS and RABBITMQ_CTL_ERL_ARGS), so they always speak the same
+%% protocol. Membership itself is authenticated by the cluster's Erlang cookie; no client certificates
+%% are requested (the internal PKI issues server certificates).
+%%
+%% Peer verification: with a CA-signed certificate (internal PKI or organisation files) the connecting
+%% side verifies the certificate of the node it connects to. Erlang's ssl application rejects a lone
+%% self-signed peer certificate ({bad_cert, selfsigned_peer}) even when that certificate is in
+%% cacertfile, so with temporary self-signed certificates (labs, first run before the PKI exists) the
+%% distribution stays encrypted but the certificate is not verified; the cookie still authenticates.
+%% Certificate source of this node: {{ rabbitmq_cluster_cert_source }}.
+[
+  {server, [
+    {cacertfile, "/tls/ca-bundle.crt"},
+    {certfile, "/tls/tls.crt"},
+    {keyfile, "/tls/tls.key"},
+    {secure_renegotiate, true},
+    {verify, verify_none},
+    {fail_if_no_peer_cert, false},
+    {versions, ['tlsv1.3', 'tlsv1.2']}
+  ]},
+  {client, [
+    {cacertfile, "/tls/ca-bundle.crt"},
+    {secure_renegotiate, true},
+    {verify, {{ 'verify_none' if rabbitmq_cluster_cert_source == 'selfsigned' else 'verify_peer' }}},
+    {versions, ['tlsv1.3', 'tlsv1.2']}
+  ]}
+].

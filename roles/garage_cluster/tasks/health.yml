@@ -1,0 +1,31 @@
+---
+# Waits until the node's admin API answers and, with garage_cluster_health_cluster, until the cluster
+# reports itself healthy (every partition has all its copies).
+- name: Wait until the Garage node answers
+  ansible.builtin.uri:
+    url: "{{ garage_cluster_admin }}/v2/GetNodeInfo?node=self"
+    headers:
+      Authorization: "Bearer {{ garage_cluster_cfg.admin_token }}"
+  delegate_to: "{{ garage_cluster_health_target | default(inventory_hostname) }}"
+  register: garage_cluster_node_info
+  until: garage_cluster_node_info.status | default(0) == 200 and garage_cluster_node_info.json.success | default({}) | length == 1
+  retries: 30
+  delay: 3
+  check_mode: false
+  no_log: true
+  tags: [chk_log_05]
+
+- name: Wait until the cluster is healthy
+  ansible.builtin.uri:
+    url: "{{ garage_cluster_admin }}/v2/GetClusterHealth"
+    headers:
+      Authorization: "Bearer {{ garage_cluster_cfg.admin_token }}"
+  delegate_to: "{{ garage_cluster_health_target | default(inventory_hostname) }}"
+  register: garage_cluster_health
+  until: garage_cluster_health.status | default(0) == 200 and garage_cluster_health.json.status | default('') == 'healthy'
+  retries: 60
+  delay: 5
+  check_mode: false
+  no_log: true
+  when: garage_cluster_health_cluster | default(false) | bool
+  tags: [chk_ha_01]

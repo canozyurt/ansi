@@ -1,0 +1,7 @@
+---
+# Valkey instance cache-main (NET-01, NET-03): applications reach Valkey and Sentinel; members reach each
+# other on the same ports; Prometheus reaches redis_exporter.
+firewall_rules_valkey_cache_main:
+  - { name: valkey-cache-main, port: 6379, sources: ["{{ network_zones.app }}", "{{ network_zones.data }}"] }
+  - { name: valkey-cache-main-sentinel, port: 26379, sources: ["{{ network_zones.app }}", "{{ network_zones.data }}"] }
+  - { name: valkey-cache-main-exporter, port: 9121, sources: "{{ monitoring_source_cidrs }}" }

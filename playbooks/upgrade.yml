@@ -139,6 +139,81 @@
         label: "{{ postgres_cluster.name }}"
       tags: [chk_chg_07]
 
+- name: Back up and upgrade the Valkey instances
+  hosts: valkey
+  become: true
+  max_fail_percentage: 0
+  vars:
+    # The role replaces one member at a time itself (replicas first, a Sentinel failover, then the former primary), CHG-07 and HA-01.
+    valkey_cluster_upgrade: true
+  tasks:
+    - name: Snapshot every instance (BGSAVE and copy of the RDB) before the new version (BCK-01)
+      ansible.builtin.command: "/usr/local/sbin/valkey-{{ item.name }}-backup"
+      loop: "{{ valkey_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      tags: [chk_chg_07, chk_bck_01]
+
+    - name: Upgrade each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: valkey_cluster
+      loop: "{{ valkey_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: valkey_cluster
+        label: "{{ valkey_cluster.name }}"
+      tags: [chk_chg_07]
+
+- name: Back up and upgrade the RabbitMQ clusters
+  hosts: rabbitmq
+  become: true
+  max_fail_percentage: 0
+  vars:
+    # The role replaces one member at a time itself (one node at a time, each back in the cluster before the next), CHG-07 and HA-01.
+    rabbitmq_cluster_upgrade: true
+  tasks:
+    - name: Export the definitions of every cluster before the new version (BCK-01)
+      ansible.builtin.command: "/usr/local/sbin/rabbitmq-{{ item.name }}-backup"
+      loop: "{{ rabbitmq_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      tags: [chk_chg_07, chk_bck_01]
+
+    - name: Upgrade each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: rabbitmq_cluster
+      loop: "{{ rabbitmq_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: rabbitmq_cluster
+        label: "{{ rabbitmq_cluster.name }}"
+      tags: [chk_chg_07]
+
+- name: Back up and upgrade the Garage clusters
+  hosts: garage
+  become: true
+  max_fail_percentage: 0
+  vars:
+    # The role replaces one member at a time itself (one node at a time, waiting for a healthy cluster in between), CHG-07 and HA-01.
+    garage_cluster_upgrade: true
+  tasks:
+    - name: Snapshot the metadata of every cluster before the new version (BCK-01)
+      ansible.builtin.command: "/usr/local/sbin/garage-{{ item.name }}-backup"
+      loop: "{{ garage_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      tags: [chk_chg_07, chk_bck_01]
+
+    - name: Upgrade each cluster this host belongs to
+      ansible.builtin.include_role:
+        name: garage_cluster
+      loop: "{{ garage_clusters | default([]) | selectattr('group', 'in', group_names) | list }}"
+      loop_control:
+        loop_var: garage_cluster
+        label: "{{ garage_cluster.name }}"
+      tags: [chk_chg_07]
+
 - name: Check the SIEM is healthy before upgrading
   hosts: siem
   become: true

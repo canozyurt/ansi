@@ -1,0 +1,58 @@
+---
+# Scrape targets for every Garage cluster in garage_clusters (LOG-05): one job per cluster,
+# garage-<name>, /metrics through the TLS sidecar on every node with the cluster's metrics token.
+garage_scrape_catalog: >-
+  {%- set out = [] -%}
+  {%- for c in garage_clusters | default([]) -%}
+  {%-   set ports = {'metrics': 3904} | combine(c.ports | default({})) -%}
+  {%-   set _ = out.append({'name': 'garage-' ~ c.name, 'group': c.group, 'port': ports.metrics,
+                           'path': '/metrics', 'scheme': 'https', 'bearer_token': c.metrics_token}) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+prometheus_scrape_extra_garage: "{{ garage_scrape_catalog | from_json }}"
+
+# Garage alert rules (collected by roles/prometheus as prometheus_rules_*). Scrape jobs are named
+# garage-<cluster>; every node serves /metrics on port 3904 (TLS sidecar, metrics token).
+prometheus_rules_garage:
+  - name: garage
+    rules:
+      - alert: GarageNodeDown
+        expr: up{job=~"garage-.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "A Garage node does not answer its metrics endpoint (see the job and instance labels)" }
+      - alert: GarageStorageNodesDown
+        expr: cluster_storage_nodes_ok{job=~"garage-.*"} < cluster_storage_nodes{job=~"garage-.*"}
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "A Garage node with a storage role is not connected to the cluster" }
+      - alert: GaragePartitionsDegraded
+        expr: cluster_partitions_all_ok{job=~"garage-.*"} < cluster_partitions{job=~"garage-.*"}
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Some Garage partitions do not have all their copies (a node is down or resyncing)" }
+      - alert: GaragePartitionsNoQuorum
+        expr: cluster_partitions_quorum{job=~"garage-.*"} < cluster_partitions{job=~"garage-.*"}
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Some Garage partitions lost their write quorum; requests on them fail" }
+      - alert: GarageUnhealthy
+        expr: cluster_healthy{job=~"garage-.*"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Garage reports the cluster as not fully healthy" }
+      - alert: GarageDiskLow
+        expr: garage_local_disk_avail{job=~"garage-.*"} / garage_local_disk_total{job=~"garage-.*"} < 0.15
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "A Garage data or metadata volume has less than 15% free space" }
+      - alert: GarageResyncQueueGrowing
+        expr: block_resync_queue_length{job=~"garage-.*"} > 10000
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "Garage has a large block resync backlog" }
+      - alert: GarageDataNotEncrypted
+        expr: max by (cluster) (datastore_data_dir_encrypted{product="garage"} + datastore_data_dir_encryption_attested{product="garage"}) == 0
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "Garage data or metadata is neither on LUKS nor attested as provider-encrypted (SEC-04)" }

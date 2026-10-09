@@ -1,0 +1,137 @@
+---
+# Per-application access keys and buckets (DAT-01): keys may not create buckets and reach only the
+# buckets that grant them read, write or owner; grants that are not declared are revoked. Keys come
+# from the inventory (Vault/OpenBao) and are imported, so their secrets never leave the secret store.
+- name: Declare keys, buckets and grants
+  when: inventory_hostname == (garage_cluster_hosts | select('in', ansible_play_hosts) | first)
+  tags: [chk_dat_01]
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        Authorization: "Bearer {{ garage_cluster_cfg.admin_token }}"
+      timeout: 30
+  block:
+    - name: Read the keys and buckets
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/{{ item }}"
+      loop: [ListKeys, ListBuckets]
+      register: garage_cluster_current
+      no_log: true
+
+    - name: Read the secrets of the declared keys that exist
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetKeyInfo?id={{ item.access_key_id }}&showSecretKey=true"
+      loop: "{{ garage_cluster_cfg['keys'] | selectattr('access_key_id', 'in', garage_cluster_current.results[0].json | map(attribute='id') | list) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: garage_cluster_key_info
+      no_log: true
+
+    - name: Remove declared keys whose secret changed (rotation)
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/DeleteKey?id={{ item.item.access_key_id }}"
+        method: POST
+      loop: "{{ garage_cluster_key_info.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.secretAccessKey != item.item.secret_access_key
+      changed_when: true
+      no_log: true
+
+    - name: List the keys that remain
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/ListKeys"
+      register: garage_cluster_keys_left
+      no_log: true
+
+    - name: Import the declared keys
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/ImportKey"
+        method: POST
+        body_format: json
+        body:
+          accessKeyId: "{{ item.access_key_id }}"
+          secretAccessKey: "{{ item.secret_access_key }}"
+          name: "{{ item.name }}"
+      loop: "{{ garage_cluster_cfg['keys'] }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.access_key_id not in (garage_cluster_keys_left.json | map(attribute='id') | list)
+      changed_when: true
+      no_log: true
+
+    - name: Read the declared keys
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetKeyInfo?id={{ item.access_key_id }}"
+      loop: "{{ garage_cluster_cfg['keys'] }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: garage_cluster_keys_now
+
+    - name: Keys may not create buckets and keep their names
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/UpdateKey?id={{ item.item.access_key_id }}"
+        method: POST
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          deny: { createBucket: true }
+          neverExpires: true
+      loop: "{{ garage_cluster_keys_now.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.permissions.createBucket | default(false) or item.json.name != item.item.name
+      changed_when: true
+
+    - name: Create the declared buckets
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/CreateBucket"
+        method: POST
+        body_format: json
+        body:
+          globalAlias: "{{ item.name }}"
+      loop: "{{ garage_cluster_cfg.buckets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.name not in (garage_cluster_current.results[1].json | map(attribute='globalAliases') | flatten)
+      changed_when: true
+
+    - name: Read the declared buckets
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/GetBucketInfo?globalAlias={{ item.name }}"
+      loop: "{{ garage_cluster_cfg.buckets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: garage_cluster_buckets_now
+
+    - name: Work out the grant changes
+      ansible.builtin.set_fact:
+        garage_cluster_grants: "{{ query('ansible.builtin.template', 'grants.json.j2') | first | from_json }}"
+
+    - name: Grant the declared permissions
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/AllowBucketKey"
+        method: POST
+        body_format: json
+        body:
+          bucketId: "{{ item.bucket_id }}"
+          accessKeyId: "{{ item.key_id }}"
+          permissions: "{{ item.permissions }}"
+      loop: "{{ garage_cluster_grants.allow }}"
+      loop_control:
+        label: "{{ item.label }}"
+      changed_when: true
+
+    - name: Revoke permissions that are not declared
+      ansible.builtin.uri:
+        url: "{{ garage_cluster_admin }}/v2/DenyBucketKey"
+        method: POST
+        body_format: json
+        body:
+          bucketId: "{{ item.bucket_id }}"
+          accessKeyId: "{{ item.key_id }}"
+          permissions: "{{ item.permissions }}"
+      loop: "{{ garage_cluster_grants.deny }}"
+      loop_control:
+        label: "{{ item.label }}"
+      changed_when: true

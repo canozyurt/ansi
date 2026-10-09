@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+# Sentinel of Valkey instance {{ valkey_cluster_cfg.name }} on {{ inventory_hostname }}. Sentinel rewrites this file
+# with what it learns; Ansible writes it again only when the managed settings change.
+port 0
+tls-port {{ valkey_cluster_cfg.ports.sentinel }}
+tls-cert-file /tls/tls.crt
+tls-key-file /tls/tls.key
+tls-ca-cert-file /tls/ca-bundle.crt
+tls-auth-clients no
+tls-replication yes
+tls-protocols "TLSv1.2 TLSv1.3"
+tls-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+tls-prefer-server-ciphers yes
+dir /tmp
+loglevel notice
+logfile ""
+
+# Clients discover the primary here; application users may only ask for addresses.
+user default off resetkeys resetchannels -@all
+user admin on #{{ valkey_cluster_cfg.admin_password | hash('sha256') }} ~* &* +@all
+user sentinel on #{{ valkey_cluster_cfg.sentinel_password | hash('sha256') }} ~* &* +@all
+{% for u in valkey_cluster_cfg.users %}
+user {{ u.name }} on #{{ u.password | hash('sha256') }} resetkeys allchannels -@all +ping +hello +auth +client|setname +client|setinfo +role +subscribe +psubscribe +unsubscribe +punsubscribe +sentinel|get-master-addr-by-name +sentinel|get-primary-addr-by-name +sentinel|sentinels +sentinel|replicas +sentinel|slaves +sentinel|master +sentinel|primary
+{% endfor %}
+
+sentinel resolve-hostnames yes
+sentinel announce-hostnames yes
+sentinel announce-ip {{ valkey_cluster_my_address }}
+sentinel announce-port {{ valkey_cluster_cfg.ports.sentinel }}
+sentinel deny-scripts-reconfig yes
+sentinel sentinel-user sentinel
+sentinel sentinel-pass {{ valkey_cluster_cfg.sentinel_password }}
+
+sentinel monitor {{ valkey_cluster_cfg.name }} {{ 'PRIMARY' if valkey_cluster_render_base | default(false) else hostvars[valkey_cluster_primary_host].valkey_cluster_my_address }} {{ valkey_cluster_cfg.ports.valkey }} {{ valkey_cluster_quorum }}
+sentinel auth-user {{ valkey_cluster_cfg.name }} sentinel
+sentinel auth-pass {{ valkey_cluster_cfg.name }} {{ valkey_cluster_cfg.sentinel_password }}
+sentinel down-after-milliseconds {{ valkey_cluster_cfg.name }} {{ valkey_cluster_cfg.sentinel.down_after_ms }}
+sentinel failover-timeout {{ valkey_cluster_cfg.name }} {{ valkey_cluster_cfg.sentinel.failover_timeout_ms }}
+sentinel parallel-syncs {{ valkey_cluster_cfg.name }} {{ valkey_cluster_cfg.sentinel.parallel_syncs }}

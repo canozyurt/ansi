@@ -1,0 +1,14 @@
+---
+# Entry point for other playbooks (rolling_reboot.yml, upgrade.yml preflight):
+#   include_role: { name: valkey_cluster, tasks_from: health_entry }  with valkey_cluster set.
+- name: Merge the instance entry over the defaults
+  ansible.builtin.set_fact:
+    valkey_cluster_cfg: "{{ valkey_cluster_defaults | combine(valkey_cluster, recursive=true) }}"
+    valkey_cluster_ct:
+      valkey: "{{ valkey_cluster.name }}-valkey"
+      sentinel: "{{ valkey_cluster.name }}-sentinel"
+    valkey_cluster_cli: [valkey-cli, --tls, --cacert, /tls/ca-bundle.crt, -h, 127.0.0.1, --user, admin, --no-auth-warning]
+  no_log: true
+
+- name: Wait for the node
+  ansible.builtin.import_tasks: health.yml

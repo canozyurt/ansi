@@ -1,0 +1,31 @@
+---
+# Runs one container of the node from its specification (garage_cluster_spec). Used for the first start, for
+# check-mode comparisons and, delegated to another member, by the rolling restart.
+- name: Run container {{ garage_cluster_spec.name }}
+  community.docker.docker_container:
+    name: "{{ garage_cluster_spec.name }}"
+    image: "{{ garage_cluster_spec.image }}"
+    command: "{{ garage_cluster_spec.command | default(omit) }}"
+    user: "{{ garage_cluster_spec.user }}"
+    network_mode: host
+    env: "{{ garage_cluster_spec.env }}"
+    volumes: "{{ garage_cluster_spec.volumes }}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    read_only: true
+    memory: "{{ garage_cluster_spec.memory }}"
+    memory_swap: "{{ garage_cluster_spec.memory }}"
+    pids_limit: "{{ garage_cluster_spec.pids }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    restart_policy: unless-stopped
+    stop_timeout: 60
+    labels:
+      com.compliant-infra.role: garage_cluster
+      com.compliant-infra.cluster: "{{ garage_cluster_cfg.name }}"
+    state: started
+    restart: "{{ garage_cluster_restart_now | default(false) | bool }}"
+  delegate_to: "{{ garage_cluster_target | default(inventory_hostname) }}"
+  check_mode: "{{ garage_cluster_check | default(false) | bool }}"
+  register: garage_cluster_run
+  tags: [chk_hrd_02]

@@ -1,0 +1,11 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Exports the definitions of RabbitMQ cluster {{ rabbitmq_cluster_cfg.name }} (vhosts, users with password hashes,
+# permissions, policies, queues, exchanges, bindings) for the backup role (BCK-01). Message data is not
+# exported: it is transient by design. Restore: rabbitmqctl import_definitions <file>. Runs as root.
+set -eu
+umask 077
+dir={{ (rabbitmq_cluster_dir ~ '/backup') | quote }}
+docker exec {{ rabbitmq_cluster_ct | quote }} rabbitmqctl -q export_definitions - > "$dir/definitions.json.tmp"
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if "users" in d and "vhosts" in d else 1)' "$dir/definitions.json.tmp"
+mv "$dir/definitions.json.tmp" "$dir/definitions.json"

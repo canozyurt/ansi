@@ -1,0 +1,51 @@
+# {{ ansible_managed }}
+# Valkey instance {{ valkey_cluster_cfg.name }} on {{ inventory_hostname }}. Sentinel may rewrite this file after a
+# failover (replicaof); the next Ansible run writes the same settings back.
+bind * -::*
+protected-mode yes
+# TLS only (SEC-03): no plaintext port; clients, replicas and Sentinels connect over TLS 1.2+ and
+# authenticate with ACL users (passwords), not client certificates.
+port 0
+tls-port {{ valkey_cluster_cfg.ports.valkey }}
+tls-cert-file /tls/tls.crt
+tls-key-file /tls/tls.key
+tls-ca-cert-file /tls/ca-bundle.crt
+tls-auth-clients no
+tls-replication yes
+tls-protocols "TLSv1.2 TLSv1.3"
+tls-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+tls-prefer-server-ciphers yes
+
+# Users and permissions (least privilege, default user disabled).
+aclfile /etc/valkey/users.acl
+# Protected configuration: no DEBUG, MODULE or changes to protected configs, whoever asks.
+enable-debug-command no
+enable-module-command no
+enable-protected-configs no
+
+# Persistence: append-only file fsynced every second plus RDB snapshots (backups copy the RDB).
+dir /data
+dbfilename dump.rdb
+appendonly yes
+appendfsync {{ valkey_cluster_cfg.appendfsync }}
+save {{ valkey_cluster_cfg.save }}
+
+maxmemory {{ valkey_cluster_cfg.maxmemory }}
+maxmemory-policy {{ valkey_cluster_cfg.maxmemory_policy }}
+
+# Replication (HA-01) over TLS with its own user.
+masteruser replicator
+masterauth {{ valkey_cluster_cfg.replication_password }}
+replica-announce-ip {{ valkey_cluster_my_address }}
+replica-read-only yes
+{% if valkey_cluster_hosts | length > 1 %}
+# A primary cut off from every replica stops accepting writes, which limits loss on a split brain.
+min-replicas-to-write 1
+min-replicas-max-lag 10
+{% endif %}
+
+loglevel notice
+logfile ""
+{% if not (valkey_cluster_render_base | default(false)) and valkey_cluster_primary_host != inventory_hostname %}
+replicaof {{ hostvars[valkey_cluster_primary_host].valkey_cluster_my_address }} {{ valkey_cluster_cfg.ports.valkey }}
+{% endif %}

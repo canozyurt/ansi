@@ -1,0 +1,9 @@
+user default off resetkeys resetchannels -@all
+user admin on #{{ valkey_cluster_cfg.admin_password | hash('sha256') }} ~* &* +@all
+user replicator on #{{ valkey_cluster_cfg.replication_password | hash('sha256') }} resetkeys resetchannels -@all +psync +replconf +ping
+user sentinel on #{{ valkey_cluster_cfg.sentinel_password | hash('sha256') }} resetkeys allchannels -@all +multi +slaveof +replicaof +ping +exec +subscribe +config|rewrite +role +publish +info +client|setname +client|kill +script|kill
+user exporter on #{{ valkey_cluster_cfg.exporter_password | hash('sha256') }} resetkeys resetchannels -@all +ping +hello +client|setname +client|setinfo +select +info +dbsize +latency|latest +latency|histogram +slowlog|get +slowlog|len
+user backup on #{{ valkey_cluster_cfg.backup_password | hash('sha256') }} resetkeys resetchannels -@all +ping +hello +bgsave +lastsave +info
+{% for u in valkey_cluster_cfg.users %}
+user {{ u.name }} on #{{ u.password | hash('sha256') }} resetkeys {{ (u.key_patterns | default(['~' ~ u.name ~ ':*'])) | join(' ') }} resetchannels {{ (u.channels | default(['&' ~ u.name ~ ':*'])) | join(' ') }} {{ u.commands | default(valkey_cluster_app_commands) }}
+{% endfor %}

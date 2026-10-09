@@ -108,6 +108,9 @@ jobs:
           - siem
           - registry
           - mail_relay
+          - valkey
+          - rabbitmq
+          - garage
     steps:
       - uses: actions/checkout@v4
 

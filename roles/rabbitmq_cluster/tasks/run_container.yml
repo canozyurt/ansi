@@ -1,0 +1,32 @@
+---
+# Runs the node container from its specification (rabbitmq_cluster_spec). Used for the first start, for
+# check-mode comparisons and, delegated to another member, by the rolling restart.
+- name: Run container {{ rabbitmq_cluster_spec.name }}
+  community.docker.docker_container:
+    name: "{{ rabbitmq_cluster_spec.name }}"
+    image: "{{ rabbitmq_cluster_spec.image }}"
+    user: "{{ rabbitmq_cluster_uid }}:{{ rabbitmq_cluster_gid }}"
+    network_mode: host
+    env: "{{ rabbitmq_cluster_spec.env }}"
+    volumes: "{{ rabbitmq_cluster_spec.volumes }}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid={{ rabbitmq_cluster_uid }},gid={{ rabbitmq_cluster_gid }},mode=0700
+      - /var/log/rabbitmq:rw,noexec,nosuid,size=16m,uid={{ rabbitmq_cluster_uid }},gid={{ rabbitmq_cluster_gid }},mode=0700
+    read_only: true
+    memory: "{{ rabbitmq_cluster_cfg.resources.memory }}"
+    memory_swap: "{{ rabbitmq_cluster_cfg.resources.memory }}"
+    pids_limit: "{{ rabbitmq_cluster_cfg.resources.pids }}"
+    ulimits: "{{ ['nofile:' ~ rabbitmq_cluster_nofile ~ ':' ~ rabbitmq_cluster_nofile] if rabbitmq_cluster_nofile | int > 0 else omit }}"
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    restart_policy: unless-stopped
+    stop_timeout: 120
+    labels:
+      com.compliant-infra.role: rabbitmq_cluster
+      com.compliant-infra.cluster: "{{ rabbitmq_cluster_cfg.name }}"
+    state: started
+    restart: "{{ rabbitmq_cluster_restart_now | default(false) | bool }}"
+  delegate_to: "{{ rabbitmq_cluster_target | default(inventory_hostname) }}"
+  check_mode: "{{ rabbitmq_cluster_check | default(false) | bool }}"
+  register: rabbitmq_cluster_run
+  tags: [chk_hrd_02]

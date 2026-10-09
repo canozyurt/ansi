@@ -1,0 +1,10 @@
+{#- Declared permissions: each application user on its own vhost (regular expressions, default .*). -#}
+{%- set out = [] -%}
+{%- for v in rabbitmq_cluster_cfg.vhosts -%}
+{%-   for u in v.users | default([]) -%}
+{%-     set _ = out.append({'vhost': v.name, 'user': u.name, 'key': v.name ~ '|' ~ u.name,
+                            'configure': u.configure | default('.*'), 'write': u.write | default('.*'),
+                            'read': u.read | default('.*')}) -%}
+{%-   endfor -%}
+{%- endfor -%}
+{{ out | to_json }}

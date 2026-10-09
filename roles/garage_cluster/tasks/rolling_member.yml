@@ -1,0 +1,13 @@
+---
+- name: Replace or restart Garage on {{ garage_cluster_member }}
+  ansible.builtin.include_tasks: run_container.yml
+  vars:
+    garage_cluster_spec: "{{ garage_cluster_specs.garage }}"
+    garage_cluster_target: "{{ garage_cluster_member }}"
+    garage_cluster_restart_now: "{{ hostvars[garage_cluster_member].garage_cluster_restart | bool }}"
+
+- name: Wait until the restarted node is back, {{ garage_cluster_member }}
+  ansible.builtin.include_tasks: health.yml
+  vars:
+    garage_cluster_health_target: "{{ garage_cluster_member }}"
+    garage_cluster_health_cluster: true
