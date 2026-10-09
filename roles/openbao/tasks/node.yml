@@ -8,6 +8,7 @@
         name: "{{ openbao_container_name }}"
         image: "{{ openbao_image }}"
         command: [server]
+        user: "{{ openbao_container_uid }}:{{ openbao_container_gid }}"
         network_mode: host
         env_file: "{{ openbao_data_dir }}/openbao.env"
         volumes:
