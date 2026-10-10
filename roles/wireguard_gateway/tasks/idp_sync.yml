@@ -54,8 +54,30 @@
   when: wireguard_gateway_idp_secret_runtime | bool
   tags: [chk_sec_02]
 
-- name: Register the sync client in Keycloak (service account that may only view users)
+# On a first install access.yml runs before identity.yml: Keycloak is not there yet. The client is then
+# registered by the last play of playbooks/identity.yml; until then the sync fails and alerts.
+- name: Check whether Keycloak answers
+  ansible.builtin.uri:
+    url: "{{ wireguard_gateway_idp_url }}/realms/{{ wireguard_gateway_idp_realm }}/.well-known/openid-configuration"
+    timeout: 10
+  register: wireguard_gateway_idp_reachable
+  failed_when: false
+  run_once: true
   when: wireguard_gateway_idp_register_client | bool
+
+- name: Report a Keycloak that is not there yet
+  ansible.builtin.debug:
+    msg: >-
+      Keycloak ({{ wireguard_gateway_idp_url }}) does not answer; the VPN IdP sync client is registered by
+      playbooks/identity.yml once Keycloak runs.
+  when:
+    - wireguard_gateway_idp_register_client | bool
+    - wireguard_gateway_idp_reachable.status | default(0) != 200
+
+- name: Register the sync client in Keycloak (service account that may only view users)
+  when:
+    - wireguard_gateway_idp_register_client | bool
+    - wireguard_gateway_idp_reachable.status | default(0) == 200
   run_once: true
   module_defaults:
     group/community.general.keycloak:

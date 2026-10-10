@@ -22,8 +22,8 @@
 #               or signals the service when they change. Every read is in the OpenBao audit log.
 #   vault-file  labs and the fallback: values come from the inventory (Ansible Vault) as before and the
 #               calling role writes its usual 0600 files. Nothing is created in OpenBao.
-secrets_backend: vault-file
-openbao_secrets_backend: "{{ secrets_backend }}"
+# Set secrets_backend in group_vars/all (default vault-file).
+openbao_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
 
 # Service name: KV path, policy (svc-<service>), AppRole (svc-<service>-<host>), container and unit names.
 openbao_secrets_service: ""

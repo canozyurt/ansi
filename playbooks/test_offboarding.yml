@@ -123,7 +123,9 @@
     - name: Register the test peer (owner = the test user)
       ansible.builtin.lineinfile:
         path: /etc/wireguard/{{ iface }}-peers.tsv
-        line: "{{ test.iam_test_prefix }}-peer\t{{ test.offboarding_peer_key }}\t2099-01-01\t{{ test.offboarding_user.username }}\t{{ test.offboarding_user.username }}"
+        line: >-
+          {{ [test.iam_test_prefix ~ '-peer', test.offboarding_peer_key, '2099-01-01',
+              test.offboarding_user.username, test.offboarding_user.username] | join('\t') }}
 
     - name: Add the test peer to the running interface
       ansible.builtin.command:

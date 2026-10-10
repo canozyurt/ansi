@@ -66,7 +66,9 @@
           export EMAIL_HOST_PASSWORD='{{ openbao_secrets_refs.email_password | default('') }}'
           {% endif %}
       - name: pg.env
-        content: "{{ lookup('ansible.builtin.template', grc_pg_env_template, template_vars={'grc_db_password': openbao_secrets_refs.db_password | default('')}) }}"
+        content: >-
+          {{ lookup('ansible.builtin.template', grc_pg_env_template,
+                    template_vars={'grc_db_password': openbao_secrets_refs.db_password | default('')}) }}
     openbao_secrets_uid: "{{ grc_backend_uid }}"
     openbao_secrets_on_change_container: "{{ grc_backend_container_name }}"
     openbao_secrets_on_change:

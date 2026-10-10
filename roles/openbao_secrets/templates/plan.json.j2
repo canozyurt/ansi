@@ -36,5 +36,5 @@
 {%-   set _ = data.update({key: value}) -%}
 {%- endfor -%}
 {%- set meta_full = openbao_secrets_have_meta | combine(meta) -%}
-{{ {'data': data, 'metadata': meta_full, 'rotated': rotated, 'changed': changed | length > 0,
+{{ {'data': data, 'metadata': meta_full, 'rotated': rotated, 'data_changed': changed | length > 0,
     'metadata_changed': meta_full != openbao_secrets_have_meta} | to_json }}

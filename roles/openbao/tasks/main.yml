@@ -19,8 +19,12 @@
     that:
       - openbao_oidc_token_max_ttl is match('^[0-9]+[smh]$')
       - openbao_ssh_cert_ttl is match('^[0-9]+[smh]$')
-      - (openbao_oidc_token_max_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_oidc_token_max_ttl[-1]] <= openbao_session_max_seconds | int
-      - (openbao_ssh_cert_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_ssh_cert_ttl[-1]] <= openbao_session_max_seconds | int
+      - >-
+        (openbao_oidc_token_max_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_oidc_token_max_ttl[-1]]
+        <= openbao_session_max_seconds | int
+      - >-
+        (openbao_ssh_cert_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_ssh_cert_ttl[-1]]
+        <= openbao_session_max_seconds | int
     fail_msg: >-
       openbao_oidc_token_max_ttl and openbao_ssh_cert_ttl (s, m or h) must not exceed {{ openbao_session_max_seconds }}
       seconds, so that a disabled user loses OpenBao and SSH access within a day (IAM-04).

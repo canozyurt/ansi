@@ -67,7 +67,7 @@
           options:
             cas: "{{ (openbao_secrets_current.json | default({})).data.metadata.version | default(0) }}"
         status_code: [200, 204]
-      when: openbao_secrets_plan.changed | bool
+      when: openbao_secrets_plan.data_changed | bool
       changed_when: true
       no_log: true
 

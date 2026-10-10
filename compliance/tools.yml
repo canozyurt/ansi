@@ -81,7 +81,11 @@ tools:
     roles: [prometheus, alertmanager]
     license: Apache-2.0
     osi_approved: true
-    sso: {status: "yes", note: "No native SSO: people sign in through oauth2-proxy (Keycloak, roles claim, docs/sso-matrix.md); TLS + basic auth stays for machines and break-glass."}
+    sso:
+      status: "yes"
+      note: >-
+        No native SSO: people sign in through oauth2-proxy (Keycloak, roles claim, docs/sso-matrix.md);
+        TLS + basic auth stays for machines and break-glass.
     audit_log: {status: "no", note: "No audit log of its own; oauth2-proxy logs every authenticated request with the user."}
     ha: {status: "yes", note: "2+ Prometheus replicas; 3-node Alertmanager gossip cluster."}
     exceptions:

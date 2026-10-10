@@ -29,7 +29,7 @@
     - { path: "{{ oauth2_proxy_dir }}", mode: "0755" }
     - { path: "{{ oauth2_proxy_dir }}/conf", group: "{{ oauth2_proxy_uid }}", mode: "0750" }
 
-- name: Keep the secrets of {{ oauth2_proxy_instance.name }} in OpenBao (or the inventory vault)
+- name: Keep the secrets in OpenBao (or the inventory vault) for {{ oauth2_proxy_instance.name }}
   ansible.builtin.include_role:
     name: openbao_secrets
   vars:
@@ -57,7 +57,7 @@
     openbao_secrets_on_change: ["docker restart oauth2-proxy-{{ oauth2_proxy_instance.name }}"]
   tags: [chk_iam_08, chk_sec_02]
 
-- name: Note where the secrets of {{ oauth2_proxy_instance.name }} are
+- name: Note where the secrets are for {{ oauth2_proxy_instance.name }}
   ansible.builtin.set_fact:
     oauth2_proxy_secrets_runtime: "{{ openbao_secrets_active | bool }}"
     oauth2_proxy_secret_values: "{{ openbao_secrets_values }}"
@@ -78,7 +78,7 @@
     quiet: true
   no_log: true
 
-- name: Write the secret files of {{ oauth2_proxy_instance.name }} (vault-file backend)
+- name: Write the secret files (vault-file backend) for {{ oauth2_proxy_instance.name }}
   when: not oauth2_proxy_secrets_runtime | bool
   no_log: true
   tags: [chk_sec_02]
@@ -100,6 +100,13 @@
         mode: "0400"
       loop: [client_secret, cookie_secret, upstream_authorization]
       register: oauth2_proxy_secret_files
+
+- name: Remove the on-disk secrets once OpenBao Agent renders them into tmpfs for {{ oauth2_proxy_instance.name }}
+  ansible.builtin.file:
+    path: "{{ oauth2_proxy_dir }}/secrets"
+    state: absent
+  when: oauth2_proxy_secrets_runtime | bool
+  tags: [chk_sec_02]
 
 - name: Register the Keycloak client of {{ oauth2_proxy_instance.name }}
   ansible.builtin.include_role:
