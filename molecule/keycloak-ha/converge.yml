@@ -1,0 +1,40 @@
+---
+- name: Prepare the container hosts and the shared database
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,sso.test.internal,keycloak-ha-1,keycloak-ha-2,keycloak-ha-3"
+  tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+
+    - name: Load the pinned versions
+      ansible.builtin.include_role:
+        name: versions
+        public: true
+
+    - name: Start a throwaway PostgreSQL for Keycloak on the first node (test fixture)
+      community.docker.docker_container:
+        name: postgres
+        image: "{{ versions_images.postgres_client }}"
+        network_mode: host
+        env:
+          POSTGRES_DB: keycloak
+          POSTGRES_USER: keycloak
+          POSTGRES_PASSWORD: test-only-db-password
+        state: started
+      when: inventory_hostname == 'keycloak-ha-1'
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.wait_for:
+        host: keycloak-ha-1
+        port: 5432
+        timeout: 120
+
+- name: Deploy Keycloak on every node
+  hosts: keycloak
+  become: true
+  roles:
+    - role: keycloak

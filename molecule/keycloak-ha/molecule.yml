@@ -1,0 +1,99 @@
+---
+# Keycloak on 3 nodes (HA-01): each test container runs Docker and one Keycloak node; the first one
+# also runs a throwaway PostgreSQL. The containers share the network alias sso.test.internal, so the
+# drill probes a round-robin name like a load-balanced endpoint. verify.yml runs playbooks/ha_drill.yml:
+# it stops Keycloak on one node and checks the realm still answers, then restores the node.
+# Nightly only (.github/workflows/nightly-ha.yml): it needs about 8 GB of memory.
+driver:
+  name: docker
+platforms:
+  - name: keycloak-ha-1
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-keycloak-ha
+    networks:
+      - name: molecule-keycloak-ha
+        aliases: [sso.test.internal]
+    groups: [keycloak, container_hosts]
+  - name: keycloak-ha-2
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-keycloak-ha
+    networks:
+      - name: molecule-keycloak-ha
+        aliases: [sso.test.internal]
+    groups: [keycloak, container_hosts]
+  - name: keycloak-ha-3
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-keycloak-ha
+    networks:
+      - name: molecule-keycloak-ha
+        aliases: [sso.test.internal]
+    groups: [keycloak, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          sre: [operator]
+          auditors: [auditor]
+        keycloak_hostname: https://sso.test.internal
+        keycloak_proxy_headers: ""
+        keycloak_db_host: keycloak-ha-1
+        keycloak_db_password: test-only-db-password
+        keycloak_db_sslmode: disable
+        keycloak_admin_password: test-only-admin-password
+        keycloak_memory_limit: 1200m
+        # The drill: stop Keycloak on the node without the database; probe the shared name on the HTTPS port.
+        ha_drill_node: keycloak-ha-3
+        ha_drill_keycloak_url: https://sso.test.internal:8443
+        ha_drill_validate_certs: false
+        ha_drill_probe_retries: 24
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

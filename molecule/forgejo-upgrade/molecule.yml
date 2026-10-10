@@ -1,0 +1,83 @@
+---
+# Upgrade path of Forgejo (CHG-07): prepare installs what the previous release deployed
+# (versions_upgrade_from: forgejo), converge runs playbooks/upgrade.yml to move it to
+# this release, verify runs the forgejo checks again and checks the pinned versions. CI skips the
+# scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: forgejo-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [forgejo, forgejo_runner, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        oidc_clients_enabled: false
+        # codeberg.org and data.forgejo.org can be unreachable from test sandboxes; point these at a
+        # mirror of the official images (e.g. docker.io/kleen/forgejo:15.0.9) when needed.
+        forgejo_image: "{{ lookup('ansible.builtin.env', 'MOLECULE_FORGEJO_IMAGE') | default(versions_images.forgejo, true) }}"
+        forgejo_runner_image: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_FORGEJO_RUNNER_IMAGE') | default(versions_images.forgejo_runner, true) }}
+        forgejo_allow_single_node: true
+        forgejo_ha_mode: active_passive
+        # TEST-NET-1 address: local to the test container.
+        forgejo_vips: [192.0.2.10/32]
+        forgejo_failover_start_grace: 30
+        forgejo_root_url: https://git.test.internal/
+        forgejo_db_host: 127.0.0.1
+        forgejo_db_password: test-only-db-password
+        forgejo_db_sslmode: disable
+        forgejo_secret_key: test-only-secret-key-0123456789abcdef
+        forgejo_internal_token: test-only-internal-token-0123456789abcdef
+        forgejo_jwt_secret: vMzydaXSxXXEo8zMamED9tJMksAAGuWbd9CC1uwf0EQ
+        forgejo_lfs_jwt_secret: UYBtq1-kedLvhZJa-EQgs_UCbrOmYWMyxXDkEVPmp4Y
+        forgejo_metrics_token: test-only-metrics-token-0123456789abcdef
+        forgejo_admin_password: test-only-admin-password
+        forgejo_memory_limit: 1g
+        forgejo_evidence_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/evidence/forgejo
+        forgejo_orgs:
+          - name: platform
+            visibility: private
+            repos:
+              - name: infra
+                description: Infrastructure as code
+        forgejo_runner_allow_single_node: true
+        forgejo_runner_instance_url: https://127.0.0.1:3443/
+        forgejo_runner_verify_tls: false
+        forgejo_runner_scope: platform
+        forgejo_runner_registration_secret: 0123456789abcdef0123456789abcdef01234567
+        keepalived_allow_single_node: true
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves gigabytes over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

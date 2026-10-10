@@ -1,0 +1,64 @@
+---
+# Upgrade path of the monitoring stack (CHG-07): prepare installs what the previous release deployed
+# (versions_upgrade_from: prometheus, alertmanager, grafana, node_exporter, blackbox_exporter), converge runs playbooks/upgrade.yml to move it to
+# this release, verify runs the monitoring checks again and checks the pinned versions. CI skips the
+# scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: monitoring-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [monitoring, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        monitoring_allow_single_node: true
+        monitoring_scrape_password: test-only-scrape-password
+        monitoring_grafana_password: test-only-grafana-password
+        oidc_clients_enabled: false
+        # / is a private mount inside the test container, so rslave propagation is impossible.
+        node_exporter_rootfs_propagation: ""
+        alertmanager_allow_no_receivers: true
+        grafana_root_url: https://monitoring-ubuntu2404:3000
+        grafana_admin_password: test-only-admin-password
+        grafana_secret_key: test-only-secret-key-0123456789abcdef
+        prometheus_scrape_interval: 10s
+        prometheus_evaluation_interval: 10s
+        prometheus_probe_interval: 15s
+        prometheus_memory_limit: 1g
+        # The Watchdog alert is routed to a heartbeat receiver; nothing listens in the lab.
+        alertmanager_heartbeat_webhook_url: ""
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves gigabytes over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

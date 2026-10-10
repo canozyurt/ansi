@@ -96,7 +96,9 @@ jobs:
           - keycloak
           - keycloak-upgrade
           - monitoring
+          - monitoring-upgrade
           - edge
+          - edge-upgrade
           - backup
           - openbao
           - openbao-upgrade
@@ -104,7 +106,9 @@ jobs:
           - security_scanning
           - governance
           - forgejo
+          - forgejo-upgrade
           - postgres
+          - postgres-upgrade
           - siem
           - registry
           - mail_relay
@@ -125,7 +129,22 @@ jobs:
           pip install -r requirements-dev.txt
           ansible-galaxy collection install -r requirements.yml
 
+      # An upgrade scenario needs the previous release in versions_upgrade_from (CHG-07); until the
+      # first release that includes the service, there is nothing to upgrade from.
+      - name: Check the upgrade path exists
+        id: upgrade_path
+        run: |
+          rc=0
+          python3 tools/release.py has-upgrade-path "${{ matrix.scenario }}" || rc=$?
+          case "$rc" in
+            0) echo "skip=false" >> "$GITHUB_OUTPUT" ;;
+            3) echo "::notice::${{ matrix.scenario }}: no previous release in versions_upgrade_from yet; skipped"
+               echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
       - name: Deploy, idempotence and verify
+        if: steps.upgrade_path.outputs.skip != 'true'
         run: molecule test -s ${{ matrix.scenario }}
         env:
           PY_COLORS: "1"

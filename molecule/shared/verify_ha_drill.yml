@@ -1,0 +1,59 @@
+---
+# Shared by the *-ha scenarios: the drill playbook already failed if the service stopped working; this
+# checks the evidence it left (HA-01): a passed report naming the stopped node, the write probes and a
+# recovered node, and the exported metric.
+- name: Check the HA drill evidence
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_drill_slug: "{{ verify_drill_label | regex_replace('[^A-Za-z0-9_.-]', '-') }}"
+  tasks:
+    - name: Find the drill report
+      ansible.builtin.find:
+        paths: /var/lib/compliance-evidence/ha-drill
+        patterns: "molecule-{{ verify_drill_slug }}.json"
+      register: verify_reports
+      tags: [chk_ha_01]
+
+    - name: Read the report
+      ansible.builtin.slurp:
+        src: "{{ verify_reports.files[0].path }}"
+      register: verify_report_raw
+      when: verify_reports.matched > 0
+      tags: [chk_ha_01]
+
+    - name: Exactly one node (a survivor) wrote the report
+      ansible.builtin.assert:
+        that: ansible_play_hosts | map('extract', hostvars, ['verify_reports', 'matched']) | sum == 1
+      run_once: true
+      tags: [chk_ha_01]
+
+    - name: The drill passed, the node came back and the probes ran while it was down
+      vars:
+        verify_report: "{{ verify_report_raw.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_report.result == 'passed'
+          - verify_report.node_restored
+          - verify_report.stopped_node in ansible_play_hosts
+          - verify_report.probing_node == inventory_hostname
+          - verify_report.stopped_node != inventory_hostname
+          - verify_drill_stopped | length == 0 or verify_report.stopped_node == verify_drill_stopped
+          - verify_report.probes | length >= 1
+          - verify_report.probes | map(attribute='node') | reject('equalto', verify_report.stopped_node) | list | length == verify_report.probes | length
+      when: verify_reports.matched > 0
+      tags: [chk_ha_01]
+
+    - name: Read the exported drill metric
+      ansible.builtin.slurp:
+        src: "/var/lib/node_exporter/textfile_collector/ha-drill-{{ verify_drill_slug }}.prom"
+      register: verify_metric
+      when: verify_reports.matched > 0
+      tags: [chk_ha_01]
+
+    - name: The metric reports a passed drill
+      ansible.builtin.assert:
+        that: verify_metric.content | b64decode is search('^ha_drill_last_status\{.*\} 1$', multiline=true)
+      when: verify_reports.matched > 0
+      tags: [chk_ha_01]

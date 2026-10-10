@@ -1,0 +1,17 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: ['prometheus', 'alertmanager', 'grafana', 'node_exporter', 'blackbox_exporter']
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../monitoring/converge.yml
+  vars:
+    prometheus_image: "{{ versions_upgrade_from.prometheus }}"
+    alertmanager_image: "{{ versions_upgrade_from.alertmanager }}"
+    grafana_image: "{{ versions_upgrade_from.grafana }}"
+    node_exporter_image: "{{ versions_upgrade_from.node_exporter }}"
+    blackbox_exporter_image: "{{ versions_upgrade_from.blackbox_exporter }}"

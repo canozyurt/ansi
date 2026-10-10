@@ -1,0 +1,13 @@
+---
+- name: Fail one Keycloak node and prove the realm keeps answering
+  ansible.builtin.import_playbook: ../../playbooks/ha_drill.yml
+  vars:
+    ha_drill_services: keycloak
+    ha_drill_confirm: "yes"
+    ha_drill_run_id: molecule
+
+- name: Check the drill evidence
+  ansible.builtin.import_playbook: ../shared/verify_ha_drill.yml
+  vars:
+    verify_drill_label: keycloak
+    verify_drill_stopped: keycloak-ha-3
