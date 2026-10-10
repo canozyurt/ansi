@@ -1,0 +1,29 @@
+---
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - oauth2_proxy_keycloak_url is match('^https://')
+      - oauth2_proxy_instances | map(attribute='name') | reject('match', '^[a-z0-9][a-z0-9-]{0,30}$') | list | length == 0
+      - oauth2_proxy_instances | map(attribute='port') | unique | length == oauth2_proxy_instances | length
+      - oauth2_proxy_instances | map(attribute='min_level') | difference(oauth2_proxy_levels) | length == 0
+      - (oauth2_proxy_cookie_expire | regex_replace('h$', '') | int) <= oauth2_proxy_session_max_hours | int
+      - oauth2_proxy_cookie_expire is match('^[0-9]+h$')
+    fail_msg: >-
+      oauth2_proxy needs an https Keycloak URL, instance names [a-z0-9-], distinct ports, min_level one of
+      {{ oauth2_proxy_levels | join(', ') }}, and a cookie lifetime in hours of at most {{ oauth2_proxy_session_max_hours }} (IAM-04).
+    quiet: true
+  vars:
+    oauth2_proxy_levels: [none, self, read, operate, write, admin]
+  tags: [chk_iam_01, chk_iam_04]
+
+- name: Install Python libraries the Docker and crypto modules need
+  ansible.builtin.apt:
+    name: [python3-requests, python3-cryptography]
+    state: present
+
+- name: Deploy each protected UI's proxy
+  ansible.builtin.include_tasks: instance.yml
+  loop: "{{ oauth2_proxy_instances }}"
+  loop_control:
+    loop_var: oauth2_proxy_instance
+    label: "{{ oauth2_proxy_instance.name }}"

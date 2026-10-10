@@ -38,6 +38,14 @@
       changed_when: true
       tags: [chk_bck_01]
 
+- name: Read the backend image's entrypoint and command (wrapped to load secrets from tmpfs)
+  community.docker.docker_image_info:
+    name: "{{ grc_backend_image }}"
+  register: grc_backend_image_info
+  when:
+    - grc_app_deploy | bool
+    - grc_secrets_runtime | bool
+
 - name: Common settings of the application containers
   ansible.builtin.set_fact:
     grc_app_env:
@@ -45,17 +53,25 @@
       XDG_CACHE_HOME: /tmp/.cache
       XDG_CONFIG_HOME: /tmp/.config
       XDG_DATA_HOME: /tmp/.local/share
+    # With OpenBao the containers start through /bin/sh, which exports /run/secrets/app.env (tmpfs,
+    # rendered by OpenBao Agent) and then runs the image's own entrypoint and command.
+    grc_secrets_wrapper: [/bin/sh, -c, 'set -a; . /run/secrets/app.env; set +a; exec "$0" "$@"']
+    grc_secrets_volumes: "{{ ['/run/compliant-secrets/grc:/run/secrets:ro'] if grc_secrets_runtime | bool else [] }}"
 
 - name: Run the backend (API, migrations and library store at start)
   community.docker.docker_container:
     name: "{{ grc_backend_container_name }}"
     image: "{{ grc_backend_image }}"
+    entrypoint: "{{ grc_secrets_wrapper if grc_secrets_runtime | bool else omit }}"
+    command: >-
+      {{ ((grc_backend_image_info.images[0].Config.Entrypoint | default([], true))
+          + (grc_backend_image_info.images[0].Config.Cmd | default([], true)))
+         if grc_secrets_runtime | bool else omit }}
     user: "{{ grc_backend_uid }}:{{ grc_backend_uid }}"
     network_mode: host
     env: "{{ grc_app_env }}"
     env_file: "{{ grc_data_dir }}/grc.env"
-    volumes:
-      - "{{ grc_data_dir }}/data:/code/db"
+    volumes: "{{ [grc_data_dir ~ '/data:/code/db'] + grc_secrets_volumes }}"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=512m
     read_only: true
@@ -75,15 +91,14 @@
   community.docker.docker_container:
     name: "{{ grc_worker_container_name }}"
     image: "{{ grc_backend_image }}"
-    entrypoint: [/code/.venv/bin/python]
+    entrypoint: "{{ grc_secrets_wrapper + ['/code/.venv/bin/python'] if grc_secrets_runtime | bool else ['/code/.venv/bin/python'] }}"
     command: [manage.py, run_huey, -w, "2", --scheduler-interval, "60"]
     working_dir: /code
     user: "{{ grc_backend_uid }}:{{ grc_backend_uid }}"
     network_mode: host
     env: "{{ grc_app_env }}"
     env_file: "{{ grc_data_dir }}/grc.env"
-    volumes:
-      - "{{ grc_data_dir }}/data:/code/db"
+    volumes: "{{ [grc_data_dir ~ '/data:/code/db'] + grc_secrets_volumes }}"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m
     read_only: true

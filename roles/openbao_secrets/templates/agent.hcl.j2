@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# OpenBao Agent for {{ openbao_secrets_service }} (IAM-08, SEC-02): AppRole login bound to this host, read-only
+# policy svc-{{ openbao_secrets_service }}, files rendered into tmpfs with mode 0400. Every read is audited by OpenBao.
+pid_file        = ""
+exit_after_auth = false
+
+vault {
+  address = "{{ openbao_secrets_addr }}"
+  ca_cert = "{{ openbao_secrets_ca_file if openbao_secrets_ca_file is match('^/etc/ssl/certs/') else '/etc/ssl/certs/ca-certificates.crt' }}"
+  retry {
+    num_retries = 12
+  }
+}
+
+auto_auth {
+  method "approle" {
+    mount_path = "auth/{{ openbao_secrets_approle_mount }}"
+    config = {
+      role_id_file_path                   = "/etc/openbao-agent/role_id"
+      secret_id_file_path                 = "/etc/openbao-agent/secret_id"
+      remove_secret_id_file_after_reading = false
+    }
+  }
+}
+
+template_config {
+  static_secret_render_interval = "{{ openbao_secrets_render_interval }}"
+  exit_on_retry_failure         = false
+}
+{% for f in openbao_secrets_files %}
+
+template {
+  source               = "/etc/openbao-agent/templates/{{ f.name }}.ctmpl"
+  destination          = "/run/secrets/{{ f.name }}"
+  perms                = "0400"
+  left_delimiter       = "[%"
+  right_delimiter      = "%]"
+  error_on_missing_key = true
+}
+{% endfor %}

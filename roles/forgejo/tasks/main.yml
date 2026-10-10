@@ -4,11 +4,11 @@
     that:
       - forgejo_root_url is match('^https://.+/$')
       - forgejo_db_host | length > 0
-      - forgejo_db_password | length > 0
-      - forgejo_secret_key | length >= 32
-      - forgejo_internal_token | length >= 32
-      - forgejo_jwt_secret is match('^[A-Za-z0-9_-]{43}$')
-      - forgejo_lfs_jwt_secret is match('^[A-Za-z0-9_-]{43}$')
+      - forgejo_db_password | length > 0 or forgejo_secrets_backend == 'openbao'
+      - forgejo_secret_key | length >= 32 or forgejo_secrets_backend == 'openbao'
+      - forgejo_internal_token | length >= 32 or forgejo_secrets_backend == 'openbao'
+      - forgejo_jwt_secret is match('^[A-Za-z0-9_-]{43}$') or forgejo_secrets_backend == 'openbao'
+      - forgejo_lfs_jwt_secret is match('^[A-Za-z0-9_-]{43}$') or forgejo_secrets_backend == 'openbao'
       - forgejo_metrics_token | length >= 32
       - forgejo_admin_password | length >= 16
       - forgejo_two_factor_requirement in ['all', 'admin']

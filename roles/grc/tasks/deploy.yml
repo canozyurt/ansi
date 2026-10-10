@@ -1,4 +1,8 @@
 ---
+- name: Note where the dump credentials template is
+  ansible.builtin.set_fact:
+    grc_pg_env_template: "{{ role_path }}/templates/pg.env.j2"
+
 - name: Install Python libraries the Docker and crypto modules need
   ansible.builtin.apt:
     name: [python3-requests, python3-cryptography]
@@ -37,7 +41,44 @@
   changed_when: tls_cert_changed | bool
   notify: Restart grc proxy
 
-- name: Write the database client settings for dumps (contains secrets)
+- name: Keep the GRC secrets in OpenBao and render them into tmpfs
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ grc_secrets_backend }}"
+    openbao_secrets_service: grc
+    openbao_secrets_items:
+      - name: db_password
+        seed: "{{ grc_db_password }}"
+        rotate_days: "{{ grc_secret_rotate_days if grc_db_postgres | length > 0 else 0 }}"
+        postgres: "{{ grc_db_postgres if grc_db_postgres | length > 0 else omit }}"
+      - { name: secret_key, seed: "{{ grc_secret_key }}", length: 64, rotate_days: 0 }
+      # Break-glass superuser: sealed in the inventory vault, rotated by its own procedure.
+      - { name: admin_password, source: inventory, seed: "{{ grc_admin_password }}" }
+      - { name: email_password, source: inventory, seed: "{{ grc_email_password }}" }
+    openbao_secrets_files:
+      - name: app.env
+        content: |
+          export POSTGRES_PASSWORD='{{ openbao_secrets_refs.db_password | default('') }}'
+          export DJANGO_SECRET_KEY='{{ openbao_secrets_refs.secret_key | default('') }}'
+          export DJANGO_SUPERUSER_PASSWORD='{{ openbao_secrets_refs.admin_password | default('') }}'
+          {% if grc_email_host | length > 0 %}
+          export EMAIL_HOST_PASSWORD='{{ openbao_secrets_refs.email_password | default('') }}'
+          {% endif %}
+      - name: pg.env
+        content: "{{ lookup('ansible.builtin.template', grc_pg_env_template, template_vars={'grc_db_password': openbao_secrets_refs.db_password | default('')}) }}"
+    openbao_secrets_uid: "{{ grc_backend_uid }}"
+    openbao_secrets_on_change_container: "{{ grc_backend_container_name }}"
+    openbao_secrets_on_change:
+      - docker restart {{ grc_backend_container_name }} {{ grc_worker_container_name }}
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Note where the containers read their secrets
+  ansible.builtin.set_fact:
+    grc_secrets_runtime: "{{ openbao_secrets_active | bool }}"
+    grc_pg_env_file: "{{ '/run/compliant-secrets/grc/pg.env' if openbao_secrets_active | bool else grc_data_dir ~ '/pg.env' }}"
+
+- name: Write the database client settings for dumps (contains secrets; vault-file backend)
   ansible.builtin.template:
     src: pg.env.j2
     dest: "{{ grc_data_dir }}/pg.env"
@@ -45,7 +86,15 @@
     group: root
     mode: "0600"
   no_log: true
+  when: not grc_secrets_runtime | bool
   tags: [chk_sec_02, chk_bck_01]
+
+- name: Remove the on-disk copies once OpenBao Agent renders them into tmpfs
+  ansible.builtin.file:
+    path: "{{ grc_data_dir }}/pg.env"
+    state: absent
+  when: grc_secrets_runtime | bool
+  tags: [chk_sec_02]
 
 - name: Install the database dump command
   ansible.builtin.template:

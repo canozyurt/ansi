@@ -115,3 +115,8 @@ rabbitmq_cluster_keep_users: []
 
 # Open-file limit of the node container (connections and queue segment files); 0 keeps Docker's default.
 rabbitmq_cluster_nofile: 65536
+
+# Runtime secrets (IAM-08): with secrets_backend openbao the application users' passwords live in OpenBao
+# (see tasks/secrets.yml); the instance's internal passwords still come from the inventory (docs/secrets.md).
+rabbitmq_cluster_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+rabbitmq_cluster_app_password_rotate_days: "{{ secret_rotation_days | default(90) }}"

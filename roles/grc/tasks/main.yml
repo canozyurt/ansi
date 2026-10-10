@@ -4,8 +4,8 @@
     that:
       - grc_hostname is match('^https://')
       - grc_db_host | length > 0
-      - grc_db_password | length > 0
-      - grc_secret_key | length >= 50
+      - grc_db_password | length > 0 or grc_secrets_backend == 'openbao'
+      - grc_secret_key | length >= 50 or grc_secrets_backend == 'openbao'
       - grc_admin_email is match('^[^@ ]+@[^@ ]+$')
       - grc_admin_password | length >= 16
       - not (grc_oidc_enabled | bool) or grc_oidc_client_secret | length >= 32

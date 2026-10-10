@@ -1,0 +1,44 @@
+---
+# oauth2-proxy (MIT) in front of web UIs that have no SSO of their own (IAM-01, IAM-09). One container per
+# UI on the same host as the UI (sidecar), published through the edge like every other admin UI:
+#
+#   browser -> edge (TLS, WAF, admin networks only) -> oauth2-proxy :<port> (TLS, Keycloak OIDC + PKCE,
+#   "roles" claim checked) -> UI on 127.0.0.1 with a machine basic-auth account
+#
+# The UIs keep their own TLS + basic auth listener for machines (Prometheus federation, Grafana, Alertmanager
+# pushes) and the break-glass account; people use the SSO address.
+oauth2_proxy_image: "{{ versions_images.oauth2_proxy }}"
+# The upstream image is distroless and runs as nonroot (65532).
+oauth2_proxy_uid: 65532
+oauth2_proxy_data_dir: /opt/oauth2-proxy
+oauth2_proxy_memory_limit: 128m
+
+# One entry per protected UI:
+#   name:        [a-z0-9-]; container oauth2-proxy-<name>, Keycloak client <name>-ui
+#   hostname:    public name through the edge (edge_default_services has a matching entry)
+#   port:        TLS port oauth2-proxy listens on (the edge's backend_port)
+#   upstream:    the UI as reached from this host
+#   capability / min_level: who may enter: every default role whose rbac_model level for the capability is at
+#                least min_level (none < self < read < operate < write < admin). No per-user grants (IAM-03).
+#   upstream_user / upstream_password: machine account oauth2-proxy presents to the UI (basic auth)
+oauth2_proxy_instances: []
+
+oauth2_proxy_keycloak_url: "{{ keycloak_hostname | default('') }}"
+oauth2_proxy_realm: "{{ keycloak_realm | default('org') }}"
+# Client and cookie secrets per instance name, from Ansible Vault (vault-file backend). With
+# secrets_backend openbao they are generated in OpenBao when empty and rotated.
+oauth2_proxy_client_secrets: {}
+oauth2_proxy_cookie_secrets: {}
+oauth2_proxy_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+oauth2_proxy_secret_rotate_days: "{{ secret_rotation_days | default(90) }}"
+
+# Sessions (IAM-04): the cookie lasts at most the IdP's maximum session; every 5 minutes oauth2-proxy
+# refreshes the tokens with Keycloak, so a disabled user is locked out within that time.
+oauth2_proxy_cookie_expire: 10h
+oauth2_proxy_cookie_refresh: 5m
+oauth2_proxy_session_max_hours: 24
+
+oauth2_proxy_tls_cert_file: ""
+oauth2_proxy_tls_key_file: ""
+# Verify the UI's certificate (host trust store with the internal CA). Off without an internal PKI (self-signed).
+oauth2_proxy_upstream_tls_verify: "{{ (pki_openbao_addr | default('')) | length > 0 }}"

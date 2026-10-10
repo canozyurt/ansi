@@ -82,6 +82,8 @@
     mode: "0644"
   tags: [chk_log_05]
 
+# The host trust store (/etc/ssl/certs) holds the internal CA, used for Keycloak and Prometheus TLS.
+# /run/secrets: files rendered by OpenBao Agent (tmpfs) with secrets_backend openbao.
 - name: Run the Grafana container
   community.docker.docker_container:
     name: "{{ grafana_container_name }}"
@@ -89,13 +91,13 @@
     network_mode: host
     user: "{{ grafana_container_uid }}:0"
     env_file: "{{ grafana_data_dir }}/grafana.env"
-    volumes:
-      - "{{ grafana_data_dir }}/data:/var/lib/grafana"
-      - "{{ grafana_data_dir }}/tls:/etc/grafana/tls:ro"
-      - "{{ grafana_data_dir }}/provisioning:/etc/grafana/provisioning:ro"
-      - "{{ grafana_data_dir }}/dashboards:/var/lib/grafana-dashboards:ro"
-      # The host trust store holds the internal CA, used for Keycloak and Prometheus TLS.
-      - /etc/ssl/certs:/etc/ssl/certs:ro
+    volumes: >-
+      {{ [grafana_data_dir ~ '/data:/var/lib/grafana',
+          grafana_data_dir ~ '/tls:/etc/grafana/tls:ro',
+          grafana_data_dir ~ '/provisioning:/etc/grafana/provisioning:ro',
+          grafana_data_dir ~ '/dashboards:/var/lib/grafana-dashboards:ro',
+          '/etc/ssl/certs:/etc/ssl/certs:ro']
+         + (['/run/compliant-secrets/grafana:/run/secrets:ro'] if grafana_secrets_runtime | bool else []) }}
     tmpfs:
       - /tmp:size=64m,mode=1777
     read_only: true

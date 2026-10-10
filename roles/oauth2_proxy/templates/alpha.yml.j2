@@ -1,0 +1,47 @@
+# {{ ansible_managed }}
+# oauth2-proxy alpha configuration for {{ oauth2_proxy_instance.name }}: server, provider, upstream and headers.
+# Built as data and dumped, so quoting is always right.
+{% set config = {
+  'server': {
+    'bindAddress': '-',
+    'secureBindAddress': '0.0.0.0:' ~ oauth2_proxy_instance.port,
+    'tls': {
+      'cert': {'fromFile': '/etc/oauth2-proxy-tls/tls.crt'},
+      'key': {'fromFile': '/etc/oauth2-proxy-tls/tls.key'},
+      'minVersion': 'TLS1.2',
+    },
+  },
+  'providers': [{
+    'id': 'keycloak',
+    'name': 'Single sign-on',
+    'provider': 'oidc',
+    'clientID': oauth2_proxy_client_id,
+    'clientSecretFile': '/run/secrets/client_secret',
+    'scope': 'openid profile email',
+    'codeChallengeMethod': 'S256',
+    'caFiles': ['/etc/ssl/certs/ca-certificates.crt'],
+    'allowedGroups': oauth2_proxy_allowed_roles,
+    'oidcConfig': {
+      'issuerURL': oauth2_proxy_keycloak_url ~ '/realms/' ~ oauth2_proxy_realm,
+      'emailClaim': 'email',
+      'userIDClaim': 'preferred_username',
+      'groupsClaim': 'roles',
+      'audienceClaims': ['aud'],
+      'insecureAllowUnverifiedEmail': true,
+    },
+  }],
+  'upstreamConfig': {
+    'upstreams': [{
+      'id': oauth2_proxy_instance.name,
+      'path': '/',
+      'uri': oauth2_proxy_instance.upstream,
+      'insecureSkipTLSVerify': not (oauth2_proxy_upstream_tls_verify | bool),
+      'passHostHeader': false,
+    }],
+  },
+  'injectRequestHeaders': [
+    {'name': 'Authorization', 'values': [{'fromFile': '/run/secrets/upstream_authorization'}]},
+    {'name': 'X-Forwarded-User', 'values': [{'claim': 'preferred_username'}]},
+  ],
+} %}
+{{ config | to_nice_yaml(indent=2, width=1000) }}

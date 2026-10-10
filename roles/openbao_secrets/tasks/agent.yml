@@ -1,0 +1,236 @@
+---
+# One OpenBao Agent container per service and host. It logs in with an AppRole bound to this host,
+# can read only svc-<service>, and renders the files into a tmpfs directory owned by the service's uid.
+- name: Create or update this host's AppRole for the service
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_secrets_token }}"
+      ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+      timeout: 30
+  vars:
+    openbao_secrets_approle: "svc-{{ openbao_secrets_service }}-{{ inventory_hostname | regex_replace('[.].*$', '') }}"
+    openbao_secrets_approle_url: "{{ openbao_secrets_api }}/auth/{{ openbao_secrets_approle_mount }}/role/{{ openbao_secrets_approle }}"
+    openbao_secrets_cidrs: >-
+      {{ [openbao_secrets_host_ip ~ '/32'] if openbao_secrets_bind_cidrs | bool and openbao_secrets_host_ip | length > 0 else [] }}
+    openbao_secrets_approle_want:
+      token_policies: ["{{ openbao_secrets_policy }}"]
+      token_ttl: "{{ openbao_secrets_token_ttl }}"
+      token_max_ttl: "{{ openbao_secrets_token_max_ttl }}"
+      secret_id_ttl: "{{ openbao_secrets_secret_id_ttl }}"
+      secret_id_num_uses: 0
+      secret_id_bound_cidrs: "{{ openbao_secrets_cidrs }}"
+      token_bound_cidrs: "{{ openbao_secrets_cidrs }}"
+      bind_secret_id: true
+  tags: [chk_iam_08, chk_sec_02]
+  block:
+    - name: Read the AppRole
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_approle_url }}"
+        status_code: [200, 404]
+      register: openbao_secrets_approle_current
+
+    - name: Write the AppRole (policy, TTLs, bound to this host's address)
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_approle_url }}"
+        method: POST
+        body_format: json
+        body: "{{ openbao_secrets_approle_want }}"
+        status_code: [200, 204]
+      when: >-
+        openbao_secrets_approle_current.status != 200
+        or openbao_secrets_approle_current.json.data.token_policies != openbao_secrets_approle_want.token_policies
+        or (openbao_secrets_approle_current.json.data.secret_id_bound_cidrs | default([], true)) != openbao_secrets_cidrs
+      changed_when: true
+
+    - name: Read the role ID
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_approle_url }}/role-id"
+      register: openbao_secrets_role_id
+
+    - name: Read the stored secret ID
+      ansible.builtin.slurp:
+        src: "{{ openbao_secrets_agent_config_dir }}/secret_id"
+      register: openbao_secrets_secret_id_file
+      failed_when: false
+      no_log: true
+
+    - name: Look the stored secret ID up
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_approle_url }}/secret-id/lookup"
+        method: POST
+        body_format: json
+        body:
+          secret_id: "{{ openbao_secrets_secret_id_file.content | b64decode | trim }}"
+        status_code: [200, 204, 400, 404, 500]
+      register: openbao_secrets_secret_id_lookup
+      when: openbao_secrets_secret_id_file.content is defined
+      no_log: true
+
+    - name: Decide whether to issue a new secret ID (missing, invalid or expiring soon)
+      ansible.builtin.set_fact:
+        openbao_secrets_new_secret_id: >-
+          {{ openbao_secrets_secret_id_file.content is not defined
+             or openbao_secrets_secret_id_lookup.status | default(0) != 200
+             or ((openbao_secrets_secret_id_lookup.json.data.expiration_time | default('1970-01-01T00:00:00Z'))[:19]
+                 | to_datetime('%Y-%m-%dT%H:%M:%S') - now(utc=true).replace(tzinfo=None)).days
+                < openbao_secrets_secret_id_renew_days | int }}
+
+    - name: Issue a secret ID for this host
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_approle_url }}/secret-id"
+        method: POST
+        body_format: json
+        body:
+          metadata: '{"host": "{{ inventory_hostname }}", "service": "{{ openbao_secrets_service }}"}'
+      register: openbao_secrets_secret_id
+      when: openbao_secrets_new_secret_id | bool
+      changed_when: true
+      no_log: true
+
+- name: Create the agent configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openbao_secrets_uid }}"
+    group: "{{ openbao_secrets_gid }}"
+    mode: "0500"
+  loop:
+    - "{{ openbao_secrets_agent_config_dir }}"
+    - "{{ openbao_secrets_agent_config_dir }}/templates"
+
+- name: Write the agent's AppRole credentials (readable by the agent only)
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ openbao_secrets_agent_config_dir }}/{{ item.key }}"
+    owner: "{{ openbao_secrets_uid }}"
+    group: "{{ openbao_secrets_gid }}"
+    mode: "0400"
+  loop: >-
+    {{ [{'key': 'role_id', 'value': openbao_secrets_role_id.json.data.role_id}]
+       + ([{'key': 'secret_id', 'value': openbao_secrets_secret_id.json.data.secret_id}]
+          if openbao_secrets_secret_id is not skipped and openbao_secrets_secret_id.json is defined else []) }}
+  loop_control:
+    label: "{{ item.key }}"
+  register: openbao_secrets_creds
+  no_log: true
+  tags: [chk_iam_08]
+
+# Templates hold references ([% with secret ... %]), never values.
+- name: Write the agent templates
+  ansible.builtin.copy:
+    content: >-
+      {{ item.content if item.content is defined else openbao_secrets_refs[item.key | default(item.name)] }}
+    dest: "{{ openbao_secrets_agent_config_dir }}/templates/{{ item.name }}.ctmpl"
+    owner: "{{ openbao_secrets_uid }}"
+    group: "{{ openbao_secrets_gid }}"
+    mode: "0400"
+  loop: "{{ openbao_secrets_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: openbao_secrets_templates
+  tags: [chk_sec_02]
+
+- name: Write the agent configuration
+  ansible.builtin.template:
+    src: agent.hcl.j2
+    dest: "{{ openbao_secrets_agent_config_dir }}/agent.hcl"
+    owner: "{{ openbao_secrets_uid }}"
+    group: "{{ openbao_secrets_gid }}"
+    mode: "0400"
+  register: openbao_secrets_agent_config
+  tags: [chk_sec_02]
+
+- name: Recreate the tmpfs directory at boot
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (openbao_secrets). Rendered secrets of {{ openbao_secrets_service }} (tmpfs).
+      d {{ openbao_secrets_base_dir }} 0711 root root -
+      d {{ openbao_secrets_dir }} 0700 {{ openbao_secrets_uid }} {{ openbao_secrets_gid }} -
+    dest: /etc/tmpfiles.d/openbao-secrets-{{ openbao_secrets_service }}.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the tmpfs directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ openbao_secrets_base_dir }}", owner: root, group: root, mode: "0711" }
+    - { path: "{{ openbao_secrets_dir }}", owner: "{{ openbao_secrets_uid }}", group: "{{ openbao_secrets_gid }}", mode: "0700" }
+  tags: [chk_sec_02]
+
+- name: Check that the secrets directory is on tmpfs
+  ansible.builtin.command: findmnt --noheadings --output FSTYPE --target {{ openbao_secrets_dir }}
+  register: openbao_secrets_fstype
+  changed_when: false
+  failed_when: openbao_secrets_fstype.stdout | trim != 'tmpfs'
+  tags: [chk_sec_02]
+
+- name: Install the change hook (restarts or signals the service)
+  ansible.builtin.template:
+    src: openbao-secrets-changed.sh.j2
+    dest: /usr/local/sbin/openbao-secrets-{{ openbao_secrets_service }}-changed
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the path unit that watches the rendered files
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: /etc/systemd/system/openbao-secrets-{{ openbao_secrets_service }}-changed.{{ item.ext }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: openbao-secrets-changed.path.j2, ext: path }
+    - { src: openbao-secrets-changed.service.j2, ext: service }
+  register: openbao_secrets_units
+
+- name: Watch the rendered files
+  ansible.builtin.systemd_service:
+    name: openbao-secrets-{{ openbao_secrets_service }}-changed.path
+    enabled: true
+    state: started
+    daemon_reload: "{{ openbao_secrets_units is changed }}"
+
+- name: Run the agent
+  community.docker.docker_container:
+    name: "{{ openbao_secrets_agent_container }}"
+    image: "{{ openbao_secrets_agent_image }}"
+    entrypoint: [bao]
+    command: [agent, -config=/etc/openbao-agent/agent.hcl]
+    network_mode: host
+    user: "{{ openbao_secrets_uid }}:{{ openbao_secrets_gid }}"
+    volumes:
+      - "{{ openbao_secrets_agent_config_dir }}:/etc/openbao-agent:ro"
+      - "{{ openbao_secrets_dir }}:/run/secrets"
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ openbao_secrets_agent_memory }}"
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: openbao_secrets
+      com.compliant-infra.service: "{{ openbao_secrets_service }}"
+    state: started
+    restart: >-
+      {{ openbao_secrets_creds is changed or openbao_secrets_templates is changed
+         or openbao_secrets_agent_config is changed or openbao_secrets_rotated | length > 0 }}
+  tags: [chk_hrd_02, chk_iam_08, chk_sec_02]
+
+- name: Wait until the agent has rendered every file
+  ansible.builtin.wait_for:
+    path: "{{ openbao_secrets_dir }}/{{ item.name }}"
+    timeout: "{{ openbao_secrets_wait_seconds }}"
+  loop: "{{ openbao_secrets_files }}"
+  loop_control:
+    label: "{{ item.name }}"

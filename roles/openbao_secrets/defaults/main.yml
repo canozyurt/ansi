@@ -1,0 +1,107 @@
+---
+# Runtime secrets from OpenBao (IAM-08, SEC-02). Called by service roles through include_role:
+#
+#   - ansible.builtin.include_role:
+#       name: openbao_secrets
+#     vars:
+#       openbao_secrets_service: keycloak
+#       openbao_secrets_items:
+#         - { name: db_password, seed: "{{ keycloak_db_password }}", rotate_days: 90,
+#             postgres: { group: pg_main, cluster: main, user: keycloak } }
+#         - { name: bootstrap_admin_password, source: inventory, seed: "{{ keycloak_admin_password }}" }
+#       openbao_secrets_files:
+#         - { name: keycloak.conf, content: "db-password=[[ ref db_password ]]" }   # see "References" below
+#       openbao_secrets_uid: 1000
+#       openbao_secrets_on_change: ["docker restart keycloak"]
+#
+# Two backends, chosen once for the whole inventory (group_vars/all):
+#   openbao     secrets live in KV v2 at <mount>/services/<service>; every key is generated (or seeded from
+#               the inventory once, for migration) and rotated on a schedule. OpenBao Agent (pinned image,
+#               one container per service and host, AppRole login bound to the host) renders the files
+#               into tmpfs (/run, mode 0400, owned by the service's uid) and a systemd path unit restarts
+#               or signals the service when they change. Every read is in the OpenBao audit log.
+#   vault-file  labs and the fallback: values come from the inventory (Ansible Vault) as before and the
+#               calling role writes its usual 0600 files. Nothing is created in OpenBao.
+secrets_backend: vault-file
+openbao_secrets_backend: "{{ secrets_backend }}"
+
+# Service name: KV path, policy (svc-<service>), AppRole (svc-<service>-<host>), container and unit names.
+openbao_secrets_service: ""
+# Keys of the service's secret:
+#   name:         key name [a-z0-9_]
+#   source:       generate (default) | inventory
+#                 generate: created at random when missing (or from "seed" once, to keep an existing
+#                 password when migrating) and rotated every rotate_days by playbooks/rotate_secrets.yml.
+#                 inventory: always the inventory value in "seed" (shared with something outside this
+#                 service, e.g. a scrape password); stored so the agent can render it, never rotated here.
+#   seed:         inventory value (from Ansible Vault); optional for generate
+#   length:       generated length (default openbao_secrets_length); characters: letters and digits only,
+#                 so values are safe in env files, URLs and config syntax
+#   rotate_days:  0 = never rotate (e.g. keys that encrypt stored data); default openbao_secrets_rotation_days
+#   postgres:     { group, cluster, user, port? } applies a rotated password to that PostgreSQL role
+#                 (roles/postgres_cluster) before the new value is rendered
+openbao_secrets_items: []
+# Files the agent renders into openbao_secrets_dir. Either a single value ({name, key}) or a template
+# ({name, content}) whose secret references were produced from openbao_secrets_refs (see below).
+openbao_secrets_files: []
+
+# Owner of the rendered files: the uid/gid the service's container runs as. The agent runs as that
+# uid, so it can write nothing the service could not.
+openbao_secrets_uid: 0
+openbao_secrets_gid: "{{ openbao_secrets_uid }}"
+# tmpfs directory (/run is a tmpfs on systemd hosts). The service mounts it read-only.
+openbao_secrets_base_dir: /run/compliant-secrets
+openbao_secrets_dir: "{{ openbao_secrets_base_dir }}/{{ openbao_secrets_service }}"
+# Commands (run as root by the path unit) after a rendered file changed, e.g. "docker restart grafana"
+# or "docker kill --signal=HUP <ct>". Each runs only when the container named in it is running.
+openbao_secrets_on_change: []
+openbao_secrets_on_change_container: ""
+
+# Run the agent on this host (false: only store, generate and read; e.g. application credentials that
+# Ansible applies through an API and the application itself reads from OpenBao).
+openbao_secrets_agent: true
+# The host that generates and rotates (once per service). Callers with several hosts pass the first
+# host of the service that is in the play.
+openbao_secrets_manage_host: "{{ ansible_play_hosts | first }}"
+
+# OpenBao connection. The token (Ansible's periodic admin token) manages KV, policies and AppRoles.
+openbao_secrets_addr: "{{ pki_openbao_addr | default('') }}"
+openbao_secrets_token: "{{ openbao_admin_token | default('') }}"
+openbao_secrets_ca_file: "{{ pki_openbao_ca_file | default('') }}"
+openbao_secrets_kv_mount: secret
+openbao_secrets_kv_prefix: services
+openbao_secrets_approle_mount: approle
+
+# Generation and rotation.
+openbao_secrets_length: 32
+openbao_secrets_rotation_days: "{{ secret_rotation_days | default(90) }}"
+# Set by playbooks/rotate_secrets.yml: rotate keys whose age reached rotate_days.
+openbao_secrets_rotate: false
+# Keys (service/key or service/*) to rotate now whatever their age, e.g. after a suspected leak.
+openbao_secrets_force_rotate: []
+
+# AppRole of the agent: bound to the host's address; the secret_id is re-issued when fewer than
+# openbao_secrets_secret_id_renew_days remain.
+openbao_secrets_bind_cidrs: true
+openbao_secrets_host_ip: "{{ ansible_facts['default_ipv4']['address'] | default('') }}"
+openbao_secrets_secret_id_ttl: 2160h
+openbao_secrets_secret_id_renew_days: 30
+openbao_secrets_token_ttl: 1h
+openbao_secrets_token_max_ttl: 4h
+
+# Agent container.
+openbao_secrets_agent_image: "{{ versions_images.openbao }}"
+openbao_secrets_agent_container: "openbao-agent-{{ openbao_secrets_service }}"
+openbao_secrets_agent_config_dir: "/etc/openbao-agent/{{ openbao_secrets_service }}"
+openbao_secrets_agent_memory: 64m
+# How often KV values are re-read (rotations reach the service within this time; the rotation
+# playbook restarts the agent to render at once).
+openbao_secrets_render_interval: 5m
+openbao_secrets_wait_seconds: 60
+
+# tasks_from: verify (playbooks/verify_secrets_on_disk.yml): where to look for stored copies of secrets.
+openbao_secrets_verify_paths: [/etc, /opt]
+# The agent's own directory holds only the AppRole credentials and templates with references.
+openbao_secrets_verify_exclude: [/etc/openbao-agent]
+openbao_secrets_evidence_dir: /var/lib/compliance-evidence
+openbao_secrets_textfile_dir: /var/lib/node_exporter/textfile_collector

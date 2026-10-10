@@ -67,6 +67,8 @@ postgres_cluster_openbao_addr: "{{ pki_openbao_addr | default('') }}"
 postgres_cluster_openbao_token: "{{ openbao_admin_token | default('') }}"
 postgres_cluster_openbao_ca_file: "{{ pki_openbao_ca_file | default('') }}"
 postgres_cluster_openbao_mount: database
+# secrets_backend openbao: users with openbao_secret take their password from that service's secret (tasks/secrets.yml).
+postgres_cluster_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
 
 # S3 settings shared by every cluster that adds a repository with type s3 (an entry may override
 # each one). Inventory: postgres_backup_s3_* (e.g. in group_vars/all/postgres.yml).

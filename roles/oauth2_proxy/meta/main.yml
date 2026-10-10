@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: compliant-infra-ansible contributors
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+  role_name: oauth2_proxy
+  description: Keycloak SSO in front of web UIs without native SSO (Prometheus, Alertmanager, blackbox_exporter) with oauth2-proxy
+dependencies:
+  - role: versions
+  - role: rbac_model

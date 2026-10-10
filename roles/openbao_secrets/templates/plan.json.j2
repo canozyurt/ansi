@@ -1,0 +1,40 @@
+{#- New KV data and metadata for the service. Generated values use letters and digits only. -#}
+{%- set data = {} -%}
+{%- set meta = {} -%}
+{%- set rotated = [] -%}
+{%- set changed = [] -%}
+{%- set force = openbao_secrets_force_rotate | map('string') | list -%}
+{%- for item in openbao_secrets_items -%}
+{%-   set key = item.name -%}
+{%-   set source = item.source | default('generate') -%}
+{%-   set days = (item.rotate_days | default(openbao_secrets_rotation_days)) | int if source == 'generate' else 0 -%}
+{%-   set seed = (item.seed | default('')) | string -%}
+{%-   set have = openbao_secrets_have.get(key) -%}
+{%-   set rotated_at = (openbao_secrets_have_meta.get('rotated_at_' ~ key, '0')) | int -%}
+{%-   set fresh = lookup('ansible.builtin.password', '/dev/null', length=item.length | default(openbao_secrets_length) | int,
+                         chars=['ascii_letters', 'digits']) -%}
+{%-   if source == 'inventory' -%}
+{%-     set value = seed -%}
+{%-   elif have is none -%}
+{%-     set value = seed if seed | length > 0 else fresh -%}
+{%-   elif (openbao_secrets_service ~ '/' ~ key) in force or (openbao_secrets_service ~ '/*') in force
+           or (openbao_secrets_rotate | bool and days > 0 and (openbao_secrets_now | int) - rotated_at >= days * 86400) -%}
+{%-     set value = fresh -%}
+{%-     set _ = rotated.append(key) -%}
+{%-   else -%}
+{%-     set value = have -%}
+{%-   endif -%}
+{%-   if value != have -%}
+{%-     set _ = changed.append(key) -%}
+{%-   endif -%}
+{%-   set _ = data.update({key: value}) -%}
+{%-   set _ = meta.update({'source_' ~ key: source, 'rotate_days_' ~ key: days | string,
+                           'rotated_at_' ~ key: (openbao_secrets_now | string) if value != have else (rotated_at | string)}) -%}
+{%- endfor -%}
+{#- Keys no longer declared are kept (a removed item may still be read by an old deployment). -#}
+{%- for key, value in openbao_secrets_have.items() if key not in data -%}
+{%-   set _ = data.update({key: value}) -%}
+{%- endfor -%}
+{%- set meta_full = openbao_secrets_have_meta | combine(meta) -%}
+{{ {'data': data, 'metadata': meta_full, 'rotated': rotated, 'changed': changed | length > 0,
+    'metadata_changed': meta_full != openbao_secrets_have_meta} | to_json }}

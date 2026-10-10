@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: compliant-infra-ansible contributors
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+  role_name: openbao_secrets
+  description: >-
+    Keeps a service's secrets in OpenBao (generated, rotated, audited) and renders them at runtime with
+    OpenBao Agent into tmpfs; falls back to inventory (Ansible Vault) values with secrets_backend vault-file
+dependencies:
+  - role: versions

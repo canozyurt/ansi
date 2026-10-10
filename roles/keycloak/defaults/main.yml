@@ -18,6 +18,17 @@ keycloak_db_name: keycloak
 keycloak_db_user: keycloak
 keycloak_db_password: ""
 keycloak_db_sslmode: require
+# Runtime secrets (IAM-08, SEC-02). With secrets_backend openbao the database password lives in OpenBao
+# (seeded once from keycloak_db_password, then generated and rotated every keycloak_db_password_rotate_days)
+# and OpenBao Agent renders it with the bootstrap admin password into a tmpfs keycloak.conf; nothing secret
+# stays in /opt/keycloak. With vault-file (default, labs) both come from the inventory as before.
+keycloak_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+keycloak_db_password_rotate_days: "{{ secret_rotation_days | default(90) }}"
+# PostgreSQL role to update when the password rotates (roles/postgres_cluster), e.g.
+#   { group: pg_main, cluster: main, user: keycloak }. Empty: rotation is off (the database is managed elsewhere).
+keycloak_db_postgres: {}
+# Nodes restart one after another when the secrets change (seconds between nodes).
+keycloak_secrets_restart_stagger: 120
 
 # Bootstrap/break-glass admin in the master realm (IAM-01). Store the password sealed; its use is alerted on.
 keycloak_admin_user: break-glass-admin

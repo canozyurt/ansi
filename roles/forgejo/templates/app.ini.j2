@@ -1,7 +1,8 @@
 ; {{ ansible_managed }}
 ; Contains secrets: root renders it 0600 for the container user and mounts it read-only.
 {% set redis_url = ('rediss' if forgejo_cache_tls | bool else 'redis') ~ '://'
-     ~ ((':' ~ (forgejo_cache_password | urlencode) ~ '@') if forgejo_cache_password | length > 0 else '')
+     ~ ((':' ~ (forgejo_cache_password if forgejo_cache_password.startswith('[%') else forgejo_cache_password | urlencode) ~ '@')
+        if forgejo_cache_password | length > 0 else '')
      ~ forgejo_cache_host ~ ':' ~ forgejo_cache_port ~ '/' ~ forgejo_cache_db %}
 APP_NAME = {{ forgejo_app_name }}
 RUN_USER = git

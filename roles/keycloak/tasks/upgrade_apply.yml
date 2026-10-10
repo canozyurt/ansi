@@ -10,12 +10,11 @@
   block:
     - name: Check the metadata against the new version and configuration
       ansible.builtin.command:
-        argv:
-          - docker
-          - run
-          - --rm
-          - --network=none
-          - --env-file={{ keycloak_data_dir }}/keycloak.env
+        argv: >-
+          {{ ['docker', 'run', '--rm', '--network=none', '--env-file=' ~ keycloak_data_dir ~ '/keycloak.env']
+             + keycloak_secrets_run_args | default([]) + keycloak_compat_args }}
+      vars:
+        keycloak_compat_args:
           - --volume={{ keycloak_data_dir }}/upgrade:/upgrade:ro
           - "{{ keycloak_image }}"
           - update-compatibility
@@ -58,7 +57,7 @@
           > {{ keycloak_upgrade_backup_dir }}/keycloak-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.dump
         executable: /bin/bash
       environment:
-        PGPASSWORD: "{{ keycloak_db_password }}"
+        PGPASSWORD: "{{ keycloak_db_password_current | default(keycloak_db_password) }}"
       when: keycloak_upgrade_backup | bool
       changed_when: true
       tags: [chk_bck_01]

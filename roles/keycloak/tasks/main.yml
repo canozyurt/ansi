@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - keycloak_admin_password | length >= 16
-      - keycloak_db_password | length > 0
+      - keycloak_db_password | length > 0 or keycloak_secrets_backend == 'openbao'
       - keycloak_db_host | length > 0
       - keycloak_hostname is match('^https://')
     fail_msg: >-
