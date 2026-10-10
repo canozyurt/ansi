@@ -27,12 +27,12 @@
     label: "{{ item.path }}"
 
 # The image fills these from its own copy on first start; afterwards they hold the manager's state
-# (agent keys, queues, logs). Ownership inside is managed by the container.
+# (agent keys, queues, logs). Ownership and modes inside are managed by the container, which also
+# changes the modes of some of them on start, so they are only created here, never reset.
 - name: Create persistent data directories
-  ansible.builtin.file:
-    path: "{{ wazuh_manager_data_dir }}/ossec/{{ item }}"
-    state: directory
-    mode: "0750"
+  ansible.builtin.command: install -d -m 0750 {{ (wazuh_manager_data_dir ~ '/ossec/' ~ item) | quote }}
+  args:
+    creates: "{{ wazuh_manager_data_dir }}/ossec/{{ item }}"
   loop: "{{ wazuh_manager_persistent_dirs }}"
 
 # The image's init copies its defaults into empty data directories from a staging copy it deletes
