@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly TLS scan of every endpoint (SEC-03)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tls-scan
+SyslogIdentifier=tls-scan
+Nice=10
+TimeoutStartSec=12h
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true

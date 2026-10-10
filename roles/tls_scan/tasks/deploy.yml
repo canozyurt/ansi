@@ -1,0 +1,69 @@
+---
+- name: Create the TLS scan directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/tls-scan, mode: "0750" }
+    - { path: /var/lib/compliance-evidence, mode: "0750" }
+    - { path: "{{ tls_scan_evidence_dir }}", mode: "0750" }
+    - { path: "{{ tls_scan_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_sec_03]
+
+- name: Pull the testssl.sh image
+  community.docker.docker_image_pull:
+    name: "{{ tls_scan_image }}"
+    pull: not_present
+  tags: [chk_sec_03, chk_chg_05]
+
+- name: Write the scan settings and targets
+  ansible.builtin.copy:
+    content: "{{ tls_scan_config | to_nice_json }}\n"
+    dest: /etc/tls-scan/config.json
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    tls_scan_config:
+      image: "{{ tls_scan_image }}"
+      targets: "{{ tls_scan_targets }}"
+      evidence_dir: "{{ tls_scan_evidence_dir }}"
+      retention_days: "{{ tls_scan_retention_days | int }}"
+      textfile_dir: "{{ tls_scan_textfile_dir }}"
+      timeout: "{{ tls_scan_timeout_seconds | int }}"
+      memory_limit: "{{ tls_scan_memory_limit }}"
+      pids_limit: "{{ tls_scan_pids_limit | int }}"
+      vulnerabilities: "{{ tls_scan_vulnerabilities | bool }}"
+  tags: [chk_sec_03]
+
+- name: Install the scan script
+  ansible.builtin.copy:
+    src: tls-scan
+    dest: /usr/local/sbin/tls-scan
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_sec_03]
+
+- name: Install the scan service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [tls-scan.service, tls-scan.timer]
+  tags: [chk_sec_03]
+
+- name: Enable the weekly scan
+  ansible.builtin.systemd_service:
+    name: tls-scan.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_sec_03]

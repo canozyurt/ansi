@@ -1,0 +1,61 @@
+---
+- name: Check the TLS scan settings
+  ansible.builtin.assert:
+    that:
+      - tls_scan_image is search('@sha256:[0-9a-f]{64}$') or tls_scan_image is search(':[0-9][^:/]*$')
+      - tls_scan_retention_days | int >= 90
+    fail_msg: tls_scan_image must be pinned (exact tag and/or digest); reports are kept at least 90 days.
+    quiet: true
+  tags: [chk_sec_03, chk_chg_05]
+
+# prometheus_scrape_catalog and edge_default_services are defaults of other roles; read them from
+# those roles when the inventory does not set them, so this role sees the same catalog.
+- name: Read the default scrape catalog and edge services
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../{{ item.role }}/defaults/main.yml"
+    name: "tls_scan_defaults_{{ item.role }}"
+  loop:
+    - { role: prometheus }
+    - { role: edge }
+  loop_control:
+    label: "{{ item.role }}"
+
+- name: Build the target list
+  ansible.builtin.set_fact:
+    tls_scan_targets: "{{ lookup('ansible.builtin.template', 'targets.json.j2') | from_json }}"
+  vars:
+    tls_scan_catalog: >-
+      {{ (prometheus_scrape_catalog | default(tls_scan_defaults_prometheus.prometheus_scrape_catalog))
+         + (prometheus_scrape_extra | default([]))
+         + (query('ansible.builtin.varnames', '^prometheus_scrape_extra_.+')
+            | reject('equalto', 'prometheus_scrape_extra_all') | sort | map('extract', vars) | flatten) }}
+    tls_scan_edge_services: >-
+      {{ edge_services | default((edge_default_services | default(tls_scan_defaults_edge.edge_default_services))
+                                 + (edge_extra_services | default([]))) }}
+  tags: [chk_sec_03]
+
+- name: Show how many endpoints are scanned
+  ansible.builtin.debug:
+    msg: "{{ tls_scan_targets | length }} TLS endpoints: {{ tls_scan_targets | map(attribute='name') | join(', ') }}"
+
+- name: Deploy the scanner
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Register the reports with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: tls-scan
+    backup_register_paths: ["{{ tls_scan_evidence_dir }}"]
+    backup_register_rpo_hours: "{{ tls_scan_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ tls_scan_backup_rto_hours }}"
+  when: tls_scan_backup | bool
+  tags: [chk_sec_03, chk_evd_02]
+
+- name: Run a scan now
+  ansible.builtin.systemd_service:
+    name: tls-scan.service
+    state: started
+  when: tls_scan_run_now | bool
+  changed_when: true
+  tags: [chk_sec_03]

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Quarterly access review (IAM-05)
+
+[Timer]
+OnCalendar={{ access_review_schedule }}
+RandomizedDelaySec={{ access_review_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

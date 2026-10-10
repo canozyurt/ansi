@@ -101,6 +101,10 @@ openbao_ssh_role_principals:
   platform-admin: [platform-admin]
   operator: [operator]
 openbao_ssh_cert_ttl: 8h
+# Extra signing roles that are not default roles (CHG-02), e.g. the CI's deploy certificate and the
+# break-glass certificate: { <role>: { principals: [...], ttl: 1h, extensions: [permit-pty] } }. Only policies that grant
+# <mount>/sign/<role> can use them (admin; the CI deploy AppRole, see docs/audits.md).
+openbao_ssh_extra_roles: {}
 
 # Transit (SEC-06): application encryption keys, rotated automatically.
 openbao_transit_keys:

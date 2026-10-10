@@ -17,6 +17,12 @@ ssh_hardening_login_grace_time: 30
 ssh_hardening_client_alive_interval: 300
 ssh_hardening_client_alive_count_max: 2
 
+# CHG-02: production changes run only from CI. With ci_only_deploys (inventory-wide) and a trusted
+# user CA, sshd exposes the login certificate to each session (ExposeAuthInfo) so sudo can check the
+# deploy account's session carries the CI principal; roles/admin_login removes the deploy account's
+# authorized_keys and maps only that principal to it. Off by default.
+ssh_hardening_ci_only_deploys: "{{ ci_only_deploys | default(false) }}"
+
 # Refuse to disable password logins unless the connecting account can still log in with a key or certificate.
 ssh_hardening_lockout_check: true
 

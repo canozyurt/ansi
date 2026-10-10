@@ -1,0 +1,37 @@
+---
+# Quarterly access review (IAM-05). Two jobs write CSV and JSON evidence under
+# /var/lib/compliance-evidence/access-review/<YYYY-Qn>/<time>/ (kept 12 months by the evidence store):
+# - every host: its local accounts (login shell, lock state, groups, sudo rules, SSH principals and keys);
+# - the report host (first Keycloak node): users, groups, role assignments, admins, last login,
+#   disabled and stale accounts and service accounts from the Keycloak admin API, read with the
+#   read-only service account the keycloak role creates (keycloak_access_review_client_secret), plus
+#   the VPN peers declared in the inventory (wireguard_peers: owner and expiry).
+# playbooks/access_review.yml runs both now and collects one bundle on the controller.
+access_review_schedule: "*-01,04,07,10-01 06:00:00"
+access_review_randomized_delay: 1h
+access_review_evidence_dir: /var/lib/compliance-evidence/access-review
+access_review_state_dir: /var/lib/access-review
+access_review_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+# Accounts below this uid are listed only when they have a login shell, a password, sudo rules,
+# SSH principals or keys.
+access_review_local_min_uid: 1000
+
+# ---------------------------------------------------------------- Keycloak report (report host only)
+access_review_report_host: "{{ (groups['keycloak'] | default([]) | first) | default('') }}"
+access_review_keycloak_url: "{{ keycloak_hostname | default('') }}"
+access_review_keycloak_realm: "{{ keycloak_realm | default('org') }}"
+access_review_client_id: "{{ keycloak_access_review_client_id | default('access-review') }}"
+access_review_client_secret: "{{ keycloak_access_review_client_secret | default('') }}"
+# Verify Keycloak's certificate against the host trust store (internal CA). Labs with self-signed
+# certificates set false.
+access_review_validate_certs: true
+# Enabled accounts without a login for this many days (or never, when created earlier) are stale.
+# Keycloak keeps login events keycloak_events_expiration (90 days by default): keep it >= this.
+access_review_stale_days: 90
+# Realm roles that make a user an admin, plus any realm-management role that can change the realm.
+access_review_admin_roles: >-
+  {{ (rbac_model_all_roles | default(rbac_model_roles | default({}))) | dict2items
+     | selectattr('value.privileged', 'defined') | selectattr('value.privileged') | map(attribute='key') | list
+     or ['platform-admin', 'security-admin'] }}
+# VPN peers from the inventory (roles/wireguard_gateway).
+access_review_vpn_peers: "{{ wireguard_peers | default([]) }}"

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly TLS scan of every endpoint (SEC-03)
+
+[Timer]
+OnCalendar={{ tls_scan_schedule }}
+RandomizedDelaySec={{ tls_scan_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

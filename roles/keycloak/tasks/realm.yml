@@ -166,3 +166,34 @@
             defaultAction: false
         state: present
       tags: [chk_iam_02]
+
+    # IAM-05: read-only service account for the quarterly access review (roles/access_review).
+    # Created only when keycloak_access_review_client_secret is set.
+    - name: Create the access review client (client credentials only, no logins)
+      community.general.keycloak_client:
+        realm: "{{ keycloak_realm }}"
+        client_id: "{{ keycloak_access_review_client_id }}"
+        name: Access review (read-only)
+        description: Quarterly access review evidence; read-only realm-management roles
+        enabled: true
+        public_client: false
+        secret: "{{ keycloak_access_review_client_secret }}"
+        client_authenticator_type: client-secret
+        service_accounts_enabled: true
+        standard_flow_enabled: false
+        implicit_flow_enabled: false
+        direct_access_grants_enabled: false
+        state: present
+      no_log: true
+      when: keycloak_access_review_client_secret | length > 0
+      tags: [chk_iam_05]
+
+    - name: Give the access review service account read-only realm-management roles
+      community.general.keycloak_user_rolemapping:
+        realm: "{{ keycloak_realm }}"
+        service_account_user_client_id: "{{ keycloak_access_review_client_id }}"
+        client_id: realm-management
+        roles: "{{ keycloak_access_review_roles | map('community.general.dict_kv', 'name') | list }}"
+        state: present
+      when: keycloak_access_review_client_secret | length > 0
+      tags: [chk_iam_05]

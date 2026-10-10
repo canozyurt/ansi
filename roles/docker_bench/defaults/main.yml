@@ -1,0 +1,42 @@
+---
+# Weekly CIS Docker Benchmark check (HRD-03) with docker-bench-security (Apache-2.0), pinned in
+# roles/versions (versions_tools.docker_bench_security, checked by SHA-256). The JSON and text logs
+# are kept as evidence under /var/lib/compliance-evidence/docker-bench/, a summary goes to journald
+# (identifier docker-bench) and result counts go to the textfile collector; WARN results that are
+# not documented exceptions raise an alert (group_vars/monitoring/audits.yml).
+docker_bench_version: "{{ versions_tools.docker_bench_security.version }}"
+docker_bench_url: "{{ versions_tools.docker_bench_security.url }}"
+docker_bench_sha256: "{{ versions_tools.docker_bench_security.sha256 }}"
+# Copy the scripts from this directory on the controller instead of downloading (CI checks out the
+# pinned tag; air-gapped sites keep a reviewed copy). Empty: download and verify the SHA-256.
+docker_bench_local_src: ""
+docker_bench_install_dir: /opt/docker-bench-security
+
+# Documented exceptions (docs/cis-exceptions.md). Check ids follow docker-bench-security 1.6.0
+# (CIS Docker Benchmark 1.6.0); WARN results with these ids count as "excepted".
+docker_bench_exceptions_default:
+  - { id: "1.1.1", reason: Separate partition for /var/lib/docker is a provisioning decision }
+  - { id: "2.9", reason: User namespace remapping breaks host networking and fixed service uids }
+  - { id: "2.12", reason: No authorization plugin; the Docker socket is root-only and the docker group is empty }
+  - { id: "4.5", reason: Content trust is not used; images are pinned by tag or digest in roles/versions }
+  - { id: "4.6", reason: Upstream images have no HEALTHCHECK; roles check health and Prometheus alerts }
+  - { id: "5.9", reason: Services use host networking by design (role contract); the host firewall filters }
+  - { id: "5.11", reason: CPU shares are not set; memory and PID limits are }
+  - { id: "5.27", reason: Health is checked by the roles and Prometheus, not by Docker healthchecks }
+docker_bench_exceptions_extra: []
+docker_bench_exceptions: "{{ docker_bench_exceptions_default + docker_bench_exceptions_extra }}"
+
+docker_bench_evidence_dir: /var/lib/compliance-evidence/docker-bench
+docker_bench_retention_days: 120
+docker_bench_state_file: /var/lib/docker-bench/last.json
+docker_bench_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+
+docker_bench_schedule: Sun *-*-* 04:00:00
+docker_bench_randomized_delay: 2h
+
+docker_bench_backup: true
+docker_bench_backup_rpo_hours: 168
+docker_bench_backup_rto_hours: 24
+
+# Run one check at the end of the play (CI).
+docker_bench_run_now: false

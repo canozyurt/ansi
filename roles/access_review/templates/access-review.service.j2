@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Quarterly access review evidence (IAM-05)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/access-review run
+{% if access_review_is_report_host %}
+EnvironmentFile=/etc/access-review/env
+{% endif %}
+SyslogIdentifier=access-review
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=2h

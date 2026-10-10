@@ -1,0 +1,100 @@
+---
+- name: Create the access review directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/access-review, mode: "0700" }
+    - { path: /var/lib/compliance-evidence, mode: "0750" }
+    - { path: "{{ access_review_evidence_dir }}", mode: "0750" }
+    - { path: "{{ access_review_state_dir }}", mode: "0700" }
+    - { path: "{{ access_review_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_iam_05]
+
+- name: Install the access review tool
+  ansible.builtin.copy:
+    src: access-review
+    dest: /usr/local/sbin/access-review
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_iam_05]
+
+- name: Write the access review settings (the client secret is in the 0600 env file)
+  ansible.builtin.copy:
+    content: "{{ access_review_config | to_nice_json }}\n"
+    dest: /etc/access-review/config.json
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    access_review_config:
+      host: "{{ inventory_hostname }}"
+      evidence_dir: "{{ access_review_evidence_dir }}"
+      state_dir: "{{ access_review_state_dir }}"
+      textfile_dir: "{{ access_review_textfile_dir }}"
+      local_min_uid: "{{ access_review_local_min_uid | int }}"
+      principals_dir: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}"
+      keycloak:
+        enabled: "{{ access_review_is_report_host }}"
+        url: "{{ access_review_keycloak_url }}"
+        realm: "{{ access_review_keycloak_realm }}"
+        client_id: "{{ access_review_client_id }}"
+        validate_certs: "{{ access_review_validate_certs | bool }}"
+        stale_days: "{{ access_review_stale_days | int }}"
+        admin_roles: "{{ access_review_admin_roles }}"
+      vpn_peers: "{{ access_review_vpn_peers if access_review_is_report_host else [] }}"
+  tags: [chk_iam_05]
+
+- name: Check the Keycloak service account settings
+  ansible.builtin.assert:
+    that:
+      - access_review_client_secret | length >= 16
+      - access_review_keycloak_url is match('^https://')
+    fail_msg: >-
+      The report host needs keycloak_access_review_client_secret (16+ characters, from the vault; the keycloak
+      role creates the read-only client with it) and an https Keycloak URL.
+    quiet: true
+  when: access_review_is_report_host
+  no_log: true
+  tags: [chk_iam_05]
+
+- name: Write the service account secret (0600)
+  ansible.builtin.copy:
+    content: "ACCESS_REVIEW_CLIENT_SECRET={{ access_review_client_secret }}\n"
+    dest: /etc/access-review/env
+    owner: root
+    group: root
+    mode: "0600"
+  when: access_review_is_report_host
+  no_log: true
+  tags: [chk_iam_05, chk_sec_01]
+
+- name: Install the quarterly service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [access-review.service, access-review.timer]
+  tags: [chk_iam_05]
+
+- name: Enable the quarterly access review
+  ansible.builtin.systemd_service:
+    name: access-review.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_iam_05]
+
+- name: Publish the review age metric (records when the review was set up)
+  ansible.builtin.command: /usr/local/sbin/access-review metrics
+  args:
+    creates: "{{ access_review_textfile_dir }}/access_review.prom"
+  tags: [chk_iam_05]

@@ -66,6 +66,18 @@
                'allowed_extensions': 'permit-pty', 'default_extensions': {'permit-pty': ''},
                'ttl': secs(openbao_ssh_cert_ttl) | int, 'max_ttl': secs(openbao_ssh_cert_ttl) | int} | to_json }}
 {% endfor %}
+{% for role, spec in openbao_ssh_extra_roles.items() %}
+{%   set ext = spec.extensions | default([]) %}
+- path: {{ openbao_ssh_mount }}/roles/{{ role }}
+  body: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+            'allowed_users': spec.principals | join(','), 'default_user': spec.principals | first,
+            'allowed_extensions': ext | join(','), 'default_extensions': dict(ext | zip_longest([], fillvalue='')),
+            'ttl': spec.ttl | default('1h'), 'max_ttl': spec.ttl | default('1h')} | to_json }}
+  compare: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+               'allowed_users': spec.principals | join(','), 'default_user': spec.principals | first,
+               'allowed_extensions': ext | join(','), 'default_extensions': dict(ext | zip_longest([], fillvalue='')),
+               'ttl': secs(spec.ttl | default('1h')) | int, 'max_ttl': secs(spec.ttl | default('1h')) | int} | to_json }}
+{% endfor %}
 
 # Transit keys with automatic rotation (SEC-06)
 {% for key in openbao_transit_keys %}

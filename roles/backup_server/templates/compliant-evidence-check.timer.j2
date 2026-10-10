@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly evidence retention check (EVD-02)
+
+[Timer]
+OnCalendar={{ backup_server_evidence_check_on_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

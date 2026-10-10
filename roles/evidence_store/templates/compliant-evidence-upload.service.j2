@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Upload compliance evidence to the append-only evidence store (EVD-02)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-evidence-upload
+SyslogIdentifier=compliant-evidence-upload
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=6h

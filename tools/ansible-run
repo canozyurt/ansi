@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Run a playbook and record the run (CHG-02, CHG-03). CI pipelines call this instead of
+# ansible-playbook:
+#
+#   tools/ansible-run playbooks/site.yml -i inventories/production [--check --diff] [other options]
+#
+# 1. ansible-playbook runs with the run_record callback (ansible.cfg), which logs a JSON record
+#    (who, commit, playbook, hosts, result) to journald on the controller (identifier ansible-run)
+#    and writes it to $ANSIBLE_RUN_RECORD_FILE.
+# 2. playbooks/run_record.yml then logs the record on every host the run touched (logger -t
+#    ansible-run; the Wazuh agent ships it) and, for a full check-mode run of site.yml, writes the
+#    per-host drift metric for Prometheus.
+# 3. With ANSIBLE_RUN_RECORD_DIR set, the record (and nothing else) is copied there as evidence.
+#
+# The exit code is the playbook's. Failing to record on the hosts is reported, not fatal.
+set -uo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "usage: $0 <playbook> [ansible-playbook options]" >&2
+  exit 2
+fi
+root=$(cd "$(dirname "$0")/.." && pwd)
+playbook=$1
+shift
+
+record=$(mktemp "${TMPDIR:-/tmp}/ansible-run-record.XXXXXX.json")
+trap 'rm -f "$record"' EXIT
+export ANSIBLE_RUN_RECORD_FILE="$record"
+
+ansible-playbook "$playbook" "$@"
+rc=$?
+
+# Options that select hosts and connections are passed on; options that change what runs are not.
+keep=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C|--check|-D|--diff|--step|--syntax-check|--list-tasks|--list-hosts|--flush-cache|--force-handlers) ;;
+    -t|--tags|--skip-tags|--start-at-task) shift ;;
+    --tags=*|--skip-tags=*|--start-at-task=*) ;;
+    *) keep+=("$1") ;;
+  esac
+  shift
+done
+
+if [ -s "$record" ]; then
+  if ! ANSIBLE_RUN_RECORD_SKIP=1 ansible-playbook "$root/playbooks/run_record.yml" "${keep[@]}" \
+      -e "run_record_file=$record"; then
+    echo "WARNING: the run record could not be logged on every host" >&2
+  fi
+  if [ -n "${ANSIBLE_RUN_RECORD_DIR:-}" ]; then
+    mkdir -p "$ANSIBLE_RUN_RECORD_DIR"
+    cp "$record" "$ANSIBLE_RUN_RECORD_DIR/run-record-$(date -u +%Y-%m-%dT%H%M%SZ).json"
+  fi
+else
+  echo "WARNING: no run record was written (is the run_record callback enabled in ansible.cfg?)" >&2
+fi
+exit "$rc"

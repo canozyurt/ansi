@@ -1,0 +1,194 @@
+---
+# Alert rules for the compliance audits (playbooks/audits.yml), CI-only deploys and drift. The
+# prometheus role collects every prometheus_rules_<name> variable. Annotations use Prometheus
+# templates, wrapped in raw blocks so Ansible leaves them alone. Metrics come from the textfile
+# collector of node_exporter on each host (job "node").
+
+prometheus_rules_cis_audit:
+  - name: cis-benchmark  # HRD-01
+    rules:
+      - alert: CISScoreDropped
+        expr: cis_audit_score_percent < cis_audit_previous_score_percent
+        labels: { severity: warning, checklist: HRD-01 }
+        annotations:
+          summary: >-
+            {% raw %}CIS score on {{ $labels.instance }} dropped to {{ $value | printf "%.1f" }}%{% endraw %}
+          description: >-
+            Compare the last two reports under /var/lib/compliance-evidence/cis/ (summary.json lists failed rules).
+            Fix the setting or document an exception (docs/cis-exceptions.md), then run "systemctl start cis-audit".
+
+      - alert: CISRuleRegressed
+        expr: cis_audit_regressions > 0
+        labels: { severity: warning, checklist: HRD-01 }
+        annotations:
+          summary: "{% raw %}{{ $value }} CIS rule(s) passed before and fail now on {{ $labels.instance }}{% endraw %}"
+          description: The rules are in the journal (SYSLOG_IDENTIFIER=cis-audit, "regression") and in summary.json.
+
+      - alert: CISScoreBelowTarget
+        expr: cis_audit_score_percent < 90 and cis_audit_success == 1
+        for: 1d
+        labels: { severity: info, checklist: HRD-01 }
+        annotations:
+          summary: "{% raw %}CIS score on {{ $labels.instance }} is {{ $value | printf \"%.1f\" }}% (target 90%){% endraw %}"
+
+      - alert: CISAuditFailed
+        expr: cis_audit_success == 0
+        labels: { severity: warning, checklist: HRD-01 }
+        annotations:
+          summary: "{% raw %}The CIS scan on {{ $labels.instance }} failed (journal: SYSLOG_IDENTIFIER=cis-audit){% endraw %}"
+
+      - alert: CISAuditNotRun
+        expr: (time() - cis_audit_last_run_timestamp_seconds) > 8 * 86400
+        labels: { severity: warning, checklist: HRD-01 }
+        annotations:
+          summary: "{% raw %}No CIS scan has run on {{ $labels.instance }} for more than 8 days{% endraw %}"
+
+prometheus_rules_docker_bench:
+  - name: docker-benchmark  # HRD-03
+    rules:
+      - alert: DockerBenchWarnings
+        expr: docker_bench_warnings > 0
+        labels: { severity: warning, checklist: HRD-03 }
+        annotations:
+          summary: >-
+            {% raw %}{{ $value }} CIS Docker Benchmark check(s) warn on {{ $labels.instance }} (documented exceptions left out){% endraw %}
+          description: >-
+            The checks are in the journal (SYSLOG_IDENTIFIER=docker-bench, "WARN") and under
+            /var/lib/compliance-evidence/docker-bench/. Fix them or add a documented exception (docs/cis-exceptions.md).
+
+      - alert: DockerBenchWarningsIncreased
+        expr: docker_bench_warnings > docker_bench_previous_warnings
+        labels: { severity: warning, checklist: HRD-03 }
+        annotations:
+          summary: "{% raw %}CIS Docker Benchmark warnings on {{ $labels.instance }} rose to {{ $value }}{% endraw %}"
+
+      - alert: DockerBenchNotRun
+        expr: (time() - docker_bench_last_run_timestamp_seconds) > 8 * 86400 or docker_bench_success == 0
+        labels: { severity: warning, checklist: HRD-03 }
+        annotations:
+          summary: "{% raw %}No successful CIS Docker Benchmark check on {{ $labels.instance }} for more than 8 days{% endraw %}"
+
+prometheus_rules_tls_scan:
+  - name: tls-scan  # SEC-03
+    rules:
+      - alert: TLSWeakProtocolOffered
+        expr: max by (target) (tls_scan_weak_protocols) > 0
+        labels: { severity: critical, checklist: SEC-03 }
+        annotations:
+          summary: "{% raw %}{{ $labels.target }} offers TLS below 1.2 or SSL{% endraw %}"
+          description: >-
+            Every listener must be TLS 1.2+ (SEC-03). The offered protocols are in tls_scan_protocol_offered and the
+            report under /var/lib/compliance-evidence/tls/ on the monitoring hosts.
+
+      - alert: TLSWeakCipherOffered
+        expr: max by (target) (tls_scan_weak_ciphers) > 0
+        labels: { severity: critical, checklist: SEC-03 }
+        annotations:
+          summary: "{% raw %}{{ $labels.target }} offers weak ciphers (NULL, anonymous, export, low or 3DES/IDEA){% endraw %}"
+
+      - alert: TLSObsoleteCipherOffered
+        expr: max by (target) (tls_scan_obsolete_ciphers + tls_scan_no_forward_secrecy_ciphers) > 0
+        for: 1d
+        labels: { severity: warning, checklist: SEC-03 }
+        annotations:
+          summary: "{% raw %}{{ $labels.target }} offers CBC or non-forward-secret ciphers{% endraw %}"
+          description: Not forbidden by SEC-03, but outside the Mozilla intermediate profile the edge uses.
+
+      - alert: TLSCertificateProblem
+        expr: max by (target) (tls_scan_certificate_problems) > 0
+        for: 1d
+        labels: { severity: warning, checklist: SEC-05 }
+        annotations:
+          summary: >-
+            {% raw %}{{ $labels.target }} has {{ $value }} certificate finding(s) (trust chain, expiry, key or signature){% endraw %}
+          description: The findings are in the journal of the monitoring hosts (SYSLOG_IDENTIFIER=tls-scan, "certificate").
+
+      - alert: TLSScanFailed
+        expr: min by (target) (tls_scan_success) == 0
+        labels: { severity: warning, checklist: SEC-03 }
+        annotations:
+          summary: "{% raw %}The TLS scan of {{ $labels.target }} failed from every monitoring host{% endraw %}"
+
+      - alert: TLSScanNotRun
+        expr: (time() - max(tls_scan_last_run_timestamp_seconds)) > 8 * 86400
+        labels: { severity: warning, checklist: SEC-03 }
+        annotations:
+          summary: No TLS scan has run on any monitoring host for more than 8 days
+
+prometheus_rules_drift:
+  - name: drift  # CHG-03
+    rules:
+      - alert: DriftDetected
+        expr: ansible_drift_changed_tasks > 0
+        labels: { severity: warning, checklist: CHG-03 }
+        annotations:
+          summary: >-
+            {% raw %}{{ $labels.instance }} differs from the declared state: {{ $value }} task(s) would change{% endraw %}
+          description: >-
+            The weekly check-mode run of site.yml (drift workflow) found changes. The diff is in the workflow's
+            evidence (drift/<time>/ansible.log). Either someone changed the host outside CI (CHG-02: find the
+            session in the SIEM) or the code changed without a deploy. Re-apply from CI or revert. See docs/audits.md.
+
+      - alert: DriftCheckFailed
+        expr: ansible_drift_failed_tasks > 0
+        labels: { severity: warning, checklist: CHG-03 }
+        annotations:
+          summary: "{% raw %}The drift check had {{ $value }} failed task(s) on {{ $labels.instance }}; drift is unknown{% endraw %}"
+
+      - alert: DriftCheckNotRun
+        expr: (time() - ansible_drift_last_check_timestamp_seconds) > 8 * 86400
+        labels: { severity: warning, checklist: CHG-03 }
+        annotations:
+          summary: "{% raw %}No drift check has reached {{ $labels.instance }} for more than 8 days{% endraw %}"
+
+prometheus_rules_ci_only_deploys:
+  - name: ci-only-deploys  # CHG-02
+    rules:
+      - alert: BreakGlassLogin
+        expr: (time() - break_glass_last_login_timestamp_seconds) < 3600
+        labels: { severity: critical, checklist: CHG-02 }
+        annotations:
+          summary: "{% raw %}Break-glass login on {{ $labels.instance }}{% endraw %}"
+          description: >-
+            Someone logged in with the break-glass certificate (full sudo outside CI). Confirm it is an approved
+            incident, record it, and re-run the drift check afterwards. The session is in the SIEM (rule 100120).
+
+prometheus_rules_evidence:
+  - name: evidence-store  # EVD-02
+    rules:
+      - alert: EvidenceRetentionViolated
+        expr: evidence_retention_ok == 0 and evidence_check_success == 1
+        labels: { severity: critical, checklist: EVD-02 }
+        annotations:
+          summary: >-
+            {% raw %}The evidence store on {{ $labels.instance }} misses evidence: {{ with printf "evidence_months_missing{instance='%s'}" $labels.instance | query }}{{ . | first | value }}{{ end }} month(s) without snapshots or old evidence gone{% endraw %}
+          description: The problems are in the journal of the backup server (SYSLOG_IDENTIFIER=compliant-evidence-check).
+
+      - alert: EvidenceRetentionCheckNotRun
+        expr: (time() - evidence_check_last_run_timestamp_seconds) > 8 * 86400 or evidence_check_success == 0
+        labels: { severity: warning, checklist: EVD-02 }
+        annotations:
+          summary: "{% raw %}The evidence retention check on {{ $labels.instance }} has not succeeded for more than 8 days{% endraw %}"
+
+      - alert: EvidenceUploadStale
+        expr: (time() - evidence_upload_last_success_timestamp_seconds) > 8 * 86400
+        labels: { severity: warning, checklist: EVD-02 }
+        annotations:
+          summary: "{% raw %}{{ $labels.instance }} has not uploaded evidence to {{ $labels.repo }} for more than 8 days{% endraw %}"
+
+prometheus_rules_access_review:
+  - name: access-review  # IAM-05
+    rules:
+      - alert: AccessReviewOverdue
+        expr: >-
+          (time() - access_review_local_last_success_timestamp_seconds > 100 * 86400
+           and on(instance) time() - access_review_deployed_timestamp_seconds > 100 * 86400)
+          or
+          (time() - access_review_keycloak_last_success_timestamp_seconds > 100 * 86400
+           and on(instance) time() - access_review_deployed_timestamp_seconds > 100 * 86400)
+        labels: { severity: warning, checklist: IAM-05 }
+        annotations:
+          summary: "{% raw %}The last access review on {{ $labels.instance }} is more than 100 days old{% endraw %}"
+          description: >-
+            The quarterly review (access-review.timer) has not succeeded. Run "systemctl start access-review" or
+            playbooks/access_review.yml and check the journal (SYSLOG_IDENTIFIER=access-review).

@@ -79,3 +79,9 @@ keycloak_upgrade_allow_parallel: false
 keycloak_upgrade_backup: true
 keycloak_upgrade_backup_dir: /var/backups/keycloak
 keycloak_upgrade_backup_keep: 5
+
+# Access review (IAM-05): a confidential client whose service account holds only read-only
+# realm-management roles, used by roles/access_review. Set the secret from the vault to create it.
+keycloak_access_review_client_id: access-review
+keycloak_access_review_client_secret: ""
+keycloak_access_review_roles: [view-users, query-users, query-groups, view-realm, view-events, view-clients, query-clients]

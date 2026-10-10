@@ -6,6 +6,9 @@ Managed by Ansible (roles/backup_server). Runs from systemd; output goes to jour
   compliant-backup-server prune      restic forget --prune with the retention policy, on every repository
   compliant-backup-server s3-copy    restic copy every repository to the S3 bucket (then apply retention there)
   compliant-backup-server metrics    rewrite the textfile metrics from the saved state
+  compliant-backup-server init-evidence   create the evidence repository (EVD-02) if it is missing
+  compliant-backup-server evidence-check  list the evidence snapshots; fail when the oldest kept evidence
+                                          is younger than the retention period or a month is missing
 
 Clients reach the repositories only through rest-server in append-only mode, so they cannot delete
 anything (BCK-02). Retention therefore runs here, directly on the repository directories, with each
@@ -16,10 +19,12 @@ runs as the rest-server user so the files it writes stay readable by rest-server
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import json
 import os
 import pwd
+import re
 import subprocess
 import sys
 import tempfile
@@ -63,14 +68,17 @@ def restic(cfg: dict, args: list[str], env_extra: dict, capture: bool = False):
                           stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None)
 
 
-def policy_args(cfg: dict) -> list[str]:
+def policy_args(cfg: dict, repo: str | None = None) -> list[str]:
+    """forget arguments; a repository may have its own policy (the evidence store keeps everything
+    for its retention period)."""
+    keep = (cfg.get("policies") or {}).get(repo) or cfg["keep"]
     args = ["forget", "--prune", "--group-by", "host,tags", "--retry-lock", cfg["retry_lock"]]
     for unit in ("hourly", "daily", "weekly", "monthly", "yearly"):
-        value = int(cfg["keep"].get(unit, 0) or 0)
+        value = int(keep.get(unit, 0) or 0)
         if value > 0:
             args += [f"--keep-{unit}", str(value)]
-    if cfg["keep"].get("within"):
-        args += ["--keep-within", cfg["keep"]["within"]]
+    if keep.get("within"):
+        args += ["--keep-within", keep["within"]]
     return args
 
 
@@ -98,7 +106,7 @@ class State:
                 self.data = json.load(fh)
         except (OSError, ValueError):
             self.data = {}
-        for key in ("prune", "s3"):
+        for key in ("prune", "s3", "evidence"):
             self.data.setdefault(key, {})
         return self
 
@@ -149,8 +157,8 @@ def cmd_prune(cfg: dict) -> int:
         for user, path, password in repositories(cfg):
             start = time.time()
             env = {"RESTIC_REPOSITORY": path, "RESTIC_PASSWORD": password}
-            log(f"{user}: applying retention {' '.join(policy_args(cfg)[1:])}")
-            ok = restic(cfg, policy_args(cfg), env).returncode == 0
+            log(f"{user}: applying retention {' '.join(policy_args(cfg, user)[1:])}")
+            ok = restic(cfg, policy_args(cfg, user), env).returncode == 0
             entry = state.data["prune"].setdefault(user, {})
             entry.update(last_run=int(time.time()), duration=time.time() - start, last_ok=ok)
             if ok:
@@ -189,7 +197,7 @@ def cmd_s3_copy(cfg: dict) -> int:
                 log(f"{user}: copying new snapshots to S3")
                 ok = restic(cfg, ["copy", "--retry-lock", cfg["retry_lock"]], env).returncode == 0
             if ok and s3.get("forget"):
-                ok = restic(cfg, policy_args(cfg), env).returncode == 0
+                ok = restic(cfg, policy_args(cfg, user), env).returncode == 0
             entry = state.data["s3"].setdefault(user, {})
             entry.update(last_run=int(time.time()), duration=time.time() - start, last_ok=ok)
             if ok:
@@ -200,17 +208,175 @@ def cmd_s3_copy(cfg: dict) -> int:
     return 1 if failed else 0
 
 
+def evidence_repo(cfg: dict):
+    ev = cfg.get("evidence") or {}
+    if not ev.get("enabled"):
+        return None, None
+    with open(cfg["password_file"]) as fh:
+        password = json.load(fh).get(ev["repo"])
+    return os.path.join(cfg["repo_dir"], ev["repo"]), password
+
+
+def cmd_init_evidence(cfg: dict) -> int:
+    path, password = evidence_repo(cfg)
+    if not path or not password:
+        log("evidence store is not enabled")
+        return 0
+    if os.path.isfile(os.path.join(path, "config")):
+        return 0
+    log(f"Initialised the evidence repository {path}" if restic(
+        cfg, ["init"], {"RESTIC_REPOSITORY": path, "RESTIC_PASSWORD": password}).returncode == 0
+        else f"ERROR cannot initialise the evidence repository {path}")
+    return 0 if os.path.isfile(os.path.join(path, "config")) else 1
+
+
+TIME_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)$")
+
+
+def snapshot_time(value: str) -> float:
+    """restic snapshot time (RFC 3339 with nanoseconds) as a Unix timestamp."""
+    match = TIME_RE.match(value)
+    if not match:
+        raise ValueError(f"unexpected snapshot time {value!r}")
+    tz = "+00:00" if match.group(2) == "Z" else match.group(2)
+    return datetime.datetime.fromisoformat(match.group(1) + tz).timestamp()
+
+
+def month_key(ts: float) -> str:
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m")
+
+
+def months_between(start: float, end: float) -> list[str]:
+    first = datetime.datetime.fromtimestamp(start, datetime.timezone.utc)
+    last = datetime.datetime.fromtimestamp(end, datetime.timezone.utc)
+    months, year, month = [], first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        months.append(f"{year:04d}-{month:02d}")
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
+def check_retention(snapshots: list[dict], now: float, first_seen: float | None, retention_days: int,
+                    slack_days: int) -> dict:
+    """Retention verdict for the evidence snapshots (pure function, tested on sample listings).
+
+    - the oldest kept snapshot must be as old as the store, up to the retention period (minus slack);
+    - every calendar month from the start of that period to now must hold at least one snapshot
+      (the current month only once the slack has passed).
+    """
+    day = 86400
+    times = sorted(snapshot_time(s["time"]) for s in snapshots)
+    result = {"snapshots": len(times), "problems": [], "missing_months": [], "stale_hosts": []}
+    if not times:
+        result["problems"].append("no evidence snapshots")
+        result.update(first_seen=first_seen or 0, oldest=0, hosts=0)
+        return result
+    first_seen = min(first_seen or times[0], times[0])
+    oldest = times[0]
+    result.update(first_seen=first_seen, oldest=oldest)
+    expected_age = min(now - first_seen, retention_days * day) - slack_days * day
+    if now - oldest < expected_age:
+        result["problems"].append(
+            f"oldest kept evidence is {(now - oldest) / day:.0f} days old, expected at least {expected_age / day:.0f}")
+    window_start = max(first_seen, now - retention_days * day)
+    present = {month_key(t) for t in times}
+    expected = months_between(window_start, now)
+    if datetime.datetime.fromtimestamp(now, datetime.timezone.utc).day <= slack_days and month_key(first_seen) != month_key(now):
+        expected = expected[:-1]
+    result["missing_months"] = [m for m in expected if m not in present]
+    if result["missing_months"]:
+        result["problems"].append(f"months without evidence: {', '.join(result['missing_months'])}")
+    latest: dict[str, float] = {}
+    for snap in snapshots:
+        host = snap.get("hostname", "")
+        latest[host] = max(latest.get(host, 0), snapshot_time(snap["time"]))
+    result["hosts"] = len(latest)
+    result["stale_hosts"] = sorted(h for h, t in latest.items() if now - t > slack_days * day)
+    return result
+
+
+def write_evidence_metrics(cfg: dict, verdict: dict, ok: bool) -> None:
+    lines = []
+    for name, help_text, value in (
+        ("evidence_retention_ok", "1 when the evidence store keeps the full retention period with no missing month.",
+         int(ok and not verdict.get("problems"))),
+        ("evidence_check_success", "1 when the evidence snapshots could be listed.", int(ok)),
+        ("evidence_snapshots", "Snapshots in the evidence repository.", verdict.get("snapshots", 0)),
+        ("evidence_oldest_snapshot_timestamp_seconds", "Time of the oldest kept evidence snapshot.", int(verdict.get("oldest", 0))),
+        ("evidence_first_seen_timestamp_seconds", "Time of the first evidence snapshot this server has seen.",
+         int(verdict.get("first_seen", 0))),
+        ("evidence_months_missing", "Calendar months in the retention period without any evidence snapshot.",
+         len(verdict.get("missing_months", []))),
+        ("evidence_hosts", "Hosts (and CI) that uploaded evidence.", verdict.get("hosts", 0)),
+        ("evidence_hosts_stale", "Uploaders whose latest evidence is older than the upload slack.", len(verdict.get("stale_hosts", []))),
+        ("evidence_check_last_run_timestamp_seconds", "End of the last evidence retention check.", int(time.time())),
+    ):
+        lines += [f"# HELP {name} {help_text}", f"# TYPE {name} gauge", f"{name} {value}"]
+    os.makedirs(cfg["textfile_dir"], mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=cfg["textfile_dir"], prefix=".evidence_retention.prom.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(cfg["textfile_dir"], "evidence_retention.prom"))
+
+
+def cmd_evidence_check(cfg: dict, snapshots_file: str | None = None, now: float | None = None) -> int:
+    ev = cfg.get("evidence") or {}
+    now = now or time.time()
+    with State(cfg) as state:
+        entry = state.data["evidence"]
+        if snapshots_file:
+            with open(snapshots_file) as fh:
+                snapshots = json.load(fh)
+        else:
+            path, password = evidence_repo(cfg)
+            if not path:
+                log("evidence store is not enabled")
+                return 0
+            listing = restic(cfg, ["snapshots", "--json", "--no-lock"],
+                             {"RESTIC_REPOSITORY": path, "RESTIC_PASSWORD": password}, capture=True)
+            if listing.returncode != 0:
+                log(f"ERROR cannot list the evidence snapshots: {listing.stderr.strip()[-500:]}")
+                write_evidence_metrics(cfg, {}, False)
+                return 1
+            snapshots = json.loads(listing.stdout or "[]")
+        verdict = check_retention(snapshots, now, entry.get("first_seen"), int(ev.get("retention_days", 365)),
+                                  int(ev.get("slack_days", 8)))
+        if verdict.get("first_seen"):
+            entry["first_seen"] = verdict["first_seen"]
+        entry.update(last_run=int(now), last_ok=not verdict["problems"])
+    write_evidence_metrics(cfg, verdict, True)
+    if ev.get("evidence_dir") and not snapshots_file:
+        os.makedirs(ev["evidence_dir"], mode=0o750, exist_ok=True)
+        stamp = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+        with open(os.path.join(ev["evidence_dir"], f"{stamp}.json"), "w") as fh:
+            json.dump({"time": stamp, "verdict": verdict, "snapshots": [
+                {k: s.get(k) for k in ("short_id", "time", "hostname", "tags")} for s in snapshots]}, fh, indent=1)
+    log(f"evidence snapshots={verdict['snapshots']} hosts={verdict.get('hosts', 0)} "
+        f"missing_months={len(verdict['missing_months'])} stale_hosts={','.join(verdict['stale_hosts']) or '-'}")
+    for problem in verdict["problems"]:
+        log(f"ERROR {problem}")
+    return 1 if verdict["problems"] else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["prune", "s3-copy", "metrics"])
+    parser.add_argument("command", choices=["prune", "s3-copy", "metrics", "init-evidence", "evidence-check"])
+    parser.add_argument("--config", default=CONFIG)
+    parser.add_argument("--snapshots-json", help="evidence-check: read the snapshot listing from this file (tests)")
+    parser.add_argument("--now", type=float, help="evidence-check: evaluate at this Unix time (tests)")
     args = parser.parse_args()
     os.umask(0o077)
-    with open(CONFIG) as fh:
+    with open(args.config) as fh:
         cfg = json.load(fh)
     if args.command == "prune":
         return cmd_prune(cfg)
     if args.command == "s3-copy":
         return cmd_s3_copy(cfg)
+    if args.command == "init-evidence":
+        return cmd_init_evidence(cfg)
+    if args.command == "evidence-check":
+        return cmd_evidence_check(cfg, args.snapshots_json, args.now)
     with State(cfg):
         pass
     return 0

@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly CIS benchmark scan (HRD-01)
+
+[Timer]
+OnCalendar={{ cis_audit_schedule }}
+RandomizedDelaySec={{ cis_audit_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
