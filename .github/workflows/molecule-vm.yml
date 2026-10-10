@@ -23,10 +23,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: molecule-vm-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   MOLECULE_DISTRO: ${{ inputs.distro || 'ubuntu2404' }}
   PY_COLORS: "1"
