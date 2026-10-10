@@ -26,6 +26,17 @@
     quiet: true
   tags: [chk_ha_01]
 
+- name: Keep sessions at most a day long (IAM-04)
+  ansible.builtin.assert:
+    that:
+      - grafana_login_maximum_lifetime is match('^[0-9]+[mh]$')
+      - >-
+        (grafana_login_maximum_lifetime[:-1] | int) * {'m': 60, 'h': 3600}[grafana_login_maximum_lifetime[-1]]
+        <= (session_max_hours | default(24) | int) * 3600
+    fail_msg: grafana_login_maximum_lifetime (m or h) must not exceed {{ session_max_hours | default(24) }} hours (IAM-04).
+    quiet: true
+  tags: [chk_iam_04]
+
 - name: Keep Grafana's secrets in OpenBao and render them into tmpfs
   ansible.builtin.include_role:
     name: openbao_secrets

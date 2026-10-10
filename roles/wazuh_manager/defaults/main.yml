@@ -99,6 +99,9 @@ wazuh_manager_container_uid: 999
 
 # Wazuh API roles for people who open the Wazuh pages of the dashboard (run_as): IdP role -> API role.
 # Roles not listed have no access to the manager API.
+# IAM-01: local accounts whose use raises the central break-glass alert (rules 100121-100123).
+wazuh_manager_break_glass_accounts: "{{ break_glass_accounts | default(['break-glass-admin']) }}"
+
 wazuh_manager_api_role_mapping:
   platform-admin: administrator
   security-admin: administrator

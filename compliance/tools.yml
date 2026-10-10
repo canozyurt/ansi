@@ -26,7 +26,7 @@ tools:
 
   - name: OpenBao
     versions: [images/openbao]
-    roles: [openbao]
+    roles: [openbao, openbao_secrets]
     license: MPL-2.0
     osi_approved: true
     sso: {status: "yes", note: "OIDC auth method against Keycloak."}
@@ -81,13 +81,13 @@ tools:
     roles: [prometheus, alertmanager]
     license: Apache-2.0
     osi_approved: true
-    sso: {status: "no", note: "Only TLS and basic auth (web config); people use Grafana."}
-    audit_log: {status: "no", note: "No audit log; requests are logged at the edge proxy."}
+    sso: {status: "yes", note: "No native SSO: people sign in through oauth2-proxy (Keycloak, roles claim, docs/sso-matrix.md); TLS + basic auth stays for machines and break-glass."}
+    audit_log: {status: "no", note: "No audit log of its own; oauth2-proxy logs every authenticated request with the user."}
     ha: {status: "yes", note: "2+ Prometheus replicas; 3-node Alertmanager gossip cluster."}
     exceptions:
       - >-
-        Prometheus has basic auth only, behind the edge: its accounts are for machines and break-glass use,
-        admin-only path at the edge (docs/architecture.md, Monitoring).
+        Prometheus and Alertmanager have basic auth only: their accounts are for machines and break-glass use;
+        people use the oauth2-proxy address (roles/oauth2_proxy, IAM-01).
       - "No audit log: the API is read-only for people (no admin API enabled), and access is logged by HAProxy with the user's source and path."
 
   - name: Prometheus exporters (node_exporter, blackbox_exporter)
@@ -364,3 +364,12 @@ tools:
     sso: {status: "n.a.", note: "Patch automation."}
     audit_log: {status: "n.a.", note: "apt history; pending updates exported as metrics (HRD-04)."}
     ha: {status: "n.a.", note: "Per host."}
+
+  - name: oauth2-proxy
+    versions: [images/oauth2_proxy]
+    roles: [oauth2_proxy]
+    license: MIT
+    osi_approved: true
+    sso: {status: "yes", note: "It is the SSO layer: Keycloak OIDC with PKCE in front of Prometheus and Alertmanager."}
+    audit_log: {status: "yes", note: "Authentication and request logs (user, result) to journald and the SIEM."}
+    ha: {status: "yes", note: "One stateless instance per monitoring host (cookie sessions); each replica has its own."}

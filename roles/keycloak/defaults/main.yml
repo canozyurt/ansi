@@ -65,6 +65,12 @@ keycloak_smtp_server: {}
 keycloak_sso_session_idle_timeout: 1800      # 30 minutes
 keycloak_sso_session_max_lifespan: 36000     # 10 hours
 keycloak_access_token_lifespan: 300          # 5 minutes
+# Offline sessions (refresh tokens with offline_access) end at the same cap, so no login outlives a day
+# after the user is disabled (IAM-04).
+keycloak_offline_session_idle_timeout: 36000  # 10 hours
+keycloak_offline_session_max_lifespan: 86400  # 24 hours
+# Upper bound for every session and token lifetime in the platform (IAM-04); checked by this role.
+keycloak_session_max_seconds: "{{ (session_max_hours | default(24) | int) * 3600 }}"
 keycloak_brute_force_failure_factor: 5
 keycloak_brute_force_max_wait_seconds: 900
 

@@ -11,6 +11,19 @@
       keycloak_hostname. Keep passwords in Ansible Vault or the secrets manager.
     quiet: true
 
+- name: Keep every session at most a day long (IAM-04)
+  ansible.builtin.assert:
+    that:
+      - keycloak_sso_session_max_lifespan | int <= keycloak_session_max_seconds | int
+      - keycloak_offline_session_max_lifespan | int <= keycloak_session_max_seconds | int
+      - keycloak_offline_session_idle_timeout | int <= keycloak_session_max_seconds | int
+      - keycloak_access_token_lifespan | int <= 900
+    fail_msg: >-
+      Session lifetimes must not exceed {{ keycloak_session_max_seconds }} seconds and access tokens 15 minutes,
+      so that disabling a user ends every login within a day (IAM-04).
+    quiet: true
+  tags: [chk_iam_04]
+
 - name: Require a highly available cluster (HA-01)
   ansible.builtin.assert:
     that: keycloak_cluster_hosts | length >= keycloak_min_nodes or keycloak_allow_single_node | bool

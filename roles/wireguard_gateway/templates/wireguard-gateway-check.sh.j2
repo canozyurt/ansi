@@ -1,24 +1,35 @@
 #!/bin/bash
 # {{ ansible_managed }}
 # 1. Removes peers whose expiry date has been reached from the running interface (IAM-04), so access
-#    ends without waiting for the next Ansible run (which also drops them from the config).
+#    ends without waiting for the next Ansible run (which also drops them from the config), and peers on
+#    the IdP deny list (owner disabled in Keycloak, written by wireguard-idp-sync), so a reload cannot
+#    bring them back.
 # 2. Writes per-peer Prometheus metrics for the node_exporter textfile collector.
 set -euo pipefail
 
 iface="${1:-{{ wireguard_gateway_interface }}}"
 peers="/etc/wireguard/${iface}-peers.tsv"
+denied="/etc/wireguard/${iface}-denied.tsv"
 out_dir="{{ wireguard_gateway_metrics_dir }}"
 out="${out_dir}/wireguard_${iface}.prom"
 today="$(date -u +%F)"
 
 declare -A peer_name peer_owner peer_expires
 if [[ -r "$peers" ]]; then
-  while IFS=$'\t' read -r name key expires owner; do
+  while IFS=$'\t' read -r name key expires owner _idp_user; do
     [[ -z "${name}" || "${name}" == \#* ]] && continue
     peer_name["$key"]="$name"
     peer_owner["$key"]="$owner"
     peer_expires["$key"]="$expires"
   done < "$peers"
+fi
+
+declare -A peer_denied
+if [[ -r "$denied" ]]; then
+  while IFS=$'\t' read -r key _name _owner reason; do
+    [[ -z "${key}" || "${key}" == \#* ]] && continue
+    peer_denied["$key"]="$reason"
+  done < "$denied"
 fi
 
 up=0
@@ -29,6 +40,9 @@ if wg show "$iface" >/dev/null 2>&1; then
     if [[ -z "$expires" ]]; then
       wg set "$iface" peer "$key" remove
       logger -t wireguard-gateway "removed unregistered peer ${key}"
+    elif [[ -n "${peer_denied[$key]:-}" ]]; then
+      wg set "$iface" peer "$key" remove
+      logger -t wireguard-gateway "removed peer ${peer_name[$key]} (owner ${peer_owner[$key]}): ${peer_denied[$key]} in the IdP"
     elif [[ ! "$today" < "$expires" ]]; then
       wg set "$iface" peer "$key" remove
       logger -t wireguard-gateway "removed expired peer ${peer_name[$key]} (owner ${peer_owner[$key]}, expired ${expires})"

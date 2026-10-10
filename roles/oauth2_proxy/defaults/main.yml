@@ -15,7 +15,8 @@ oauth2_proxy_memory_limit: 128m
 
 # One entry per protected UI:
 #   name:        [a-z0-9-]; container oauth2-proxy-<name>, Keycloak client <name>-ui
-#   hostname:    public name through the edge (edge_default_services has a matching entry)
+#   hostname:    name[:port] people open (this host's own name for per-replica UIs, or an edge name)
+#   redirect_hosts: every hostname[:port] of this UI across the play (Keycloak redirect URIs); default [hostname]
 #   port:        TLS port oauth2-proxy listens on (the edge's backend_port)
 #   upstream:    the UI as reached from this host
 #   capability / min_level: who may enter: every default role whose rbac_model level for the capability is at

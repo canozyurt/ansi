@@ -14,6 +14,19 @@
       openbao_oidc_client_secret of 32+ characters from Ansible Vault.
     quiet: true
 
+- name: Keep login tokens and SSH certificates at most a day long (IAM-04)
+  ansible.builtin.assert:
+    that:
+      - openbao_oidc_token_max_ttl is match('^[0-9]+[smh]$')
+      - openbao_ssh_cert_ttl is match('^[0-9]+[smh]$')
+      - (openbao_oidc_token_max_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_oidc_token_max_ttl[-1]] <= openbao_session_max_seconds | int
+      - (openbao_ssh_cert_ttl[:-1] | int) * {'s': 1, 'm': 60, 'h': 3600}[openbao_ssh_cert_ttl[-1]] <= openbao_session_max_seconds | int
+    fail_msg: >-
+      openbao_oidc_token_max_ttl and openbao_ssh_cert_ttl (s, m or h) must not exceed {{ openbao_session_max_seconds }}
+      seconds, so that a disabled user loses OpenBao and SSH access within a day (IAM-04).
+    quiet: true
+  tags: [chk_iam_04]
+
 - name: Require a highly available cluster (HA-01)
   ansible.builtin.assert:
     that: openbao_cluster_hosts | length >= openbao_min_nodes or openbao_allow_single_node | bool

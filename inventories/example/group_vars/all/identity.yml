@@ -1,0 +1,29 @@
+---
+# Identity and secrets settings shared by every host (IAM-01, IAM-04, IAM-08, SEC-02).
+
+# The IdP every service signs people in with (roles/keycloak). Defined for all hosts because the services'
+# OIDC settings (Grafana, OpenBao, oauth2-proxy, the VPN sync) default to it.
+keycloak_hostname: https://sso.example.internal
+keycloak_realm: org
+
+# Where services read their secrets (roles/openbao_secrets):
+#   vault-file  values from this inventory (Ansible Vault), written to 0600 files (labs, first install)
+#   openbao     values in OpenBao KV, generated and rotated, rendered by OpenBao Agent into tmpfs
+# Switch to openbao once OpenBao is initialised: the first run seeds OpenBao from the vault values.
+secrets_backend: vault-file
+# Rotation period of generated service secrets (playbooks/rotate_secrets.yml runs weekly).
+secret_rotation_days: 90
+
+# IAM-04: no session, token or certificate lasts longer than this (Keycloak, OpenBao, Grafana, oauth2-proxy
+# check it), so disabling a user in Keycloak ends every login within a day.
+session_max_hours: 24
+
+# IAM-01: local accounts kept only for break-glass use. Any login with one of these names, on any host or
+# service, raises the central alert (SIEM rule 100121, docs/sso-matrix.md).
+# Every role names its local admin break-glass-admin (Keycloak, Grafana, Forgejo, Wazuh, registry, GRC
+# superuser by e-mail below). Not listed on purpose: automation accounts Ansible itself uses (RabbitMQ
+# "admin"), and "root" (sudo opens a root PAM session on every use; root logins are caught by the
+# OpenBao root-token rule and the bastion's session recording instead).
+break_glass_accounts:
+  - break-glass-admin
+  - break-glass@example.internal

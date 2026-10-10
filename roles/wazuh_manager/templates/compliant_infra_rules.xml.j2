@@ -16,11 +16,38 @@
     <group>agent_silent,</group>
   </rule>
 
-  <!-- Break-glass use is always worth a page. -->
+  <!-- IAM-01: break-glass use is always worth a page. One central list (break_glass_accounts) covers every
+       service; see docs/sso-matrix.md. -->
   <rule id="100120" level="12">
     <if_group>authentication_success</if_group>
     <match>break-glass</match>
     <description>Break-glass account used.</description>
+    <group>break_glass,</group>
+  </rule>
+{% set accounts = wazuh_manager_break_glass_accounts | map('regex_escape') | join('|') %}
+{% if accounts | length > 0 %}
+
+  <!-- Decoded logins (sshd, PAM, su, ...) as one of the break-glass accounts. -->
+  <rule id="100121" level="12">
+    <if_group>authentication_success</if_group>
+    <user type="pcre2">^({{ accounts | replace('&', '&amp;') | replace('<', '&lt;') }})$</user>
+    <description>Break-glass account $(dstuser) logged in (IAM-01).</description>
+    <group>break_glass,</group>
+  </rule>
+
+  <!-- Application logins (Keycloak events, Grafana, Forgejo, Wazuh security audit, OpenBao audit) as a
+       break-glass account: a login word and the account name in the same line. -->
+  <rule id="100122" level="12">
+    <regex type="pcre2">(?i)^(?=.*(\btype="?LOGIN"?\b|successful login|logged in|authenticated|"path":"auth/[^"]*login))(?=.*\b(username|user|uname|login|display_name|email)"?\s*[=:]\s*"?({{ accounts | replace('&', '&amp;') | replace('<', '&lt;') }})\b)</regex>
+    <description>Break-glass account used in an application (IAM-01): $(full_log)</description>
+    <group>break_glass,</group>
+  </rule>
+{% endif %}
+
+  <!-- OpenBao: a root token was generated or used (only the break-glass procedure does that). -->
+  <rule id="100123" level="12">
+    <regex type="pcre2">"path":"sys/generate-root/(update|attempt)"|"policies":\["root"\]</regex>
+    <description>OpenBao root token generated or used (break-glass, IAM-01).</description>
     <group>break_glass,</group>
   </rule>
 </group>

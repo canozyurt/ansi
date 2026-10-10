@@ -92,6 +92,10 @@
   when: wireguard_gateway_manage_service | bool
   tags: [chk_iam_04, chk_log_05]
 
+- name: Tie the peers to Keycloak users
+  ansible.builtin.import_tasks: idp_sync.yml
+  when: wireguard_gateway_idp_sync | bool
+
 - name: Flush handlers so health checks see the final state
   ansible.builtin.meta: flush_handlers
 

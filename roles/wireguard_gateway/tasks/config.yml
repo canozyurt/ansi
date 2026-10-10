@@ -6,7 +6,7 @@
     owner: root
     group: root
     mode: "0600"
-  notify: Reload WireGuard peers
+  notify: [Reload WireGuard peers, Run the WireGuard check]
   tags: [chk_iam_04, chk_net_02]
 
 - name: Write the peer register used by the expiry check and metrics
