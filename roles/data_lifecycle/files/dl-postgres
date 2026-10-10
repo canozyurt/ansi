@@ -1,0 +1,49 @@
+#!/bin/sh
+# Export, delete or check one database of a PostgreSQL cluster (DAT-02). Runs on the Patroni leader.
+#   dl-postgres export <database> <outdir>
+#   dl-postgres delete <database>          (DL_ROLES: roles to drop afterwards, space separated)
+#   dl-postgres check  <database>          (prints present or absent)
+# Environment: DL_CT (the <cluster>-postgres container), DL_PORT (PostgreSQL port in the container).
+set -eu
+cmd=$1
+db=$2
+: "${DL_CT:?}" "${DL_PORT:?}"
+case "$db" in *[!a-z0-9_]*|"" ) echo "dl-postgres: invalid database name" >&2; exit 2 ;; esac
+psql() {
+  docker exec -i "$DL_CT" psql -X -q -At -v ON_ERROR_STOP=1 -h /var/run/postgresql -p "$DL_PORT" -U postgres "$@"
+}
+leader=$(psql -d postgres -c "SELECT NOT pg_is_in_recovery()")
+[ "$leader" = "t" ] || { echo "dl-postgres: this node is not the leader" >&2; exit 1; }
+exists=$(psql -d postgres -c "SELECT count(*) FROM pg_database WHERE datname = '$db'")
+case "$cmd" in
+  check)
+    [ "$exists" = "0" ] && echo absent || echo present ;;
+  export)
+    out=$3
+    [ "$exists" = "1" ] || { echo "dl-postgres: database $db does not exist" >&2; exit 1; }
+    docker exec "$DL_CT" pg_dump -h /var/run/postgresql -p "$DL_PORT" -U postgres -Fc -d "$db" > "$out/$db.dump"
+    # The dump must be readable by pg_restore (catches truncated output).
+    docker exec -i "$DL_CT" pg_restore --list < "$out/$db.dump" > "$out/$db.dump.toc"
+    psql -d "$db" -c "SELECT r.rolname FROM pg_roles r WHERE NOT r.rolsuper AND r.rolcanlogin
+      AND has_database_privilege(r.rolname, '$db', 'CONNECT') ORDER BY 1" > "$out/roles-with-access.txt"
+    psql -d postgres -c "SELECT version()" > "$out/server-version.txt"
+    {
+      echo "PostgreSQL custom-format dump of database $db (pg_dump -Fc)."
+      echo "Restore: createdb <name> && pg_restore --no-owner -d <name> $db.dump"
+      echo "$db.dump.toc is its table of contents; roles-with-access.txt lists the login roles that could connect."
+    } > "$out/README.txt"
+    ;;
+  delete)
+    if [ "$exists" = "1" ]; then
+      psql -d postgres -c "DROP DATABASE \"$db\" WITH (FORCE)"
+    fi
+    for role in ${DL_ROLES:-}; do
+      case "$role" in *[!a-z0-9_]*) echo "dl-postgres: invalid role name $role" >&2; exit 2 ;; esac
+      psql -d postgres -c "DROP ROLE IF EXISTS \"$role\""
+    done
+    psql -d postgres -c "CHECKPOINT"
+    [ "$(psql -d postgres -c "SELECT count(*) FROM pg_database WHERE datname = '$db'")" = "0" ]
+    echo "deleted database $db${DL_ROLES:+ and roles $DL_ROLES}"
+    ;;
+  *) echo "usage: dl-postgres export|delete|check <database> [outdir]" >&2; exit 2 ;;
+esac

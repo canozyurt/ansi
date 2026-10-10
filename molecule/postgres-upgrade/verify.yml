@@ -1,0 +1,40 @@
+---
+- name: Verify the upgraded clusters still meet their checklist items
+  ansible.builtin.import_playbook: ../postgres/verify.yml
+
+- name: Verify the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    bundle: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/versions/defaults/main.yml') | from_yaml }}"
+    verify_image_prefix: >-
+      localhost/compliant-postgres:{{ bundle.versions_postgres.packages['postgresql-' ~ bundle.versions_postgres.major] }}-patroni{{
+      bundle.versions_postgres.patroni.version }}-r
+  tasks:
+    - name: Inspect the server and etcd containers
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      loop: [pg-lab-postgres, pg-lab-etcd]
+      register: verify_pg_containers
+      tags: [chk_chg_07]
+
+    - name: The cluster runs the server recipe and etcd pinned by this release
+      ansible.builtin.assert:
+        that:
+          - verify_pg_containers.results[0].container.Config.Image is match(verify_image_prefix | regex_escape)
+          - verify_pg_containers.results[0].container.State.Running
+          - verify_pg_containers.results[1].container.Config.Image == bundle.versions_images.etcd
+      tags: [chk_chg_07]
+
+    - name: Read the pgBackRest backups
+      ansible.builtin.command:
+        argv: [docker, exec, pg-lab-postgres, pgbackrest, --stanza=pg-lab, --output=json, info]
+      register: verify_pg_info
+      changed_when: false
+      tags: [chk_chg_07]
+
+    - name: A backup was taken before the version change (initial full plus the pre-upgrade backup)
+      ansible.builtin.assert:
+        that: (verify_pg_info.stdout | from_json | first).backup | length >= 2
+      tags: [chk_chg_07]

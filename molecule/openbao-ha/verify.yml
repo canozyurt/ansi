@@ -1,0 +1,13 @@
+---
+- name: Fail the active OpenBao node and prove a standby takes over
+  ansible.builtin.import_playbook: ../../playbooks/ha_drill.yml
+  vars:
+    ha_drill_services: openbao
+    ha_drill_confirm: "yes"
+    ha_drill_run_id: molecule
+
+- name: Check the drill evidence
+  ansible.builtin.import_playbook: ../shared/verify_ha_drill.yml
+  vars:
+    verify_drill_label: openbao
+    verify_drill_stopped: ""

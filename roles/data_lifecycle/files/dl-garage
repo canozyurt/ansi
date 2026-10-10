@@ -1,0 +1,68 @@
+#!/bin/sh
+# Export, delete or check one bucket of a Garage cluster (DAT-02). A temporary access key, created
+# for this run and deleted at the end, gives rclone (pinned image, host network to the local TLS
+# sidecar) access to the bucket.
+#   dl-garage export <bucket> <outdir>   objects/ (every object) and objects.json (listing with sizes and hashes)
+#   dl-garage delete <bucket>            deletes every object, aborts unfinished uploads, deletes the bucket
+#   dl-garage check  <bucket>            prints present or absent
+# Environment: DL_CT (<name>-garage), DL_S3 (https://127.0.0.1:<s3 port>), DL_CA (CA bundle on the
+# host), DL_RCLONE_IMAGE, DL_REGION (Garage s3_region), DL_RUN_ID.
+set -eu
+cmd=$1
+bucket=$2
+: "${DL_CT:?}" "${DL_S3:?}" "${DL_CA:?}" "${DL_RCLONE_IMAGE:?}" "${DL_REGION:?}" "${DL_RUN_ID:?}"
+case "$bucket" in *[!a-z0-9.-]*|"") echo "dl-garage: invalid bucket name" >&2; exit 2 ;; esac
+garage() { docker exec "$DL_CT" /garage "$@"; }
+exists() { garage bucket info "$bucket" >/dev/null 2>&1; }
+keyname="data-lifecycle-$DL_RUN_ID"
+key_id=""
+cleanup() { [ -z "$key_id" ] || garage key delete --yes "$key_id" >/dev/null 2>&1 || true; }
+trap cleanup EXIT INT TERM
+temp_key() {
+  info=$(garage key create "$keyname")
+  key_id=$(printf '%s\n' "$info" | sed -n 's/^Key ID:[[:space:]]*//p' | head -n1)
+  secret=$(printf '%s\n' "$info" | sed -n 's/^Secret key:[[:space:]]*//p' | head -n1)
+  [ -n "$key_id" ] && [ -n "$secret" ] || { echo "dl-garage: could not create a temporary key" >&2; exit 1; }
+  garage bucket allow "$@" "$bucket" --key "$key_id" >/dev/null
+}
+rclone() {
+  vol=$1; shift
+  # The secret is passed in the environment of the container, not on a command line.
+  docker run --rm --network=host --cap-drop=ALL --security-opt=no-new-privileges:true --read-only \
+    --tmpfs=/tmp:rw,size=64m --memory=1g --pids-limit=256 \
+    -v "$DL_CA:/ca.crt:ro" ${vol:+-v "$vol:/out"} \
+    -e RCLONE_CONFIG_G_TYPE=s3 -e RCLONE_CONFIG_G_PROVIDER=Other -e RCLONE_CONFIG_G_ENDPOINT="$DL_S3" \
+    -e RCLONE_CONFIG_G_REGION="$DL_REGION" -e RCLONE_CONFIG_G_FORCE_PATH_STYLE=true \
+    -e RCLONE_CONFIG_G_ACCESS_KEY_ID="$key_id" -e RCLONE_CONFIG_G_SECRET_ACCESS_KEY="$secret" \
+    -e RCLONE_CA_CERT=/ca.crt -e RCLONE_CONFIG=/tmp/rclone.conf \
+    "$DL_RCLONE_IMAGE" "$@"
+}
+case "$cmd" in
+  check)
+    exists && echo present || echo absent ;;
+  export)
+    out=$3
+    exists || { echo "dl-garage: bucket $bucket not found" >&2; exit 1; }
+    temp_key --read
+    mkdir -p "$out/objects"
+    rclone "$out" copy "g:$bucket" /out/objects --metadata --checkers 8 --transfers 4
+    rclone "$out" check "g:$bucket" /out/objects --one-way
+    rclone "" lsjson -R --hash --files-only "g:$bucket" > "$out/objects.json"
+    {
+      echo "Garage bucket $bucket: objects/ holds every object under its key; objects.json lists them"
+      echo "with size, modification time and hashes as Garage reported them at export time."
+    } > "$out/README.txt"
+    ;;
+  delete)
+    if exists; then
+      temp_key --read --write --owner
+      rclone "" delete "g:$bucket" --checkers 8
+      rclone "" cleanup "g:$bucket"
+      cleanup; key_id=""
+      garage bucket delete --yes "$bucket"
+    fi
+    exists && { echo "dl-garage: bucket $bucket still exists" >&2; exit 1; }
+    echo "deleted bucket $bucket and its objects"
+    ;;
+  *) echo "usage: dl-garage export|delete|check <bucket> [outdir]" >&2; exit 2 ;;
+esac

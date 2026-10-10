@@ -157,8 +157,8 @@ requirements:
       iso27001: ["8.24"]
       iso27017: []
     check: "Host facts check for LUKS or provider encryption; service config tests"
-    status: designed
-    progress: "Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). Remaining: disks, databases and object storage. PostgreSQL: pgBackRest repositories encrypted (aes-256-cbc, tested: no plaintext in the repository); the role checks for a dm-crypt device under the data directory, warns or fails, and exports postgres_data_dir_encrypted (PostgresDataNotEncrypted alert); LUKS itself is a host prerequisite. Valkey, RabbitMQ, Garage: same dm-crypt check and datastore_data_dir_encrypted metric with *DataNotEncrypted alerts; LUKS is a host prerequisite; Garage applications may add SSE-C per object (Valkey tested single node; RabbitMQ and Garage not tested)."
+    status: implemented
+    progress: "roles/disk_encryption in the baseline checks every data path (encrypted_mounts_required: /var/lib/docker, /opt, /srv, /var/backups) for a dm-crypt layer under it or a declared provider encryption (disk_encryption_provider, an attestation with evidence), exports disk_encryption_mount_protected/_dmcrypt metrics (DataMountNotEncrypted alert) and fails the run when disk_encryption_enforce is true (set in the example inventory); optional clevis binding of existing LUKS volumes to Tang and/or TPM2. docs/disk-encryption.md covers provider encryption, LUKS at build time and clevis/tang/TPM. Not tested. Backups are encrypted client-side by restic (AES-256, tested: no plaintext in the repository). PostgreSQL: pgBackRest repositories encrypted (aes-256-cbc, tested: no plaintext in the repository); the role checks for a dm-crypt device under the data directory, warns or fails, and exports postgres_data_dir_encrypted (PostgresDataNotEncrypted alert); LUKS itself is a host prerequisite. Valkey, RabbitMQ, Garage: same dm-crypt check and datastore_data_dir_encrypted metric with *DataNotEncrypted alerts; LUKS is a host prerequisite; Garage applications may add SSE-C per object (Valkey tested single node; RabbitMQ and Garage not tested)."
   - id: SEC-05
     requirement: "Certificates renew automatically; an alert fires 14 days before any expiry"
     core: true
@@ -396,8 +396,8 @@ requirements:
       iso27001: ["8.14"]
       iso27017: []
     check: "CI test kills a node and asserts the service keeps working"
-    status: designed
-    progress: "Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Remaining: node-kill test in CI. Edge: 2+ nodes, keepalived VRRP moves the VIP when HAProxy or the WAF fails; failover tested. Monitoring: 2+ Prometheus, 3 Alertmanager. OpenBao: Raft, 3+ nodes, standbys upgraded before the active node. PostgreSQL: Patroni + 3-member etcd per cluster, HAProxy on every node routing to the leader, rolling replacement with switchover; single-node tested only. SIEM: SIEM: 3-node indexer (1 replica), manager cluster (1 master + workers, agents fail over across the list), dashboard on every SIEM node; refuses fewer than 3 (2 for dashboards) outside lab mode. Only a single node was tested. Valkey: primary plus replicas with 3 Sentinels per instance, rolling replacement with Sentinel failover; single node tested only. RabbitMQ: 3-node clusters, quorum queues by default, pause_minority, rolling restarts (not tested). Garage: 3 nodes, replication factor 3 across zones, layout applied by Ansible (not tested)."
+    status: implemented
+    progress: "playbooks/ha_drill.yml with roles/ha_drill: a drill per HA service (ha_drill_<service>: openbao, keycloak, monitoring, edge, registry, status page, forgejo and runners, mail relay, backup servers, SIEM, DNS, bastion, VPN, PostgreSQL, Valkey, RabbitMQ, Garage) checks every node, stops the leader/primary/VIP holder, probes the service and a write from a survivor, restores the node, writes JSON evidence to /var/lib/compliance-evidence/ha-drill/ and metrics (HADrillFailed). Nightly workflow .github/workflows/nightly-ha.yml runs 3-node molecule scenarios keycloak-ha, openbao-ha and postgres-ha with the drill in verify (written, not run). GRC is one node by documented exception (docs/dr/grc.md). Not tested. Per service: Keycloak clusters over JDBC_PING and refuses fewer than 3 nodes outside lab mode. Edge: 2+ nodes, keepalived VRRP moves the VIP when HAProxy or the WAF fails; failover tested. Monitoring: 2+ Prometheus, 3 Alertmanager. OpenBao: Raft, 3+ nodes, standbys upgraded before the active node. PostgreSQL: Patroni + 3-member etcd per cluster, HAProxy on every node routing to the leader, rolling replacement with switchover; single-node tested only. SIEM: 3-node indexer (1 replica), manager cluster (1 master + workers, agents fail over across the list), dashboard on every SIEM node; refuses fewer than 3 (2 for dashboards) outside lab mode. Only a single node was tested. Valkey: primary plus replicas with 3 Sentinels per instance, rolling replacement with Sentinel failover; single node tested only. RabbitMQ: 3-node clusters, quorum queues by default, pause_minority, rolling restarts (not tested). Garage: 3 nodes, replication factor 3 across zones, layout applied by Ansible (not tested)."
   - id: HA-02
     requirement: "Each service has a DR runbook, and a DR drill runs every year"
     controls:
@@ -405,7 +405,8 @@ requirements:
       iso27001: ["5.29", "5.30"]
       iso27017: []
     check: "Drill report stored as evidence"
-    status: not_started
+    status: implemented
+    progress: "docs/dr/<service>.md runbooks for 16 services and docs/dr/README.md with the rebuild order, dependencies and RTOs. playbooks/dr_drill.yml (roles/dr_drill) restores each service's latest backup into an encrypted scratch directory, verifies it with the service's tools in containers without network (PostgreSQL full pgBackRest restore with verify_sql, valkey-check-rdb, RabbitMQ import into a scratch broker, git fsck of Forgejo repositories, OpenBao snapshot checksums, each declaration's verify_command), checks backup age against the RPO and time against the RTO, writes a JSON report to /var/lib/compliance-evidence/dr-drill/ and metrics; DRDrillOverdue fires after 13 months without a successful drill (DRDrillNeverRan, DRDrillFailed, DRDrillSlowerThanRTO too). tools/release.py check fails CI when a drilled service has no runbook. Not tested."
   - id: CHG-01
     requirement: "All changes go through a pull request with at least one approval on a protected main branch"
     core: true
@@ -475,7 +476,7 @@ requirements:
       iso27017: []
     check: "Molecule upgrade scenario per stateful service installs the previous release and upgrades it"
     status: designed
-    progress: "Keycloak: versions role, playbooks/upgrade.yml (compatibility check, rolling or recreate, pre-upgrade pg_dump), molecule/keycloak-upgrade. Remaining: every other service as it is added; release tagging."
+    progress: "Keycloak: versions role, playbooks/upgrade.yml (compatibility check, rolling or recreate, pre-upgrade pg_dump), molecule/keycloak-upgrade. Upgrade scenarios added for monitoring, edge, postgres and forgejo (molecule/*-upgrade, in the CI matrix; written, not run); playbooks/upgrade.yml covers OpenBao, Keycloak, node_exporter, monitoring, edge, registry, status page, GRC, Forgejo and runners, PostgreSQL, Valkey, RabbitMQ, Garage and the SIEM, each with a backup first and one node at a time. Release bundles: docs/releasing.md and tools/release.py (notes, bump-upgrade-from after tagging, has-upgrade-path; CI skips an upgrade scenario with a notice until a release has shipped the service; self-tested). versions_postgres_upgrade_from holds the previous PostgreSQL image recipe. Stays designed: no upgrade scenario yet for Valkey, RabbitMQ, Garage, SIEM and registry, no scenario has run, and no release has been tagged."
   - id: CHG-08
     requirement: "Images deployed come from the internal registry, are scanned for vulnerabilities and carry a trusted signature"
     core: true
@@ -502,8 +503,8 @@ requirements:
       iso27001: ["8.10"]
       iso27017: ["CLD.8.1.5"]
     check: "Test: export then delete a sample dataset"
-    status: not_started
-    progress: "playbooks/restore.yml restores a declaration to a separate directory (a building block for export). Export and secure-deletion playbooks not started."
+    status: implemented
+    progress: "playbooks/data_export.yml and playbooks/data_delete.yml (roles/data_lifecycle) for PostgreSQL (database), Valkey (key pattern), RabbitMQ (vhost), Garage (bucket) and Forgejo (organisation, user or repository). Export: plaintext only in a root-only staging directory on the encrypted volume, packaged as a CMS (AES-256) archive to the data owner's certificate with a manifest of every file's SHA-256 (dl-package checked on sample files). Delete: typed confirmation (DELETE:<service>/<instance>:<scope>), request reference, requester, approver and reason; refuses while the inventory still declares the scope and without an export (or the requester's recorded decision); checks the scope is gone afterwards and writes a JSON deletion certificate with its SHA-256, the method, the export reference and the backup-expiry date from the restic and pgBackRest retention. Evidence under /var/lib/compliance-evidence/data-export and data-deletion, backed up. Not tested against running services."
   - id: DAT-03
     requirement: "A shared-responsibility matrix states what the repo, the company and the hosting provider own"
     controls:
@@ -511,7 +512,8 @@ requirements:
       iso27001: ["5.23"]
       iso27017: ["CLD.6.3.1"]
     check: "Document review each release"
-    status: not_started
+    status: implemented
+    progress: "docs/shared-responsibility.md: repo, company and provider responsibilities for the seven ISO 27017 CLD controls, the extended guidance (ext. 10.1.2 key management, backup, event reporting, location) and by layer. Reviewed each release (docs/releasing.md checklist); tools/release.py check (CI) fails when a CLD control, or a checklist item mapped to one, is missing from it."
   - id: EVD-01
     requirement: "Every checklist item maps to tasks and tests; Core items without a test fail CI"
     controls:

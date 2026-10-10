@@ -1,0 +1,39 @@
+{#- Deletion certificate (DAT-02, ISO 27017 CLD.8.1.5). Written on the node that ran the deletion. -#}
+{%- set manifest = (data_lifecycle_manifest_raw.content | b64decode | from_json) if data_lifecycle_manifest_raw.content is defined else {} -%}
+{%- set certificate = {
+  'kind': 'data-deletion-certificate',
+  'checklist': ['DAT-02'],
+  'controls': {'iso27017': ['CLD.8.1.5'], 'iso27001': ['8.10'], 'soc2': ['C1.2']},
+  'id': data_lifecycle_certificate_id,
+  'service': data_lifecycle_service,
+  'instance': data_lifecycle_instance.name | default(''),
+  'scope': data_scope,
+  'request': {
+    'reference': data_request_reference | default(''),
+    'requested_by': data_requested_by | default(''),
+    'approved_by': data_delete_approved_by | default(''),
+    'reason': data_delete_reason | default(''),
+  },
+  'performed_by': lookup('ansible.builtin.env', 'USER') | default('unknown', true),
+  'performed_on': inventory_hostname,
+  'started_at': data_lifecycle_t0,
+  'finished_at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+  'state_before': data_lifecycle_before,
+  'state_after': data_lifecycle_state_after.stdout | trim,
+  'method': data_lifecycle_def.method,
+  'tool_output': data_lifecycle_delete.stdout | default('') | trim,
+  'removed_from_inventory': not data_lifecycle_def.declared | bool,
+  'export': ({'id': manifest.id, 'archive_sha256': manifest.archive.sha256, 'file_count': manifest.file_count,
+              'recipient': manifest.recipient} if manifest else
+             {'id': none, 'declined_by_requester': data_delete_without_export | default('') == 'requester-declined-export'}),
+  'remaining_copies': data_lifecycle_copies,
+  'backup_expiry_date': data_lifecycle_copies | map(attribute='expires_by') | max,
+  'statement': 'The data in scope was deleted from the live service and its replicas on ' ~ data_lifecycle_t0[:10]
+               ~ '. Copies remain only in the encrypted, append-only backups listed under remaining_copies and are'
+               ~ ' removed by their retention no later than ' ~ (data_lifecycle_copies | map(attribute='expires_by') | max)
+               ~ '. They are not restored in that time except to recover the service, and a restore within that time'
+               ~ ' is followed by this deletion again. Disks are LUKS- or provider-encrypted (SEC-04); the provider'
+               ~ ' sanitises media when it is decommissioned (docs/shared-responsibility.md, CLD.8.1.5).',
+  'repository_commit': lookup('ansible.builtin.pipe', 'git -C ' ~ (playbook_dir | quote) ~ ' rev-parse HEAD 2>/dev/null || echo unknown'),
+} -%}
+{{ certificate | to_nice_json }}

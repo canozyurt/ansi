@@ -1,0 +1,101 @@
+---
+# PostgreSQL cluster on 3 nodes (HA-01): Patroni, a 3-member etcd and HAProxy on every node. verify.yml
+# runs playbooks/ha_drill.yml: it stops the leader's PostgreSQL and etcd member, checks that Patroni
+# promotes a replica and that writes through a survivor's HAProxy primary port reach it, then restores
+# the node and waits until it rejoins. Backups are off (a posix repository must be shared storage).
+# Nightly only (.github/workflows/nightly-ha.yml): every node builds the server image.
+driver:
+  name: docker
+platforms:
+  - name: postgres-ha-1
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-postgres-ha
+    networks:
+      - name: molecule-postgres-ha
+    groups: [postgres, pg_ha, container_hosts]
+  - name: postgres-ha-2
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-postgres-ha
+    networks:
+      - name: molecule-postgres-ha
+    groups: [postgres, pg_ha, container_hosts]
+  - name: postgres-ha-3
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-postgres-ha
+    networks:
+      - name: molecule-postgres-ha
+    groups: [postgres, pg_ha, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        monitoring_scrape_password: test-only-scrape-password
+        postgres_cluster_image_build_args:
+          HTTPS_PROXY: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+        postgres_cluster_image_build_ca_file: >-
+          {{ '/usr/local/share/ca-certificates/molecule-proxy.crt'
+             if lookup('ansible.builtin.env', 'MOLECULE_PROXY_CA') | length > 0 else '' }}
+        postgres_clusters:
+          - name: pg-ha
+            group: pg_ha
+            superuser_password: test-only-ha-superuser-pw
+            replication_password: test-only-ha-replication-pw
+            rewind_password: test-only-ha-rewind-pw
+            patroni_api_password: test-only-ha-patroni-api-pw
+            exporter_password: test-only-ha-exporter-pw
+            resources: { memory: 768m, shm_size: 128m }
+            parameters: { max_connections: 50, shared_buffers: 128MB, effective_cache_size: 256MB }
+            databases:
+              - name: app
+                users:
+                  - { name: app, password: test-only-ha-app-owner-pw, access: owner }
+            backup:
+              enabled: false
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          storage-driver: overlay2
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

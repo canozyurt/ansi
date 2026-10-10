@@ -63,6 +63,8 @@ versions_images:
   redis_exporter: docker.io/oliver006/redis_exporter:v1.93.0
   rabbitmq: docker.io/library/rabbitmq:4.3.6-alpine
   garage: docker.io/dxflrs/garage:v2.4.1
+  # S3 client for Garage bucket export and deletion (roles/data_lifecycle, DAT-02).
+  rclone: docker.io/rclone/rclone:1.71.1
   # Weekly TLS scan of every endpoint (roles/tls_scan, SEC-03). Upstream image of testssl.sh (GPLv2).
   # Not pulled or checked in this repository yet: confirm the tag and append its @sha256 digest.
   testssl: ghcr.io/testssl/testssl.sh:3.2.1
@@ -119,13 +121,18 @@ versions_postgres:
 
 # What the previous release of this repository deployed. CI installs these first
 # and upgrades to versions_images, so every release proves its upgrade path.
-# Update this block when cutting a release.
+# Rewritten by tools/release.py bump-upgrade-from <tag> after each release (docs/releasing.md).
 versions_upgrade_from:
   keycloak: docker.io/keycloak/keycloak:26.7.5
   openbao: docker.io/openbao/openbao:2.6.4
   wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.7
   wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.7
   wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.7
+
+# The PostgreSQL server image recipe of the previous release (same shape as versions_postgres).
+# Empty until the first release that includes the PostgreSQL product playbook; tools/release.py
+# bump-upgrade-from copies versions_postgres here. molecule/postgres-upgrade is skipped while it is empty.
+versions_postgres_upgrade_from: {}
 
 # Images that keep their upstream reference when image_registry_mirror is set (CHG-08, roles/versions
 # tasks): the registry cannot serve its own first pull. Pin them by digest if you can.

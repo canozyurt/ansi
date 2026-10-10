@@ -1,0 +1,13 @@
+{%- set failed = (ha_drill_nodes | map('extract', hostvars, 'ha_drill_error') | select | list
+                  + ha_drill_nodes | map('extract', hostvars, 'ha_drill_restore_error') | select | list) | length > 0 -%}
+{%- set probes = ha_drill_nodes | map('extract', hostvars, 'ha_drill_probe_log') | flatten -%}
+{%- set labels = 'service="' ~ ha_drill_service ~ '",cluster="' ~ (ha_drill_instance.name | default('')) ~ '"' -%}
+# HELP ha_drill_last_run_timestamp_seconds Unix time of the last HA failover drill (playbooks/ha_drill.yml).
+# TYPE ha_drill_last_run_timestamp_seconds gauge
+ha_drill_last_run_timestamp_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ now().timestamp() | int }}
+# HELP ha_drill_last_status 1 if the last HA drill passed (service kept working, node recovered), 0 if not.
+# TYPE ha_drill_last_status gauge
+ha_drill_last_status{{ '{' }}{{ labels }}{{ '}' }} {{ 0 if failed else 1 }}
+# HELP ha_drill_failover_seconds Seconds from stopping the node until the slowest probe passed.
+# TYPE ha_drill_failover_seconds gauge
+ha_drill_failover_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ probes | map(attribute='seconds_after_stop') | max | default(0) }}

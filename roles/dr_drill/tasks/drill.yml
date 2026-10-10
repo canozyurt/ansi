@@ -1,0 +1,145 @@
+---
+# One drill (dr_drill_item: service and instance) on one node of the service.
+- name: Reset the drill state ({{ dr_drill_item.label }})
+  ansible.builtin.set_fact:
+    dr_drill_instance: "{{ dr_drill_item.instance }}"
+    dr_drill_service: "{{ dr_drill_item.service }}"
+    dr_drill_paths: []
+    dr_drill_errors: []
+    dr_drill_backup_log: []
+    dr_drill_check_log: []
+    dr_drill_runner: ""
+    dr_drill_has_declaration: false
+  no_log: true
+
+- name: Read the drill definition ({{ dr_drill_item.label }})
+  ansible.builtin.set_fact:
+    dr_drill_def: "{{ lookup('ansible.builtin.vars', 'dr_drill_' ~ dr_drill_service) }}"
+    dr_drill_nodes: "{{ groups[lookup('ansible.builtin.vars', 'dr_drill_' ~ dr_drill_service).group] | default([]) }}"
+  no_log: true
+
+- name: Look for the backup declaration on the service's nodes
+  ansible.builtin.stat:
+    path: "/etc/compliant-infra/backup.d/{{ dr_drill_def.backups[0] }}.json"
+  register: dr_drill_decl_stat
+  when:
+    - dr_drill_def.backups is defined
+    - inventory_hostname in dr_drill_nodes
+
+- name: Note whether this node has it
+  ansible.builtin.set_fact:
+    dr_drill_has_declaration: "{{ dr_drill_def.command is defined or (dr_drill_decl_stat.stat.exists | default(false)) }}"
+
+- name: Pick the node that runs the drill
+  ansible.builtin.set_fact:
+    dr_drill_runner: >-
+      {{ dr_drill_host if (dr_drill_host | default('')) | length > 0
+         else (dr_drill_nodes | first | default('')) if dr_drill_def.command is defined
+         else (dr_drill_candidates | selectattr(1) | map(attribute=0) | list + ['']) | first }}
+  vars:
+    dr_drill_candidates: >-
+      {{ dr_drill_nodes | select('in', ansible_play_hosts) | list
+         | zip(dr_drill_nodes | select('in', ansible_play_hosts) | map('extract', hostvars, 'dr_drill_has_declaration') | list) | list }}
+
+- name: Check that a node can run the drill ({{ dr_drill_item.label }})
+  ansible.builtin.assert:
+    that:
+      - dr_drill_runner | length > 0
+      - dr_drill_runner in ansible_play_hosts
+    fail_msg: >-
+      {{ dr_drill_item.label }}: no node of group {{ dr_drill_def.group }} ({{ dr_drill_nodes | join(', ') or 'empty' }}) in this
+      run has the backup declaration {{ dr_drill_def.backups | default([]) | join(', ') }}. Deploy the service (and its
+      backup) first, or pick a node with -e dr_drill_host=<host>.
+    quiet: true
+  run_once: true
+  tags: [chk_ha_02]
+
+- name: Restore into scratch and verify ({{ dr_drill_item.label }})
+  when: inventory_hostname == dr_drill_runner
+  block:
+    - name: Note the start time and the scratch directory
+      ansible.builtin.set_fact:
+        dr_drill_t0: "{{ now().timestamp() | int }}"
+        dr_drill_scratch: >-
+          {{ dr_drill_scratch_base }}/{{ dr_drill_run_id }}-{{ dr_drill_item.label | regex_replace('[^A-Za-z0-9_.-]', '-') }}
+
+    - name: Create the scratch directory (encrypted volume, root only)
+      ansible.builtin.file:
+        path: "{{ dr_drill_scratch }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Restore each backup declaration into scratch
+      ansible.builtin.include_tasks: restore.yml
+      loop: "{{ dr_drill_def.backups | default([]) }}"
+      loop_control:
+        loop_var: dr_drill_backup
+      when: dr_drill_def.command is not defined
+
+    - name: Restore and verify with the service's own tool
+      when: dr_drill_def.command is defined
+      block:
+        - name: Run the restore tool
+          ansible.builtin.command:
+            argv: "{{ dr_drill_def.command }}"
+          register: dr_drill_tool
+          changed_when: true
+          failed_when: >-
+            dr_drill_tool.rc != 0
+            or dr_drill_tool.stdout is search('run on ')
+            or dr_drill_tool.stderr is search('run on ')
+          tags: [chk_ha_02]
+      rescue:
+        - name: Record the failed restore
+          ansible.builtin.set_fact:
+            dr_drill_errors: >-
+              {{ dr_drill_errors + ['restore tool failed: '
+                 ~ ((dr_drill_tool.stderr | default('') + dr_drill_tool.stdout | default('')) | trim)[-500:]] }}
+      always:
+        - name: Log the restore tool's result
+          ansible.builtin.set_fact:
+            dr_drill_check_log: >-
+              {{ dr_drill_check_log + [{'name': 'restore tool: ' ~ dr_drill_def.command | join(' '),
+                 'ok': dr_drill_tool.rc | default(1) == 0, 'output': ((dr_drill_tool.stdout | default('')) + (dr_drill_tool.stderr | default('')))[-2000:]}] }}
+
+    - name: Read the definition again with the restored paths
+      ansible.builtin.set_fact:
+        dr_drill_def: "{{ lookup('ansible.builtin.vars', 'dr_drill_' ~ dr_drill_service) }}"
+      no_log: true
+
+    - name: Run the service's checks on the restored data
+      ansible.builtin.include_tasks: verify.yml
+      loop: "{{ dr_drill_def.verify | default([]) }}"
+      loop_control:
+        loop_var: dr_drill_check
+        label: "{{ dr_drill_check.name }}"
+      when: dr_drill_errors | length == 0
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        dr_drill_errors: "{{ dr_drill_errors + [ansible_failed_task.name | default('unknown task')] }}"
+  always:
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ dr_drill_scratch }}"
+        state: absent
+      when:
+        - not dr_drill_keep_scratch | bool
+        - dr_drill_scratch is defined
+
+    - name: Note the duration
+      ansible.builtin.set_fact:
+        dr_drill_duration: "{{ now().timestamp() | int - dr_drill_t0 | default(now().timestamp()) | int }}"
+
+    - name: Write the evidence
+      ansible.builtin.include_tasks: evidence.yml
+
+- name: Record the result ({{ dr_drill_item.label }})
+  ansible.builtin.set_fact:
+    dr_drill_results: >-
+      {{ dr_drill_results | default([]) + [{'label': dr_drill_item.label,
+         'ok': hostvars[dr_drill_runner].dr_drill_errors | default(['not run']) | length == 0,
+         'errors': hostvars[dr_drill_runner].dr_drill_errors | default(['not run'])}] }}
+  run_once: true

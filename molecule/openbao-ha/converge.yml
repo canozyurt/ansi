@@ -1,0 +1,13 @@
+---
+- name: Deploy OpenBao on every node
+  hosts: all
+  become: true
+  environment:
+    https_proxy: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+    no_proxy: "127.0.0.1,localhost,bao.test.internal,openbao-ha-1,openbao-ha-2,openbao-ha-3"
+  pre_tasks:
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+  roles:
+    - role: openbao

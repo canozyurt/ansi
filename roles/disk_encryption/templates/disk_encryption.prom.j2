@@ -1,0 +1,13 @@
+# HELP disk_encryption_mount_dmcrypt 1 if the data path sits on a dm-crypt (LUKS) device (SEC-04).
+# TYPE disk_encryption_mount_dmcrypt gauge
+{% for m in disk_encryption_state %}
+disk_encryption_mount_dmcrypt{mountpoint="{{ m.path }}"} {{ 1 if m.dmcrypt else 0 }}
+{% endfor %}
+# HELP disk_encryption_mount_protected 1 if the data path is on dm-crypt or the provider encryption is declared.
+# TYPE disk_encryption_mount_protected gauge
+{% for m in disk_encryption_state %}
+disk_encryption_mount_protected{mountpoint="{{ m.path }}"} {{ 1 if m.protected else 0 }}
+{% endfor %}
+# HELP disk_encryption_provider_declared 1 if the host declares provider-side volume encryption (label: provider).
+# TYPE disk_encryption_provider_declared gauge
+disk_encryption_provider_declared{provider="{{ disk_encryption_provider }}"} {{ 1 if disk_encryption_provider | length > 0 else 0 }}

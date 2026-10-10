@@ -70,6 +70,31 @@
   roles:
     - role: keycloak
 
+- name: Upgrade node_exporter in batches
+  hosts: all
+  become: true
+  serial: "20%"
+  roles:
+    - role: node_exporter
+
+- name: Upgrade monitoring one node at a time (the other replicas keep scraping and alerting)
+  hosts: monitoring
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: blackbox_exporter
+    - role: alertmanager
+    - role: prometheus
+    - role: grafana
+  post_tasks:
+    - name: Wait until Alertmanager, Prometheus and Grafana on this node are healthy before the next one
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+        tasks_from: health
+      loop: [alertmanager, prometheus, grafana]
+      tags: [chk_chg_07]
+
 - name: Upgrade the edge one node at a time (the VIP moves to the other node meanwhile)
   hosts: edge
   become: true

@@ -1,0 +1,49 @@
+#!/bin/sh
+# Export, delete or check one vhost of a RabbitMQ cluster through the management API (DAT-02).
+#   dl-rabbitmq export <vhost> <outdir>  definitions.json (the vhost's queues, exchanges, bindings,
+#                                        policies) and queues.json (message counts at export time)
+#   dl-rabbitmq delete <vhost>           deletes the vhost with its queues and messages on every
+#                                        member; DL_USERS: users to delete afterwards
+#   dl-rabbitmq check  <vhost>           prints present or absent
+# Environment: DL_API (https://127.0.0.1:<management port>/api), DL_CA, DL_USER, DL_PASS.
+set -eu
+cmd=$1
+vhost=$2
+: "${DL_API:?}" "${DL_CA:?}" "${DL_USER:?}" "${DL_PASS:?}"
+case "$vhost" in *[!A-Za-z0-9_.-]*|"") echo "dl-rabbitmq: invalid vhost name" >&2; exit 2 ;; esac
+# The credentials go to curl on stdin, never on its command line.
+api() {
+  method=$1; path=$2; shift 2
+  printf 'user = "%s:%s"\n' "$DL_USER" "$DL_PASS" | curl -sS -K - --cacert "$DL_CA" -X "$method" \
+    -o "${OUT_FILE:-/dev/null}" -w '%{http_code}' "$@" "$DL_API$path"
+}
+status=$(api GET "/vhosts/$vhost")
+case "$cmd" in
+  check)
+    [ "$status" = "404" ] && echo absent || echo present ;;
+  export)
+    out=$3
+    [ "$status" = "200" ] || { echo "dl-rabbitmq: vhost $vhost not found ($status)" >&2; exit 1; }
+    [ "$(OUT_FILE="$out/definitions.json" api GET "/definitions/$vhost")" = "200" ]
+    [ "$(OUT_FILE="$out/queues.json" api GET "/queues/$vhost?columns=name,type,messages,messages_ready,messages_unacknowledged")" = "200" ]
+    {
+      echo "RabbitMQ vhost $vhost: definitions.json can be imported into another broker"
+      echo "(POST /api/definitions/<vhost> or rabbitmqctl import_definitions). Messages are not part of"
+      echo "the export: consumers must drain the queues before the export (queues.json shows the counts)."
+    } > "$out/README.txt"
+    ;;
+  delete)
+    if [ "$status" = "200" ]; then
+      code=$(api DELETE "/vhosts/$vhost")
+      [ "$code" = "204" ] || { echo "dl-rabbitmq: deleting $vhost returned $code" >&2; exit 1; }
+    fi
+    for u in ${DL_USERS:-}; do
+      case "$u" in *[!A-Za-z0-9_.@-]*) echo "dl-rabbitmq: invalid user $u" >&2; exit 2 ;; esac
+      code=$(api DELETE "/users/$u")
+      case "$code" in 204|404) ;; *) echo "dl-rabbitmq: deleting user $u returned $code" >&2; exit 1 ;; esac
+    done
+    [ "$(api GET "/vhosts/$vhost")" = "404" ]
+    echo "deleted vhost $vhost${DL_USERS:+ and users $DL_USERS}"
+    ;;
+  *) echo "usage: dl-rabbitmq export|delete|check <vhost> [outdir]" >&2; exit 2 ;;
+esac

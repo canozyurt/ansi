@@ -1,0 +1,548 @@
+---
+# HA failover drills (HA-01), run by playbooks/ha_drill.yml. Each HA service declares its drill in a
+# variable ha_drill_<service> (override any of them in the inventory):
+#
+#   group:      inventory group of the nodes (for product playbooks: the instance's group)
+#   min_nodes:  nodes the drill needs (3, or 2 where the service runs 2 nodes or 2 plus a witness)
+#   instances:  optional list (product playbooks: one drill per cluster entry, available to the
+#               other keys as ha_drill_instance)
+#   leader:     optional; how to find the node to stop (the leader/primary/VIP holder), checked on
+#               every node: {url, status, validate_certs, ca_path, headers} or {argv, env, stdout_regex}.
+#               Without it (or with -e ha_drill_node=<host>) the last node of the group is stopped.
+#   stop:       commands (argv lists) run on the stopped node; they simulate a node failure
+#   restore:    commands (argv lists) that bring the node back
+#   health:     {role, tasks_from}: the role's health tasks, run before the drill on every node and
+#               after the restore on the stopped node (the drill fails if the node does not recover)
+#   probes:     checks run from a surviving node (or the controller with from: controller) while the
+#               node is down; each is retried until it passes or ha_drill_probe_retries run out:
+#                 {name, url, method, status, body, body_format, headers, validate_certs, ca_path,
+#                  url_username, url_password, client_cert, client_key, write, no_log, from}
+#                 {name, argv, env, stdout_regex, write, no_log, from}
+#                 {name, tcp: <port>, host, search_regex, from}
+#                 {name, health: true}   (the role's health tasks on the surviving node)
+#               write: true marks probes that prove writes still work (reported separately).
+#
+# Variables available to the definitions: ha_drill_instance, ha_drill_nodes, ha_drill_victim,
+# ha_drill_prober (the surviving node that runs the probes), ha_drill_survivors and ha_drill_run_id.
+#
+# Not drilled: grc (one node by design, documented exception to HA-01; restored from backup, see
+# docs/dr/grc.md) and node_exporter (per host, not a service).
+
+# Services drilled when ha_drill_services is "all" (playbooks/ha_drill.yml -e ha_drill_services=...).
+ha_drill_all_services:
+  - openbao
+  - keycloak
+  - prometheus
+  - alertmanager
+  - grafana
+  - blackbox_exporter
+  - edge
+  - registry
+  - status_page
+  - forgejo
+  - forgejo_runner
+  - mail_relay
+  - backup_server
+  - wazuh_indexer
+  - wazuh_manager
+  - wazuh_dashboard
+  - dns_resolver
+  - bastion
+  - wireguard_gateway
+  - postgres
+  - valkey
+  - rabbitmq
+  - garage
+
+# Probe timing: a probe passes once failover completes within retries x delay seconds.
+ha_drill_probe_retries: 36
+ha_drill_probe_delay: 5
+# TLS verification for probes through public names (internal CA bundle on the probing node).
+ha_drill_ca_file: "{{ pki_openbao_ca_file | default('') }}"
+ha_drill_validate_certs: true
+
+# Evidence (one JSON report per drill, kept by the backup role) and metrics.
+ha_drill_evidence_dir: /var/lib/compliance-evidence/ha-drill
+ha_drill_textfile_dir: /var/lib/node_exporter/textfile_collector
+ha_drill_backup_rpo_hours: 24
+ha_drill_backup_rto_hours: 8
+# Also copy each report to this directory on the controller (e.g. the CI workspace); empty: off.
+ha_drill_local_report_dir: ""
+
+# Safety net for drills that stop remote access itself (bastion, VPN): the stopped service is started
+# again by a transient systemd timer after this many seconds even if the controller loses the node.
+ha_drill_auto_restore_seconds: 300
+
+# ------------------------------------------------------------------ identity, secrets
+# Public realm URL (through the edge VIP); override ha_drill_keycloak_url to probe another endpoint.
+ha_drill_keycloak_realm_url: >-
+  {{ ha_drill_keycloak_url | default(keycloak_hostname | default('https://sso.example.internal')) }}/realms/{{ keycloak_realm | default('org') }}
+ha_drill_keycloak:
+  group: keycloak
+  min_nodes: 3
+  stop: [[docker, stop, "{{ keycloak_container_name | default('keycloak') }}"]]
+  restore: [[docker, start, "{{ keycloak_container_name | default('keycloak') }}"]]
+  health: { role: keycloak, tasks_from: health }
+  probes:
+    - name: OIDC discovery answers through the public name (edge VIP)
+      url: "{{ ha_drill_keycloak_realm_url }}/.well-known/openid-configuration"
+      status: [200]
+    - name: The realm signing keys are served (shared database and cache)
+      url: "{{ ha_drill_keycloak_realm_url }}/protocol/openid-connect/certs"
+      status: [200]
+    # Keycloak keeps its state in PostgreSQL (drilled separately); sessions live in the distributed
+    # cache. Set ha_drill_keycloak_login_probe and a probe client to also prove that logins work.
+    - name: A login through the public name issues a token (writes a session)
+      enabled: "{{ ha_drill_keycloak_login_probe | default(false) }}"
+      url: "{{ ha_drill_keycloak_realm_url }}/protocol/openid-connect/token"
+      method: POST
+      body_format: form-urlencoded
+      body:
+        grant_type: client_credentials
+        client_id: "{{ ha_drill_keycloak_probe_client_id | default('') }}"
+        client_secret: "{{ ha_drill_keycloak_probe_client_secret | default('') }}"
+      status: [200]
+      write: true
+      no_log: true
+
+ha_drill_openbao:
+  group: openbao
+  min_nodes: 3
+  # Stop the active node: a standby must take over.
+  leader:
+    url: "https://127.0.0.1:{{ openbao_api_port | default(8200) }}/v1/sys/health"
+    status: 200
+    validate_certs: false
+  stop: [[docker, stop, "{{ openbao_container_name | default('openbao') }}"]]
+  restore: [[docker, start, "{{ openbao_container_name | default('openbao') }}"]]
+  # The health tasks unseal the restarted node (Shamir keys from the inventory) and wait for it to rejoin.
+  health: { role: openbao, tasks_from: health }
+  probes:
+    - name: A new active node answers through the service name
+      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/health"
+      status: [200]
+    - name: A write reaches the new active node (response wrapping stores a token in Raft)
+      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/wrapping/wrap"
+      method: POST
+      headers:
+        X-Vault-Token: "{{ openbao_admin_token | default('') }}"
+        X-Vault-Wrap-TTL: "60"
+      body_format: json
+      body: { ha_drill: "{{ ha_drill_run_id }}" }
+      status: [200]
+      write: true
+      no_log: true
+
+# ------------------------------------------------------------------ monitoring
+ha_drill_prometheus:
+  group: monitoring
+  min_nodes: 2
+  stop: [[docker, stop, "{{ prometheus_container_name | default('prometheus') }}"]]
+  restore: [[docker, start, "{{ prometheus_container_name | default('prometheus') }}"]]
+  health: { role: prometheus, tasks_from: health }
+  probes:
+    - name: Another replica answers queries
+      url: "https://127.0.0.1:{{ prometheus_port | default(9090) }}/api/v1/query?query=up"
+      url_username: "{{ prometheus_scrape_user | default(monitoring_scrape_user | default('prometheus')) }}"
+      url_password: "{{ prometheus_scrape_password | default(monitoring_scrape_password | default('')) }}"
+      validate_certs: false
+      status: [200]
+      no_log: true
+
+ha_drill_alertmanager:
+  group: monitoring
+  min_nodes: 3
+  stop: [[docker, stop, "{{ alertmanager_container_name | default('alertmanager') }}"]]
+  restore: [[docker, start, "{{ alertmanager_container_name | default('alertmanager') }}"]]
+  health: { role: alertmanager, tasks_from: health }
+  probes:
+    - name: A surviving member accepts a silence (cluster write; it expires after 5 minutes)
+      url: "https://127.0.0.1:{{ alertmanager_port | default(9093) }}/api/v2/silences"
+      method: POST
+      url_username: "{{ alertmanager_web_user | default(monitoring_scrape_user | default('prometheus')) }}"
+      url_password: "{{ alertmanager_web_password | default(monitoring_scrape_password | default('')) }}"
+      validate_certs: false
+      body_format: json
+      body:
+        matchers: [{ name: ha_drill, value: "{{ ha_drill_run_id }}", isRegex: false, isEqual: true }]
+        startsAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(utc=true) }}"
+        endsAt: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime(('%s' | strftime | int) + 300, utc=true) }}"
+        createdBy: ha-drill
+        comment: HA drill write probe (HA-01)
+      status: [200]
+      write: true
+      no_log: true
+    - name: The silence is visible on every surviving member (gossip still works)
+      on: all_survivors
+      url: "https://127.0.0.1:{{ alertmanager_port | default(9093) }}/api/v2/silences?filter=ha_drill%3D%22{{ ha_drill_run_id }}%22"
+      url_username: "{{ alertmanager_web_user | default(monitoring_scrape_user | default('prometheus')) }}"
+      url_password: "{{ alertmanager_web_password | default(monitoring_scrape_password | default('')) }}"
+      validate_certs: false
+      status: [200]
+      json_min_items: 1
+      no_log: true
+
+ha_drill_grafana:
+  group: monitoring
+  min_nodes: 2
+  stop: [[docker, stop, "{{ grafana_container_name | default('grafana') }}"]]
+  restore: [[docker, start, "{{ grafana_container_name | default('grafana') }}"]]
+  health: { role: grafana, tasks_from: health }
+  probes:
+    - name: Grafana answers through its public name (edge)
+      url: "{{ grafana_root_url | default('https://grafana.example.internal') }}/api/health"
+      status: [200]
+
+ha_drill_blackbox_exporter:
+  group: monitoring
+  min_nodes: 2
+  stop: [[docker, stop, "{{ blackbox_exporter_container_name | default('blackbox-exporter') }}"]]
+  restore: [[docker, start, "{{ blackbox_exporter_container_name | default('blackbox-exporter') }}"]]
+  health: { role: blackbox_exporter, tasks_from: health }
+  probes:
+    - name: The other replicas still probe
+      health: true
+
+# ------------------------------------------------------------------ edge and stateless web services
+ha_drill_edge:
+  group: edge
+  min_nodes: 2
+  # Stop HAProxy on the node holding the VIP: keepalived's track script must move the VIP.
+  leader:
+    argv: [ip, -o, addr, show, to, "{{ (keepalived_vips | default(['0.0.0.0/32']) | first).split('/') | first }}"]
+    stdout_regex: '\S'
+  stop: [[docker, stop, "{{ edge_haproxy_container_name | default('edge-haproxy') }}"]]
+  restore: [[docker, start, "{{ edge_haproxy_container_name | default('edge-haproxy') }}"]]
+  health: { role: edge, tasks_from: health }
+  probes:
+    - name: The VIP moved and HAProxy answers on it
+      url: "https://{{ (keepalived_vips | default(['0.0.0.0/32']) | first).split('/') | first }}/"
+      validate_certs: false
+      status: [200, 301, 302, 400, 403, 404, 421, 503]
+    - name: A service behind the edge answers through its public name
+      url: "{{ ha_drill_edge_probe_url | default(keycloak_hostname | default('https://sso.example.internal')) }}/"
+      status: [200, 301, 302, 303, 401, 403]
+
+ha_drill_registry:
+  group: registry
+  min_nodes: 2
+  stop: [[docker, stop, "{{ registry_container_name | default('registry') }}"]]
+  restore: [[docker, start, "{{ registry_container_name | default('registry') }}"]]
+  health: { role: registry, tasks_from: health }
+  probes:
+    - name: The registry API answers through its public name
+      url: "{{ registry_hostname | default('https://registry.example.internal') }}/v2/"
+      status: [200, 401]
+
+ha_drill_status_page:
+  group: status_page
+  min_nodes: 2
+  stop: [[docker, stop, "{{ status_page_container_name | default('status-page') }}"]]
+  restore: [[docker, start, "{{ status_page_container_name | default('status-page') }}"]]
+  health: { role: status_page, tasks_from: health }
+  probes:
+    - name: The status page answers through its public name
+      url: "{{ status_page_hostname | default('https://status.example.com') }}/health"
+      status: [200]
+
+# ------------------------------------------------------------------ delivery
+ha_drill_forgejo:
+  group: forgejo
+  min_nodes: 2
+  # Active/passive: take the active node (VIP holder) away; the standby must take the VIP and start Forgejo.
+  leader:
+    argv: [ip, -o, addr, show, to, "{{ (forgejo_vips | default(['0.0.0.0/32']) | first).split('/') | first }}"]
+    stdout_regex: '\S'
+  stop:
+    - [systemctl, stop, keepalived]
+    - [systemctl, stop, forgejo-failover]
+    - [docker, stop, "{{ forgejo_container_name | default('forgejo') }}"]
+  restore:
+    - [systemctl, start, forgejo-failover]
+    - [systemctl, start, keepalived]
+  health: { role: forgejo, tasks_from: health }
+  probes:
+    - name: Forgejo answers on the VIP (the standby took over)
+      url: "https://{{ (forgejo_vips | default(['0.0.0.0/32']) | first).split('/') | first }}:{{ forgejo_https_port | default(3443) }}/api/healthz"
+      validate_certs: false
+      status: [200]
+    - name: Forgejo answers through its public name
+      url: "{{ forgejo_root_url | default('https://git.example.internal/') }}api/healthz"
+      status: [200]
+
+ha_drill_forgejo_runner:
+  group: forgejo_runner
+  min_nodes: 2
+  stop: [[docker, stop, "{{ forgejo_runner_container_name | default('forgejo-runner') }}"]]
+  restore: [[docker, start, "{{ forgejo_runner_container_name | default('forgejo-runner') }}"]]
+  health: { role: forgejo_runner, tasks_from: health }
+  probes:
+    - name: The other runners keep running
+      on: all_survivors
+      argv: [docker, inspect, "{{ forgejo_runner_container_name | default('forgejo-runner') }}"]
+      stdout_regex: '"Running": true'
+
+# ------------------------------------------------------------------ platform services
+ha_drill_mail_relay:
+  group: mail_relay
+  min_nodes: 2
+  stop: [[systemctl, stop, postfix]]
+  restore: [[systemctl, start, postfix]]
+  health: { role: mail_relay, tasks_from: health }
+  probes:
+    - name: The other relay accepts SMTP submissions
+      tcp: "{{ mail_relay_submission_port | default(587) }}"
+      search_regex: "^220 "
+
+ha_drill_backup_server:
+  group: backup
+  min_nodes: 2
+  stop: [[docker, stop, "{{ backup_server_container_name | default('rest-server') }}"]]
+  restore: [[docker, start, "{{ backup_server_container_name | default('rest-server') }}"]]
+  health: { role: backup_server, tasks_from: health }
+  probes:
+    # Clients write to every server independently; the other server must keep accepting.
+    - name: The other backup server answers
+      health: true
+
+ha_drill_wazuh_indexer:
+  group: siem
+  min_nodes: 3
+  stop: [[docker, stop, "{{ wazuh_indexer_container_name | default('wazuh-indexer') }}"]]
+  restore: [[docker, start, "{{ wazuh_indexer_container_name | default('wazuh-indexer') }}"]]
+  health: { role: wazuh_indexer, tasks_from: health }
+  probes:
+    - name: The cluster stays available (green or yellow) without the node
+      health: true
+    - name: A document can still be indexed
+      url: "https://127.0.0.1:{{ wazuh_indexer_http_port | default(9200) }}/ha-drill-{{ ha_drill_run_id }}/_doc/1?refresh=true"
+      method: PUT
+      client_cert: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/admin.pem"
+      client_key: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/admin-key.pem"
+      ca_path: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/ca.pem"
+      body_format: json
+      body: { drill: "{{ ha_drill_run_id }}" }
+      status: [200, 201]
+      write: true
+    - name: Remove the drill index
+      url: "https://127.0.0.1:{{ wazuh_indexer_http_port | default(9200) }}/ha-drill-{{ ha_drill_run_id }}"
+      method: DELETE
+      client_cert: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/admin.pem"
+      client_key: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/admin-key.pem"
+      ca_path: "{{ wazuh_indexer_data_dir | default('/opt/wazuh-indexer') }}/certs/ca.pem"
+      status: [200]
+
+ha_drill_wazuh_manager:
+  group: siem
+  min_nodes: 2
+  stop: [[docker, stop, "{{ wazuh_manager_container_name | default('wazuh-manager') }}"]]
+  restore: [[docker, start, "{{ wazuh_manager_container_name | default('wazuh-manager') }}"]]
+  health: { role: wazuh_manager, tasks_from: health }
+  probes:
+    # Agents list every manager and reconnect to another one by themselves.
+    - name: Another manager accepts agent connections
+      tcp: 1514
+    - name: Another manager's API answers
+      health: true
+
+ha_drill_wazuh_dashboard:
+  group: siem
+  min_nodes: 2
+  stop: [[docker, stop, "{{ wazuh_dashboard_container_name | default('wazuh-dashboard') }}"]]
+  restore: [[docker, start, "{{ wazuh_dashboard_container_name | default('wazuh-dashboard') }}"]]
+  health: { role: wazuh_dashboard, tasks_from: health }
+  probes:
+    - name: The dashboard answers through its public name
+      url: "{{ wazuh_dashboard_public_url | default('https://siem.example.internal') }}/app/login"
+      status: [200]
+
+# ------------------------------------------------------------------ admin access (host services)
+ha_drill_dns_resolver:
+  group: dns
+  min_nodes: 2
+  stop: [[systemctl, stop, unbound]]
+  restore: [[systemctl, start, unbound]]
+  health: { role: dns_resolver, tasks_from: health }
+  probes:
+    - name: The other resolver answers
+      tcp: "{{ dns_resolver_port | default(53) }}"
+
+ha_drill_bastion:
+  group: bastion
+  min_nodes: 2
+  # Existing sessions (this one) survive "systemctl stop ssh"; a timer restarts sshd if the run is lost.
+  stop:
+    - [systemd-run, --unit, ha-drill-restore-ssh, --on-active, "{{ ha_drill_auto_restore_seconds }}", systemctl, start, ssh]
+    - [systemctl, stop, ssh.socket, ssh]
+  restore:
+    - [systemctl, start, ssh]
+    - [systemctl, stop, ha-drill-restore-ssh.timer]
+  health: { role: bastion, tasks_from: health }
+  probes:
+    - name: The other bastion accepts SSH connections
+      tcp: "{{ ssh_hardening_port | default(22) }}"
+      search_regex: OpenSSH
+
+ha_drill_wg_unit: "wg-quick@{{ wireguard_gateway_interface | default('wg0') }}"
+ha_drill_wireguard_gateway:
+  group: vpn
+  min_nodes: 2
+  stop:
+    - [systemd-run, --unit, ha-drill-restore-wg, --on-active, "{{ ha_drill_auto_restore_seconds }}", systemctl, start, "{{ ha_drill_wg_unit }}"]
+    - [systemctl, stop, "{{ ha_drill_wg_unit }}"]
+  restore:
+    - [systemctl, start, "{{ ha_drill_wg_unit }}"]
+    - [systemctl, stop, ha-drill-restore-wg.timer]
+  health: { role: wireguard_gateway, tasks_from: health }
+  probes:
+    - name: The other gateway's tunnel is up
+      health: true
+
+# ------------------------------------------------------------------ product playbooks (one drill per instance)
+# Each entry of postgres_clusters / valkey_clusters / rabbitmq_clusters / garage_clusters is drilled;
+# limit with -e ha_drill_instances=<name>[,<name>].
+
+ha_drill_postgres:
+  instances: "{{ postgres_clusters | default([]) }}"
+  group: "{{ ha_drill_instance.group | default('') }}"
+  min_nodes: 3
+  # Stop the leader: Patroni must promote a replica and HAProxy must route to it.
+  leader:
+    url: "https://127.0.0.1:{{ ha_drill_instance.ports.patroni | default(8008) }}/leader"
+    status: 200
+    ca_path: "{{ postgres_cluster_base_dir | default('/opt/postgres') }}/{{ ha_drill_instance.name | default('') }}/tls/ca-bundle.crt"
+  stop:
+    - [docker, stop, "{{ ha_drill_instance.name | default('') }}-postgres"]
+    - [docker, stop, "{{ ha_drill_instance.name | default('') }}-etcd"]
+  restore:
+    - [docker, start, "{{ ha_drill_instance.name | default('') }}-etcd"]
+    - [docker, start, "{{ ha_drill_instance.name | default('') }}-postgres"]
+  health: { role: postgres_cluster, tasks_from: health_entry }
+  probes:
+    - name: A new leader is elected
+      url: "https://127.0.0.1:{{ ha_drill_instance.ports.patroni | default(8008) }}/cluster"
+      ca_path: "{{ postgres_cluster_base_dir | default('/opt/postgres') }}/{{ ha_drill_instance.name | default('') }}/tls/ca-bundle.crt"
+      status: [200]
+      json_list: members
+      json_match: { role: leader, state: running }
+      json_min_items: 1
+    # The application entry point (HAProxy primary port on a surviving node) reaches a writable
+    # primary: txid_current() needs a read-write primary. Uses the first owner login of the first database.
+    - name: Writes through the HAProxy primary port reach the new leader
+      enabled: "{{ (ha_drill_instance.databases | default([])) | length > 0 }}"
+      argv:
+        - docker
+        - exec
+        - -e
+        - PGPASSWORD
+        - "{{ ha_drill_instance.name | default('') }}-postgres"
+        - psql
+        - -X
+        - -At
+        - >-
+          host={{ ha_drill_prober }} port={{ ha_drill_instance.ports.primary | default(5000) }}
+          dbname={{ (ha_drill_instance.databases | default([{}]) | first).name | default('postgres') }}
+          user={{ ha_drill_postgres_probe_user.name | default('') }}
+          sslmode=verify-full sslrootcert=/etc/patroni/tls/ca-bundle.crt connect_timeout=5
+        - -c
+        - SELECT pg_is_in_recovery(), txid_current() > 0
+      env:
+        PGPASSWORD: "{{ ha_drill_postgres_probe_user.password | default('') }}"
+      stdout_regex: '^f\|t$'
+      write: true
+      no_log: true
+
+# Login used for the PostgreSQL write probe (override per inventory if needed).
+ha_drill_postgres_probe_user: >-
+  {{ (((ha_drill_instance.databases | default([{}]) | first).users | default([]))
+      | selectattr('access', 'equalto', 'owner') | list + [{}]) | first }}
+
+ha_drill_valkey:
+  instances: "{{ valkey_clusters | default([]) }}"
+  group: "{{ ha_drill_instance.group | default('') }}"
+  min_nodes: 3
+  # Stop the primary: Sentinel must promote a replica.
+  leader:
+    argv: "{{ ha_drill_valkey_cli + ['-p', (ha_drill_instance.ports.valkey | default(6379)) | string, 'INFO', 'replication'] }}"
+    env: { REDISCLI_AUTH: "{{ ha_drill_instance.admin_password | default('') }}" }
+    stdout_regex: 'role:master'
+  stop: [[docker, stop, "{{ ha_drill_instance.name | default('') }}-valkey"]]
+  restore: [[docker, start, "{{ ha_drill_instance.name | default('') }}-valkey"]]
+  health: { role: valkey_cluster, tasks_from: health_entry }
+  probes:
+    - name: Sentinel promoted a reachable primary and it accepts writes (key expires after 5 minutes)
+      argv:
+        - docker
+        - exec
+        - -e
+        - REDISCLI_AUTH
+        - "{{ ha_drill_instance.name | default('') }}-sentinel"
+        - sh
+        - -c
+        - >-
+          set -e;
+          cli="valkey-cli --tls --cacert /tls/ca-bundle.crt --user admin --no-auth-warning";
+          primary=$($cli -h 127.0.0.1 -p {{ ha_drill_instance.ports.sentinel | default(26379) }}
+          SENTINEL get-master-addr-by-name {{ ha_drill_instance.name | default('') }} | head -n1);
+          test -n "$primary";
+          $cli -h "$primary" -p {{ ha_drill_instance.ports.valkey | default(6379) }}
+          SET ha-drill:{{ ha_drill_run_id }} ok EX 300
+      env: { REDISCLI_AUTH: "{{ ha_drill_instance.admin_password | default('') }}" }
+      stdout_regex: '^OK$'
+      write: true
+      no_log: true
+
+ha_drill_valkey_cli: >-
+  {{ ['docker', 'exec', '-e', 'REDISCLI_AUTH', (ha_drill_instance.name | default('')) ~ '-valkey',
+      'valkey-cli', '--tls', '--cacert', '/tls/ca-bundle.crt', '-h', '127.0.0.1', '--user', 'admin', '--no-auth-warning'] }}
+
+ha_drill_rabbitmq:
+  instances: "{{ rabbitmq_clusters | default([]) }}"
+  group: "{{ ha_drill_instance.group | default('') }}"
+  min_nodes: 3
+  stop: [[docker, stop, "{{ ha_drill_instance.name | default('') }}-rabbitmq"]]
+  restore: [[docker, start, "{{ ha_drill_instance.name | default('') }}-rabbitmq"]]
+  health: { role: rabbitmq_cluster, tasks_from: health_entry }
+  # A quorum queue needs a majority: declare, publish, consume and delete in a scratch vhost.
+  probes: "{{ ha_drill_rabbitmq_probes }}"
+
+ha_drill_rabbitmq_api: "https://127.0.0.1:{{ ha_drill_instance.ports.management | default(15671) }}/api"
+ha_drill_rabbitmq_common:
+  url_username: "{{ ha_drill_instance.admin_user | default('admin') }}"
+  url_password: "{{ ha_drill_instance.admin_password | default('') }}"
+  ca_path: "{{ rabbitmq_cluster_base_dir | default('/opt/rabbitmq') }}/{{ ha_drill_instance.name | default('') }}/tls/ca-bundle.crt"
+  no_log: true
+ha_drill_rabbitmq_probes:
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Create a scratch vhost', 'url': ha_drill_rabbitmq_api ~ '/vhosts/ha-drill', 'method': 'PUT',
+       'body_format': 'json', 'body': {'default_queue_type': 'quorum'}, 'status': [201, 204], 'write': true}) }}"
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Grant the admin user the scratch vhost',
+       'url': ha_drill_rabbitmq_api ~ '/permissions/ha-drill/' ~ (ha_drill_instance.admin_user | default('admin')), 'method': 'PUT',
+       'body_format': 'json', 'body': {'configure': '.*', 'write': '.*', 'read': '.*'}, 'status': [201, 204]}) }}"
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Declare a quorum queue (needs a majority)', 'url': ha_drill_rabbitmq_api ~ '/queues/ha-drill/probe',
+       'method': 'PUT', 'body_format': 'json', 'body': {'durable': true, 'arguments': {'x-queue-type': 'quorum'}}, 'status': [201, 204], 'write': true}) }}"
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Publish a message', 'url': ha_drill_rabbitmq_api ~ '/exchanges/ha-drill/amq.default/publish',
+       'method': 'POST', 'body_format': 'json', 'body': {'properties': {}, 'routing_key': 'probe', 'payload': ha_drill_run_id, 'payload_encoding': 'string'},
+       'status': [200], 'json_key': 'routed', 'json_equals': true, 'write': true}) }}"
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Consume the message', 'url': ha_drill_rabbitmq_api ~ '/queues/ha-drill/probe/get',
+       'method': 'POST', 'body_format': 'json', 'body': {'count': 1, 'ackmode': 'ack_requeue_false', 'encoding': 'auto'},
+       'status': [200], 'json_min_items': 1, 'write': true}) }}"
+  - "{{ ha_drill_rabbitmq_common | combine({'name': 'Delete the scratch vhost', 'url': ha_drill_rabbitmq_api ~ '/vhosts/ha-drill',
+       'method': 'DELETE', 'status': [204]}) }}"
+
+ha_drill_garage:
+  instances: "{{ garage_clusters | default([]) }}"
+  group: "{{ ha_drill_instance.group | default('') }}"
+  min_nodes: 3
+  stop: [[docker, stop, "{{ ha_drill_instance.name | default('') }}-garage"]]
+  restore: [[docker, start, "{{ ha_drill_instance.name | default('') }}-garage"]]
+  health: { role: garage_cluster, tasks_from: health_entry }
+  probes:
+    - name: The S3 endpoint of a surviving node answers
+      tcp: "{{ ha_drill_instance.ports.s3 | default(3900) }}"
+    # With replication factor 3 a write needs 2 of 3 nodes (consistent mode).
+    - name: Bucket metadata can still be written (create a scratch bucket)
+      argv: [docker, exec, "{{ ha_drill_instance.name | default('') }}-garage", /garage, bucket, create, "ha-drill-{{ ha_drill_run_id }}"]
+      write: true
+    - name: Delete the scratch bucket
+      argv: [docker, exec, "{{ ha_drill_instance.name | default('') }}-garage", /garage, bucket, delete, --yes, "ha-drill-{{ ha_drill_run_id }}"]
+      write: true

@@ -1,0 +1,38 @@
+#!/bin/sh
+# DR drill check for RabbitMQ (HA-02): imports a restored definitions export into a throwaway
+# single-node broker that has no network, lists what was imported and removes the broker again.
+# Usage: dr-drill-rabbitmq <definitions.json> <image> <container name>
+set -eu
+defs=$1
+image=$2
+name=$3
+[ -s "$defs" ] || { echo "dr-drill-rabbitmq: $defs is missing or empty" >&2; exit 1; }
+dir=$(dirname "$defs")
+cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+trap cleanup EXIT INT TERM
+cleanup
+# The image's entrypoint drops to the rabbitmq user (uid 100, gid 101); the node directory is a tmpfs.
+docker run -d --name "$name" --network=none --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID \
+  --cap-add=SETGID --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges:true --memory=1g \
+  --pids-limit=512 --tmpfs=/var/lib/rabbitmq:rw,size=512m,uid=100,gid=101 \
+  --volume="$dir:/defs:ro" "$image" >/dev/null
+i=0
+until docker exec "$name" rabbitmq-diagnostics -q check_running >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -gt 90 ]; then
+    echo "dr-drill-rabbitmq: the scratch broker did not start" >&2
+    docker logs --tail 50 "$name" >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+docker exec "$name" rabbitmqctl -q import_definitions "/defs/$(basename "$defs")"
+vhosts=$(docker exec "$name" rabbitmqctl -q list_vhosts name | grep -c . || true)
+users=$(docker exec "$name" rabbitmqctl -q list_users | grep -c . || true)
+queues=0
+for vh in $(docker exec "$name" rabbitmqctl -q list_vhosts name); do
+  n=$(docker exec "$name" rabbitmqctl -q list_queues -p "$vh" name | grep -c . || true)
+  queues=$((queues + n))
+done
+[ "$users" -gt 0 ] || { echo "dr-drill-rabbitmq: no users after the import" >&2; exit 1; }
+echo "imported: $vhosts vhosts, $users users, $queues queues"

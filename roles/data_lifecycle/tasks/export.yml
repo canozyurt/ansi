@@ -1,0 +1,156 @@
+---
+# Encrypted export of one scope (playbooks/data_export.yml). The plaintext lives only in a root-only
+# staging directory on the encrypted volume and is removed when the run ends; what leaves the host is
+# the CMS-encrypted archive and its manifest.
+- name: Check the request, find the instance and the node
+  ansible.builtin.import_tasks: main.yml
+
+- name: Refuse to export what does not exist
+  ansible.builtin.assert:
+    that: data_lifecycle_before == 'present'
+    fail_msg: "{{ data_lifecycle_label }} does not exist (the service reports: {{ data_lifecycle_before }})."
+    quiet: true
+  run_once: true
+  tags: [chk_dat_02]
+
+- name: Export, encrypt and record ({{ data_lifecycle_label }})
+  when: inventory_hostname == data_lifecycle_runner
+  block:
+    - name: Name the export
+      ansible.builtin.set_fact:
+        data_lifecycle_export_id: >-
+          export-{{ data_lifecycle_run_id }}-{{ data_lifecycle_label | regex_replace('[^A-Za-z0-9_.-]+', '-') | truncate(80, true, '') }}
+        data_lifecycle_stage: "{{ data_lifecycle_staging_dir }}/{{ data_lifecycle_run_id }}"
+
+    - name: Create the staging directories (root only)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ data_lifecycle_staging_dir }}"
+        - "{{ data_lifecycle_stage }}"
+        - "{{ data_lifecycle_stage }}/data"
+        - "{{ data_lifecycle_export_dir }}"
+
+    - name: Copy the recipient's certificate
+      ansible.builtin.copy:
+        src: "{{ data_export_recipient }}"
+        dest: "{{ data_lifecycle_stage }}/recipient.crt"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Check the recipient's certificate is valid for at least a day
+      ansible.builtin.command:
+        argv: [openssl, x509, -in, "{{ data_lifecycle_stage }}/recipient.crt", -noout, -checkend, "86400"]
+      changed_when: false
+      tags: [chk_dat_02]
+
+    - name: Export the data
+      ansible.builtin.command:
+        argv: ["{{ data_lifecycle_tools_dir }}/{{ data_lifecycle_def.script }}", export, "{{ data_scope }}", "{{ data_lifecycle_stage }}/data"]
+      environment: "{{ data_lifecycle_def.env }}"
+      register: data_lifecycle_export
+      changed_when: true
+      no_log: true
+      tags: [chk_dat_02]
+
+    - name: Write the export's metadata
+      ansible.builtin.copy:
+        content: "{{ data_lifecycle_meta | to_nice_json }}\n"
+        dest: "{{ data_lifecycle_stage }}/meta.json"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        data_lifecycle_meta:
+          service: "{{ data_lifecycle_service }}"
+          instance: "{{ data_lifecycle_instance.name | default('') }}"
+          scope: "{{ data_scope }}"
+          host: "{{ inventory_hostname }}"
+          request_reference: "{{ data_request_reference | default('') }}"
+          requested_by: "{{ data_requested_by | default('') }}"
+          operator: "{{ lookup('ansible.builtin.env', 'USER') | default('unknown', true) }}"
+          repository_commit: "{{ lookup('ansible.builtin.pipe', 'git -C ' ~ (playbook_dir | quote) ~ ' rev-parse HEAD 2>/dev/null || echo unknown') }}"
+          export_output: "{{ data_lifecycle_export.stdout | default('') | trim }}"
+
+    - name: Encrypt the export to the recipient and write the manifest
+      ansible.builtin.command:
+        argv:
+          - "{{ data_lifecycle_tools_dir }}/dl-package"
+          - --in
+          - "{{ data_lifecycle_stage }}/data"
+          - --out-dir
+          - "{{ data_lifecycle_export_dir }}"
+          - --id
+          - "{{ data_lifecycle_export_id }}"
+          - --recipient
+          - "{{ data_lifecycle_stage }}/recipient.crt"
+          - --meta
+          - "{{ data_lifecycle_stage }}/meta.json"
+      register: data_lifecycle_package
+      changed_when: true
+      tags: [chk_dat_02]
+
+    - name: Copy the encrypted export and its manifest to the controller
+      ansible.builtin.fetch:
+        src: "{{ data_lifecycle_export_dir }}/{{ item }}"
+        dest: "{{ data_lifecycle_local_dir }}/"
+        flat: true
+      loop:
+        - "{{ data_lifecycle_export_id }}.tar.gz.cms"
+        - "{{ data_lifecycle_export_id }}.manifest.json"
+
+    - name: Create the export evidence directory
+      ansible.builtin.file:
+        path: "{{ data_lifecycle_evidence_dir }}/data-export"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Keep the manifest as evidence
+      ansible.builtin.copy:
+        src: "{{ data_lifecycle_export_dir }}/{{ data_lifecycle_export_id }}.manifest.json"
+        dest: "{{ data_lifecycle_evidence_dir }}/data-export/{{ data_lifecycle_export_id }}.manifest.json"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0640"
+      tags: [chk_dat_02]
+
+    - name: Keep the evidence in the backups
+      ansible.builtin.include_role:
+        name: backup_register
+      vars:
+        backup_register_name: data-lifecycle-evidence
+        backup_register_paths: ["{{ data_lifecycle_evidence_dir }}/data-export", "{{ data_lifecycle_evidence_dir }}/data-deletion"]
+        backup_register_rpo_hours: "{{ data_lifecycle_backup_rpo_hours }}"
+        backup_register_rto_hours: "{{ data_lifecycle_backup_rto_hours }}"
+      tags: [chk_dat_02]
+  always:
+    - name: Remove the plaintext staging directory
+      ansible.builtin.file:
+        path: "{{ data_lifecycle_stage }}"
+        state: absent
+      when: data_lifecycle_stage is defined
+
+    - name: Remove the encrypted export from the host (the controller has it)
+      ansible.builtin.file:
+        path: "{{ data_lifecycle_export_dir }}/{{ data_lifecycle_export_id }}.tar.gz.cms"
+        state: absent
+      when:
+        - data_lifecycle_export_id is defined
+        - not data_lifecycle_keep_on_host | bool
+
+- name: Report the export
+  ansible.builtin.debug:
+    msg: >-
+      {{ data_lifecycle_label }} exported as {{ hostvars[data_lifecycle_runner].data_lifecycle_export_id }}.tar.gz.cms
+      (manifest {{ hostvars[data_lifecycle_runner].data_lifecycle_export_id }}.manifest.json) into {{ data_lifecycle_local_dir }}.
+      Only the holder of the recipient certificate's private key can decrypt it. Use the id as
+      data_delete_export_id when deleting.
+  run_once: true

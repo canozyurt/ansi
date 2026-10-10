@@ -1,0 +1,191 @@
+---
+# One drill (ha_drill_item: service and instance): check every node is healthy, find the node to
+# stop, stop it, probe the service from a surviving node until it answers (and accepts writes), then
+# restore the node, wait for its health tasks and write the evidence report.
+- name: Reset the drill state ({{ ha_drill_item.label }})
+  ansible.builtin.set_fact:
+    ha_drill_instance: "{{ ha_drill_item.instance }}"
+    ha_drill_service: "{{ ha_drill_item.service }}"
+    ha_drill_victim: ""
+    ha_drill_prober: ""
+    ha_drill_survivors: []
+    ha_drill_is_leader: false
+    ha_drill_error: ""
+    ha_drill_restore_error: ""
+    ha_drill_probe_log: []
+    ha_drill_t_stop: 0
+  no_log: true
+
+- name: Read the drill definition ({{ ha_drill_item.label }})
+  ansible.builtin.set_fact:
+    ha_drill_def: "{{ lookup('ansible.builtin.vars', 'ha_drill_' ~ ha_drill_service) }}"
+  no_log: true
+
+- name: Find the nodes ({{ ha_drill_item.label }})
+  ansible.builtin.set_fact:
+    ha_drill_nodes: "{{ groups[ha_drill_def.group] | default([]) }}"
+
+- name: Check that the service has enough nodes and all of them take part ({{ ha_drill_item.label }})
+  ansible.builtin.assert:
+    that:
+      - ha_drill_nodes | length >= ha_drill_def.min_nodes | default(3) | int
+      - ha_drill_nodes | difference(ansible_play_hosts) | length == 0
+      - (ha_drill_node | default('')) | length == 0 or ha_drill_node in ha_drill_nodes
+    fail_msg: >-
+      {{ ha_drill_item.label }}: group {{ ha_drill_def.group }} has {{ ha_drill_nodes | length }} node(s)
+      ({{ ha_drill_nodes | join(', ') }}); the drill needs {{ ha_drill_def.min_nodes | default(3) }} and every node
+      reachable in this run (missing: {{ ha_drill_nodes | difference(ansible_play_hosts) | join(', ') or 'none' }}).
+    quiet: true
+  run_once: true
+  tags: [chk_ha_01]
+
+- name: Check that every node is healthy before the drill ({{ ha_drill_item.label }})
+  when: inventory_hostname in ha_drill_nodes
+  block:
+    - name: Run the service's health tasks
+      ansible.builtin.include_tasks: health.yml
+  rescue:
+    - name: Record the failed pre-check
+      ansible.builtin.set_fact:
+        ha_drill_error: "pre-check on {{ inventory_hostname }}: {{ ansible_failed_task.name | default('health') }}"
+
+- name: Note whether every node passed the pre-check
+  ansible.builtin.set_fact:
+    ha_drill_precheck_ok: "{{ ha_drill_nodes | map('extract', hostvars, 'ha_drill_error') | select | list | length == 0 }}"
+
+- name: Find the node to stop (leader, primary or VIP holder)
+  when:
+    - ha_drill_def.leader is defined
+    - inventory_hostname in ha_drill_nodes
+    - ha_drill_precheck_ok | bool
+  block:
+    - name: Ask the node over HTTP whether it leads
+      ansible.builtin.uri:
+        url: "{{ ha_drill_def.leader.url }}"
+        status_code: "{{ [ha_drill_def.leader.status | default(200) | int] }}"
+        headers: "{{ ha_drill_def.leader.headers | default(omit) }}"
+        validate_certs: "{{ ha_drill_def.leader.validate_certs | default(true) }}"
+        ca_path: "{{ ha_drill_def.leader.ca_path | default(omit) }}"
+        timeout: 10
+      register: ha_drill_leader_http
+      failed_when: false
+      when: ha_drill_def.leader.url is defined
+
+    - name: Ask the node with a command whether it leads
+      ansible.builtin.command:
+        argv: "{{ ha_drill_def.leader.argv }}"
+      environment: "{{ ha_drill_def.leader.env | default({}) }}"
+      register: ha_drill_leader_cmd
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: ha_drill_def.leader.argv is defined
+
+    - name: Note whether this node leads
+      ansible.builtin.set_fact:
+        ha_drill_is_leader: >-
+          {{ (ha_drill_leader_http.status | default(0) == (ha_drill_def.leader.status | default(200) | int))
+             if ha_drill_def.leader.url is defined
+             else (ha_drill_leader_cmd.rc | default(1) == 0
+                   and ha_drill_leader_cmd.stdout | default('') is search(ha_drill_def.leader.stdout_regex | default('.'), multiline=true)) }}
+
+- name: Pick the node to stop and the surviving node that probes
+  ansible.builtin.set_fact:
+    ha_drill_victim: >-
+      {{ ha_drill_node if (ha_drill_node | default('')) | length > 0
+         else (ha_drill_leaders | first) if ha_drill_def.leader is defined
+         else ha_drill_nodes | last }}
+  vars:
+    ha_drill_leaders: >-
+      {{ ha_drill_nodes | zip(ha_drill_nodes | map('extract', hostvars, 'ha_drill_is_leader') | list)
+         | selectattr(1) | map(attribute=0) | list + [''] }}
+
+- name: Work out the surviving nodes
+  ansible.builtin.set_fact:
+    ha_drill_survivors: "{{ ha_drill_nodes | reject('equalto', ha_drill_victim) | list }}"
+    ha_drill_prober: "{{ ha_drill_nodes | reject('equalto', ha_drill_victim) | first }}"
+    ha_drill_t0: "{{ now().timestamp() | int }}"
+
+- name: Check that the node to stop is known ({{ ha_drill_item.label }})
+  ansible.builtin.assert:
+    that:
+      - not ha_drill_precheck_ok | bool or ha_drill_victim in ha_drill_nodes
+    fail_msg: >-
+      {{ ha_drill_item.label }}: no node reports itself as leader/primary/VIP holder, so the service is already
+      degraded. Fix it first, or pick a node with -e ha_drill_node=<host>.
+    quiet: true
+  run_once: true
+
+- name: Read the drill definition again with the chosen nodes
+  ansible.builtin.set_fact:
+    ha_drill_def: "{{ lookup('ansible.builtin.vars', 'ha_drill_' ~ ha_drill_service) }}"
+  no_log: true
+
+- name: Fail one node and prove the service keeps working ({{ ha_drill_item.label }})
+  when: ha_drill_precheck_ok | bool
+  block:
+    - name: Stop the node (simulated failure of {{ ha_drill_victim }})
+      ansible.builtin.command:
+        argv: "{{ ha_drill_stop_argv }}"
+      loop: "{{ ha_drill_def.stop }}"
+      loop_control:
+        loop_var: ha_drill_stop_argv
+      changed_when: true
+      when: inventory_hostname == ha_drill_victim
+      tags: [chk_ha_01]
+
+    - name: Note when the node went down
+      ansible.builtin.set_fact:
+        ha_drill_t_stop: "{{ now().timestamp() | int }}"
+
+    - name: Probe the service from the surviving nodes
+      ansible.builtin.include_tasks: probe.yml
+      loop: "{{ ha_drill_def.probes }}"
+      loop_control:
+        loop_var: ha_drill_probe
+        label: "{{ ha_drill_probe.name }}"
+      when:
+        - ha_drill_probe.enabled | default(true) | bool
+        - >-
+          inventory_hostname == ha_drill_prober
+          or (ha_drill_probe.on | default('') == 'all_survivors' and inventory_hostname in ha_drill_survivors)
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        ha_drill_error: "{{ inventory_hostname }}: {{ ansible_failed_task.name | default('unknown task') }}"
+  always:
+    - name: Restore the node
+      when:
+        - inventory_hostname == ha_drill_victim
+        - ha_drill_precheck_ok | bool
+      block:
+        - name: Bring the node back
+          ansible.builtin.command:
+            argv: "{{ ha_drill_restore_argv }}"
+          loop: "{{ ha_drill_def.restore }}"
+          loop_control:
+            loop_var: ha_drill_restore_argv
+          changed_when: true
+          tags: [chk_ha_01]
+
+        - name: Wait until the node is healthy again
+          ansible.builtin.include_tasks: health.yml
+      rescue:
+        - name: Record that the node did not recover
+          ansible.builtin.set_fact:
+            ha_drill_restore_error: "{{ inventory_hostname }}: {{ ansible_failed_task.name | default('unknown task') }}"
+
+    - name: Write the evidence report
+      ansible.builtin.include_tasks: evidence.yml
+      when: inventory_hostname in ha_drill_nodes
+
+- name: Record the result ({{ ha_drill_item.label }})
+  ansible.builtin.set_fact:
+    ha_drill_results: >-
+      {{ ha_drill_results | default([]) + [{'label': ha_drill_item.label, 'ok': ha_drill_errors | length == 0,
+         'errors': ha_drill_errors}] }}
+  vars:
+    ha_drill_errors: >-
+      {{ (ha_drill_nodes | map('extract', hostvars, 'ha_drill_error') | select | list)
+         + (ha_drill_nodes | map('extract', hostvars, 'ha_drill_restore_error') | select | list) }}
+  run_once: true

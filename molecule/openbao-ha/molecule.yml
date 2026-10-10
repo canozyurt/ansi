@@ -1,0 +1,101 @@
+---
+# OpenBao Raft cluster on 3 nodes (HA-01). The containers share the network alias bao.test.internal
+# (round-robin, like the service name clients use). verify.yml runs playbooks/ha_drill.yml: it stops the
+# active node, checks that a standby takes over and accepts a write, then restores and unseals the node.
+# Nightly only (.github/workflows/nightly-ha.yml).
+driver:
+  name: docker
+platforms:
+  - name: openbao-ha-1
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-openbao-ha
+    networks:
+      - name: molecule-openbao-ha
+        aliases: [bao.test.internal]
+    groups: [openbao, container_hosts]
+  - name: openbao-ha-2
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-openbao-ha
+    networks:
+      - name: molecule-openbao-ha
+        aliases: [bao.test.internal]
+    groups: [openbao, container_hosts]
+  - name: openbao-ha-3
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    docker_networks:
+      - name: molecule-openbao-ha
+    networks:
+      - name: molecule-openbao-ha
+        aliases: [bao.test.internal]
+    groups: [openbao, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          sre: [operator]
+          auditors: [auditor]
+        oidc_clients_enabled: false
+        openbao_hostname: bao.test.internal
+        openbao_pki_allowed_domains: [test.internal]
+        openbao_pki_issue_secret_id: >-
+          {{ query('ansible.builtin.fileglob', openbao_init_output_dir ~ '/openbao-pki-approle.json') | length == 0 }}
+        openbao_memory_limit: 512m
+        openbao_init_output_dir: ${MOLECULE_EPHEMERAL_DIRECTORY}/openbao-init
+        # Test only: read the keys and admin token back from the init output file of the first run.
+        openbao_test_init_file: >-
+          {{ query('ansible.builtin.fileglob', openbao_init_output_dir ~ '/openbao-init-*.json') | sort | last | default('') }}
+        openbao_test_init: >-
+          {{ (lookup('ansible.builtin.file', openbao_test_init_file) | from_json) if openbao_test_init_file else {} }}
+        openbao_unseal_keys: "{{ openbao_test_init.unseal_keys_b64 | default([]) }}"
+        openbao_admin_token: "{{ openbao_test_init.admin_token | default('') }}"
+        # The nodes use self-signed lab certificates.
+        ha_drill_validate_certs: false
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          storage-driver: overlay2
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

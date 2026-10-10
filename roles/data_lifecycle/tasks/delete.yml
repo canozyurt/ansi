@@ -1,0 +1,142 @@
+---
+# Secure deletion of one scope (playbooks/data_delete.yml) with a deletion certificate. The scope
+# must already be gone from the inventory (or the next playbook run would re-create it), and an
+# export must have been taken first unless the requester declined one.
+- name: Check the request, find the instance and the node
+  ansible.builtin.import_tasks: main.yml
+
+- name: Refuse to delete what the inventory still declares
+  ansible.builtin.assert:
+    that: not data_lifecycle_def.declared | bool
+    fail_msg: >-
+      {{ data_lifecycle_label }} is still declared in the inventory. Remove it there first (a reviewed change), or the
+      next playbook run would create it again and the deletion certificate would be wrong.
+    quiet: true
+  run_once: true
+  tags: [chk_dat_02]
+
+- name: Find the export taken before the deletion
+  ansible.builtin.stat:
+    path: "{{ data_lifecycle_evidence_dir }}/data-export/{{ data_delete_export_id | default('none') }}.manifest.json"
+  register: data_lifecycle_export_manifest
+  when: inventory_hostname == data_lifecycle_runner
+
+- name: Require an export, or the requester's decision not to have one
+  ansible.builtin.assert:
+    that: >-
+      hostvars[data_lifecycle_runner].data_lifecycle_export_manifest.stat.exists | default(false)
+      or data_delete_without_export | default('') == 'requester-declined-export'
+    fail_msg: >-
+      No export manifest {{ data_delete_export_id | default('(data_delete_export_id unset)') }} on {{ data_lifecycle_runner }}.
+      Run playbooks/data_export.yml first and pass its id as -e data_delete_export_id=<id>, or record that the requester
+      declined an export with -e data_delete_without_export=requester-declined-export.
+    quiet: true
+  run_once: true
+  tags: [chk_dat_02]
+
+- name: Delete and certify ({{ data_lifecycle_label }})
+  when: inventory_hostname == data_lifecycle_runner
+  block:
+    - name: Note the start
+      ansible.builtin.set_fact:
+        data_lifecycle_t0: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+        data_lifecycle_certificate_id: >-
+          deletion-{{ data_lifecycle_run_id }}-{{ data_lifecycle_label | regex_replace('[^A-Za-z0-9_.-]+', '-') | truncate(80, true, '') }}
+
+    - name: Read the export manifest
+      ansible.builtin.slurp:
+        src: "{{ data_lifecycle_export_manifest.stat.path }}"
+      register: data_lifecycle_manifest_raw
+      when: data_lifecycle_export_manifest.stat.exists
+
+    - name: Delete the data
+      ansible.builtin.command:
+        argv: ["{{ data_lifecycle_tools_dir }}/{{ data_lifecycle_def.script }}", delete, "{{ data_scope }}"]
+      environment: "{{ data_lifecycle_def.env }}"
+      register: data_lifecycle_delete
+      changed_when: true
+      no_log: true
+      tags: [chk_dat_02]
+
+    - name: Ask the service again
+      ansible.builtin.command:
+        argv: ["{{ data_lifecycle_tools_dir }}/{{ data_lifecycle_def.script }}", check, "{{ data_scope }}"]
+      environment: "{{ data_lifecycle_def.env }}"
+      register: data_lifecycle_state_after
+      changed_when: false
+      no_log: true
+
+    - name: The data is gone from the live service
+      ansible.builtin.assert:
+        that: data_lifecycle_state_after.stdout | trim == 'absent'
+        fail_msg: "{{ data_lifecycle_label }}: the service still reports {{ data_lifecycle_state_after.stdout | trim }} after the delete."
+        quiet: true
+      tags: [chk_dat_02]
+
+    - name: Work out when the last backup copy expires
+      ansible.builtin.set_fact:
+        data_lifecycle_copies: >-
+          {{ data_lifecycle_copies | default([]) + [item | combine({
+             'retention_days': (item.retention_days | int) + (data_lifecycle_extra_retention_days | int),
+             'expires_by': '%Y-%m-%d' | strftime(now().timestamp() + ((item.retention_days | int)
+                                                  + (data_lifecycle_extra_retention_days | int)) * 86400, utc=true)})] }}
+      loop: "{{ data_lifecycle_def.backups }}"
+
+    - name: Create the deletion evidence directory
+      ansible.builtin.file:
+        path: "{{ data_lifecycle_evidence_dir }}/data-deletion"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write the deletion certificate
+      ansible.builtin.template:
+        src: deletion-certificate.json.j2
+        dest: "{{ data_lifecycle_evidence_dir }}/data-deletion/{{ data_lifecycle_certificate_id }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      register: data_lifecycle_certificate
+      tags: [chk_dat_02]
+
+    - name: Hash the certificate
+      ansible.builtin.stat:
+        path: "{{ data_lifecycle_certificate.dest }}"
+        checksum_algorithm: sha256
+      register: data_lifecycle_certificate_stat
+
+    - name: Record the certificate's hash next to it
+      ansible.builtin.copy:
+        content: "{{ data_lifecycle_certificate_stat.stat.checksum }}  {{ data_lifecycle_certificate_id }}.json\n"
+        dest: "{{ data_lifecycle_evidence_dir }}/data-deletion/{{ data_lifecycle_certificate_id }}.json.sha256"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Copy the certificate to the controller
+      ansible.builtin.fetch:
+        src: "{{ data_lifecycle_evidence_dir }}/data-deletion/{{ item }}"
+        dest: "{{ data_lifecycle_local_dir }}/"
+        flat: true
+      loop:
+        - "{{ data_lifecycle_certificate_id }}.json"
+        - "{{ data_lifecycle_certificate_id }}.json.sha256"
+
+    - name: Keep the evidence in the backups
+      ansible.builtin.include_role:
+        name: backup_register
+      vars:
+        backup_register_name: data-lifecycle-evidence
+        backup_register_paths: ["{{ data_lifecycle_evidence_dir }}/data-export", "{{ data_lifecycle_evidence_dir }}/data-deletion"]
+        backup_register_rpo_hours: "{{ data_lifecycle_backup_rpo_hours }}"
+        backup_register_rto_hours: "{{ data_lifecycle_backup_rto_hours }}"
+      tags: [chk_dat_02]
+
+- name: Report the deletion
+  ansible.builtin.debug:
+    msg: >-
+      {{ data_lifecycle_label }} deleted. Certificate {{ hostvars[data_lifecycle_runner].data_lifecycle_certificate_id }}.json
+      in {{ data_lifecycle_local_dir }}; backup copies expire by
+      {{ hostvars[data_lifecycle_runner].data_lifecycle_copies | map(attribute='expires_by') | max }}.
+  run_once: true

@@ -1,0 +1,54 @@
+---
+# Runs on every host of the play (playbooks/ha_drill.yml). Each drill is planned on every host the
+# same way; hosts act only in their part (stopped node, probing survivor, the others wait).
+- name: Work out which drills to run
+  ansible.builtin.set_fact:
+    ha_drill_selected: >-
+      {{ ha_drill_all_services if ha_drill_services | default('all') == 'all'
+         else (ha_drill_services if ha_drill_services is not string else ha_drill_services.split(',')) | map('trim') | list }}
+    ha_drill_instance_filter: >-
+      {{ [] if (ha_drill_instances | default('')) | length == 0
+         else (ha_drill_instances if ha_drill_instances is not string else ha_drill_instances.split(',')) | map('trim') | list }}
+    ha_drill_run_id: "{{ ha_drill_run_id | default(now(utc=true, fmt='%Y%m%dt%H%M%Sz')) }}"
+  run_once: true
+
+- name: Check that every selected service declares a drill
+  ansible.builtin.assert:
+    that:
+      - ha_drill_selected | length > 0
+      - ha_drill_selected | map('regex_replace', '^', 'ha_drill_') | reject('in', vars) | list | length == 0
+    fail_msg: >-
+      Unknown drill(s): {{ ha_drill_selected | map('regex_replace', '^', 'ha_drill_') | reject('in', vars) | list | join(', ') }}.
+      Known: {{ ha_drill_all_services | join(', ') }}.
+    quiet: true
+  run_once: true
+  tags: [chk_ha_01]
+
+- name: Plan one drill per service and instance
+  ansible.builtin.set_fact:
+    ha_drill_plan: "{{ query('ansible.builtin.template', 'plan.json.j2') | first | from_json }}"
+  run_once: true
+  no_log: true
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: "{{ ha_drill_plan | map(attribute='label') | list }}"
+  run_once: true
+
+- name: Run each drill
+  ansible.builtin.include_tasks: service.yml
+  loop: "{{ ha_drill_plan }}"
+  loop_control:
+    loop_var: ha_drill_item
+    label: "{{ ha_drill_item.label }}"
+
+- name: Every drill passed (the services stayed available and the stopped nodes recovered)
+  ansible.builtin.assert:
+    that: ha_drill_results | default([]) | rejectattr('ok') | list | length == 0
+    fail_msg: >-
+      Failed drills: {{ ha_drill_results | default([]) | rejectattr('ok') | map(attribute='label') | join(', ') }}.
+      Details: {{ ha_drill_results | default([]) | rejectattr('ok') | map(attribute='errors') | list }}.
+      Reports are in {{ ha_drill_evidence_dir }} on the probing nodes.
+    success_msg: "Passed: {{ ha_drill_results | default([]) | map(attribute='label') | join(', ') }}"
+  run_once: true
+  tags: [chk_ha_01]
