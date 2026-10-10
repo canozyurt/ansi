@@ -1,0 +1,192 @@
+---
+# IAM-09 integration test (written, not yet run): one throwaway Keycloak user per default role signs in to
+# every service through SSO, and what each one gets is compared with compliance/role-matrix.yml.
+# Runs from the controller against a deployed environment (use staging first):
+#
+#   ansible-playbook -i inventories/<env> playbooks/test_role_matrix.yml
+#
+# Users get their role through a group iam-test-<role> (no per-user grants, IAM-03) and a real second
+# factor (TOTP, or a software WebAuthn key for privileged roles), so the production MFA flow is exercised.
+# The users and groups are deleted at the end, also on failure. The report (expected vs observed per
+# service and role) is kept on the first Keycloak host under /var/lib/compliance-evidence/role-matrix/.
+# Services without a probe below (siem-manager-api, grc, registry, keycloak, vpn) are listed as
+# "not probed" in the report; test_offboarding.yml covers the VPN.
+- name: Test the role matrix with one user per role
+  hosts: keycloak[0]
+  gather_facts: false
+  become: false
+  vars:
+    iam_test_kc: "{{ keycloak_hostname }}"
+    iam_test_realm: "{{ keycloak_realm | default('org') }}"
+    iam_test_admin_user: "{{ keycloak_admin_user }}"
+    iam_test_admin_password: "{{ keycloak_admin_password }}"
+    iam_test_ca_file: "{{ role_matrix_test_ca_file | default(none) }}"
+    iam_test_matrix: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../compliance/role-matrix.yml') | from_yaml }}"
+    monitoring_host: "{{ groups['monitoring'][0] }}"
+    # One probe per service (see tools/sso_probe.py). Override role_matrix_test_probes to add or narrow.
+    iam_test_default_probes:
+      - name: grafana
+        flow: browser
+        start_url: "{{ hostvars[monitoring_host].grafana_root_url }}/login/generic_oauth"
+        check_url: "{{ hostvars[monitoring_host].grafana_root_url }}/api/user/orgs"
+        extract: json:0.role
+      - name: prometheus
+        flow: browser
+        start_url: "https://{{ monitoring_host }}:9443/oauth2/start?rd=%2Fapi%2Fv1%2Fstatus%2Fbuildinfo"
+        check_url: "https://{{ monitoring_host }}:9443/api/v1/status/buildinfo"
+        extract: status_ok:access
+      - name: alertmanager
+        flow: browser
+        start_url: "https://{{ monitoring_host }}:9446/oauth2/start?rd=%2Fapi%2Fv2%2Fstatus"
+        check_url: "https://{{ monitoring_host }}:9446/api/v2/status"
+        extract: status_ok:access
+      - name: openbao
+        flow: openbao
+        addr: "{{ pki_openbao_addr | default('') }}"
+        extract: openbao_policies
+      - name: ssh
+        flow: openbao
+        addr: "{{ pki_openbao_addr | default('') }}"
+        extract: "ssh_sign:{{ iam_test_roles | join(',') }}"
+      - name: forgejo
+        flow: browser
+        start_url: "{{ hostvars[groups['forgejo'][0]].forgejo_root_url | default('') }}user/oauth2/keycloak"
+        check_url: "{{ hostvars[groups['forgejo'][0]].forgejo_root_url | default('') }}api/v1/user"
+        extract: forgejo
+      - name: siem-indexer
+        flow: browser
+        start_url: "{{ hostvars[groups['siem'][0]].wazuh_dashboard_public_url | default('') }}/auth/openid/login"
+        check_url: "{{ hostvars[groups['siem'][0]].wazuh_dashboard_public_url | default('') }}/api/v1/configuration/account"
+        extract: json:data.roles
+      - name: rabbitmq
+        flow: token
+        client_id: "rabbitmq-{{ role_matrix_test_rabbitmq_cluster | default('main') }}"
+        redirect_uri: "{{ role_matrix_test_rabbitmq_url | default('') }}/js/oidc-oauth/login-callback.html"
+        check_url: "{{ role_matrix_test_rabbitmq_url | default('') }}/api/whoami"
+        extract: tags
+    # Probes whose URL is unknown in this inventory are skipped (reported as not probed).
+    iam_test_probes: >-
+      {%- set out = [] -%}
+      {%- for p in role_matrix_test_probes | default(iam_test_default_probes) -%}
+      {%-   if (p.start_url | default(p.addr | default(p.check_url | default('')))) is match('^https://[^/]') -%}
+      {%-     set _ = out.append(p) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+  tasks:
+    - name: Load the role model
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/rbac_model/defaults/main.yml"
+      tags: [chk_iam_09]
+
+    - name: Name this test run (users iam-test-<run>-<role>)
+      ansible.builtin.set_fact:
+        iam_test_prefix: "iam-test-{{ lookup('ansible.builtin.password', '/dev/null', length=6, chars=['ascii_lowercase', 'digits']) }}"
+
+    - name: Note the roles under test
+      ansible.builtin.set_fact:
+        iam_test_roles: "{{ iam_test_matrix.roles }}"
+        iam_test_dir: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}/role-matrix-{{ iam_test_prefix }}"
+
+    - name: Run the test and always clean up
+      delegate_to: localhost
+      run_once: true
+      tags: [chk_iam_09, chk_iam_03]
+      block:
+        - name: Create a private working directory on the controller
+          ansible.builtin.file:
+            path: "{{ iam_test_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Get an admin API token
+          ansible.builtin.include_tasks: tasks/iam_test_token.yml
+
+        - name: Create one test user per role
+          ansible.builtin.include_tasks: tasks/iam_test_user.yml
+          loop: "{{ iam_test_roles }}"
+          loop_control:
+            loop_var: iam_test_role
+
+        - name: Sign in as each test user and record what each service grants
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/../tools/sso_probe.py"]
+            stdin: >-
+              {{ {'keycloak_url': iam_test_kc, 'realm': iam_test_realm, 'ca_file': iam_test_ca_file,
+                  'user': iam_test_users[item], 'probes': iam_test_probes} | to_json }}
+          loop: "{{ iam_test_roles }}"
+          register: iam_test_probe_runs
+          changed_when: false
+          no_log: true
+
+        - name: Arrange the observations per service and role
+          ansible.builtin.copy:
+            content: >-
+              {%- set out = {} -%}
+              {%- for run in iam_test_probe_runs.results -%}
+              {%-   for service, seen in (run.stdout | from_json).items() -%}
+              {%-     set _ = out.setdefault(service, {}).update({run.item: seen.value}) -%}
+              {%-   endfor -%}
+              {%- endfor -%}
+              {{ out | to_nice_json }}
+            dest: "{{ iam_test_dir }}/observed.json"
+            mode: "0600"
+
+        - name: Compare with compliance/role-matrix.yml
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/../tools/role_matrix.py", --compare, "{{ iam_test_dir }}/observed.json"]
+          register: iam_test_compare
+          changed_when: false
+          failed_when: false
+
+      always:
+        - name: Refresh the admin API token for the clean-up
+          ansible.builtin.include_tasks: tasks/iam_test_token.yml
+
+        - name: Delete the test users and groups
+          ansible.builtin.include_tasks: tasks/iam_test_cleanup.yml
+
+        - name: Remove the controller working directory (keys and cookies)
+          ansible.builtin.file:
+            path: "{{ iam_test_dir }}"
+            state: absent
+
+    - name: Keep the report as evidence
+      become: true
+      tags: [chk_iam_09, chk_evd_02]
+      block:
+        - name: Create the evidence directory
+          ansible.builtin.file:
+            path: /var/lib/compliance-evidence/role-matrix
+            state: directory
+            owner: root
+            group: root
+            mode: "0750"
+
+        - name: Write the report
+          ansible.builtin.copy:
+            content: >-
+              {{ (iam_test_compare.stdout | from_json)
+                 | combine({'tested_at': now(utc=true).isoformat(),
+                            'not_probed': iam_test_matrix.services.keys() | difference(iam_test_probes | map(attribute='name'))})
+                 | to_nice_json }}
+            dest: /var/lib/compliance-evidence/role-matrix/{{ now(utc=true).strftime('%Y-%m-%dT%H%M%SZ') }}.json
+            owner: root
+            group: root
+            mode: "0640"
+
+        - name: Register the reports with the backup role (EVD-02)
+          ansible.builtin.include_role:
+            name: backup_register
+          vars:
+            backup_register_name: role-matrix-reports
+            backup_register_paths: [/var/lib/compliance-evidence/role-matrix]
+            backup_register_rpo_hours: 24
+            backup_register_rto_hours: 24
+
+    - name: Every role gets exactly what the matrix says
+      ansible.builtin.assert:
+        that: iam_test_compare.rc == 0
+        fail_msg: "Role matrix differences: {{ (iam_test_compare.stdout | from_json).problems }}"
+        quiet: true
+      tags: [chk_iam_09]

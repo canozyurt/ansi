@@ -1,0 +1,360 @@
+---
+# IAM-04 integration test (written, not yet run): disabling a user in Keycloak removes every kind of access.
+# Runs against a deployed environment (staging first):
+#
+#   ansible-playbook -i inventories/<env> playbooks/test_offboarding.yml
+#
+#   1. A throwaway user with role operator (through group iam-test-operator, TOTP second factor) signs in to
+#      Grafana and Prometheus (browser sessions kept), OpenBao (token kept) and gets a refresh token.
+#      A test WireGuard peer owned by the user is added to the running VPN gateways and survives an IdP sync.
+#   2. The user is disabled in Keycloak (only that; no other offboarding step).
+#   3. Checked: the VPN sync removes the peer at once; new logins fail everywhere; the refresh token is
+#      refused; the old browser sessions stop working once oauth2-proxy and Grafana refresh their tokens
+#      (offboarding_wait_seconds); the old OpenBao token and SSH certificates expire within session_max_hours.
+#   4. The user, group and test peer are removed, also on failure. The report is kept under
+#      /var/lib/compliance-evidence/offboarding/ on the first Keycloak host.
+- name: Prepare a test user with sessions everywhere
+  hosts: keycloak[0]
+  gather_facts: false
+  become: false
+  vars:
+    iam_test_kc: "{{ keycloak_hostname }}"
+    iam_test_realm: "{{ keycloak_realm | default('org') }}"
+    iam_test_admin_user: "{{ keycloak_admin_user }}"
+    iam_test_admin_password: "{{ keycloak_admin_password }}"
+    iam_test_ca_file: "{{ offboarding_test_ca_file | default(none) }}"
+    monitoring_host: "{{ groups['monitoring'][0] }}"
+  tasks:
+    - name: Load the role model
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/rbac_model/defaults/main.yml"
+
+    - name: Name this test run
+      ansible.builtin.set_fact:
+        iam_test_prefix: "iam-off-{{ lookup('ansible.builtin.password', '/dev/null', length=6, chars=['ascii_lowercase', 'digits']) }}"
+        offboarding_wait_seconds: "{{ offboarding_wait_seconds | default(420) }}"   # > token refresh intervals (5 min)
+
+    - name: Work out the probes and the controller directory
+      ansible.builtin.set_fact:
+        iam_test_dir: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}/offboarding-{{ iam_test_prefix }}"
+        offboarding_browser_probes:
+          - name: grafana
+            flow: browser
+            start_url: "{{ hostvars[monitoring_host].grafana_root_url }}/login/generic_oauth"
+            check_url: "{{ hostvars[monitoring_host].grafana_root_url }}/api/user"
+            extract: status_ok:access
+          - name: prometheus
+            flow: browser
+            start_url: "https://{{ monitoring_host }}:9443/oauth2/start?rd=%2Fapi%2Fv1%2Fstatus%2Fbuildinfo"
+            check_url: "https://{{ monitoring_host }}:9443/api/v1/status/buildinfo"
+            extract: status_ok:access
+        offboarding_openbao_probe:
+          name: openbao
+          flow: openbao
+          addr: "{{ pki_openbao_addr | default('') }}"
+          extract: openbao_policies
+          keep_token: true
+        # Any public PKCE client gives a refresh token; RabbitMQ's management client is one.
+        offboarding_token_probe:
+          name: refresh
+          flow: token
+          client_id: "{{ offboarding_test_public_client | default('rabbitmq-main') }}"
+          redirect_uri: "{{ offboarding_test_public_redirect_uri | default('') }}"
+          keep_refresh_token: true
+
+    - name: Create the user and sign in everywhere
+      delegate_to: localhost
+      run_once: true
+      tags: [chk_iam_04]
+      block:
+        - name: Create a private working directory on the controller
+          ansible.builtin.file:
+            path: "{{ iam_test_dir }}/cookies"
+            state: directory
+            mode: "0700"
+
+        - name: Get an admin API token
+          ansible.builtin.include_tasks: tasks/iam_test_token.yml
+
+        - name: Create the test user (role operator)
+          ansible.builtin.include_tasks: tasks/iam_test_user.yml
+          vars:
+            iam_test_role: operator
+
+        - name: Sign in while the user is enabled
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/../tools/sso_probe.py"]
+            stdin: >-
+              {{ {'keycloak_url': iam_test_kc, 'realm': iam_test_realm, 'ca_file': iam_test_ca_file,
+                  'user': iam_test_users.operator, 'cookie_dir': iam_test_dir ~ '/cookies',
+                  'probes': offboarding_browser_probes + [offboarding_openbao_probe]
+                            + ([offboarding_token_probe] if offboarding_token_probe.redirect_uri | length > 0 else [])} | to_json }}
+          register: offboarding_before
+          changed_when: false
+          no_log: true
+
+        - name: Every login worked
+          ansible.builtin.assert:
+            that: (offboarding_before.stdout | from_json).values() | rejectattr('login', 'equalto', 'ok') | list | length == 0
+            fail_msg: "A login failed before the user was disabled; the test cannot judge anything: {{ offboarding_before.stdout }}"
+            quiet: true
+
+        - name: Make a WireGuard public key for the test peer
+          ansible.builtin.command:
+            argv: [python3, -c, "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"]
+          register: offboarding_wg_key
+          changed_when: false
+
+    - name: Share the test user with the other plays
+      ansible.builtin.set_fact:
+        offboarding_user: "{{ iam_test_users.operator }}"
+        offboarding_peer_key: "{{ offboarding_wg_key.stdout }}"
+      no_log: true
+
+- name: Add a VPN peer owned by the test user
+  hosts: vpn
+  gather_facts: false
+  become: true
+  vars:
+    test: "{{ hostvars[groups['keycloak'][0]] }}"
+    iface: "{{ wireguard_gateway_interface | default('wg0') }}"
+  tags: [chk_iam_04]
+  tasks:
+    - name: Register the test peer (owner = the test user)
+      ansible.builtin.lineinfile:
+        path: /etc/wireguard/{{ iface }}-peers.tsv
+        line: "{{ test.iam_test_prefix }}-peer\t{{ test.offboarding_peer_key }}\t2099-01-01\t{{ test.offboarding_user.username }}\t{{ test.offboarding_user.username }}"
+
+    - name: Add the test peer to the running interface
+      ansible.builtin.command:
+        argv: [wg, set, "{{ iface }}", peer, "{{ test.offboarding_peer_key }}", allowed-ips, "{{ offboarding_test_peer_ip | default('10.99.0.250/32') }}"]
+      changed_when: true
+
+    - name: Run the IdP sync while the user is enabled
+      ansible.builtin.systemd_service:
+        name: wireguard-idp-sync.service
+        state: started
+
+    - name: Read the peers
+      ansible.builtin.command: wg show {{ iface }} peers
+      register: offboarding_peers_before
+      changed_when: false
+
+    - name: The enabled user's peer stays
+      ansible.builtin.assert:
+        that: test.offboarding_peer_key in offboarding_peers_before.stdout_lines
+        fail_msg: The IdP sync removed the peer of an enabled operator; check wireguard_gateway_idp_required_roles.
+        quiet: true
+
+- name: Disable the user in Keycloak
+  hosts: keycloak[0]
+  gather_facts: false
+  become: false
+  vars:
+    iam_test_kc: "{{ keycloak_hostname }}"
+    iam_test_realm: "{{ keycloak_realm | default('org') }}"
+    iam_test_admin_user: "{{ keycloak_admin_user }}"
+    iam_test_admin_password: "{{ keycloak_admin_password }}"
+  tags: [chk_iam_04]
+  tasks:
+    - name: Disable the test user (the only offboarding step)
+      delegate_to: localhost
+      run_once: true
+      block:
+        - name: Get an admin API token
+          ansible.builtin.include_tasks: tasks/iam_test_token.yml
+
+        - name: Set enabled false on the test user
+          ansible.builtin.uri:
+            url: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}/users/{{ offboarding_user.id }}"
+            method: PUT
+            headers: {Authorization: "Bearer {{ iam_test_token }}"}
+            body_format: json
+            body: {enabled: false}
+            status_code: [204]
+          changed_when: true
+
+        - name: Note when the user was disabled
+          ansible.builtin.set_fact:
+            offboarding_disabled_at: "{{ now(utc=true).timestamp() | int }}"
+
+- name: VPN access ends at the next sync
+  hosts: vpn
+  gather_facts: false
+  become: true
+  vars:
+    test: "{{ hostvars[groups['keycloak'][0]] }}"
+    iface: "{{ wireguard_gateway_interface | default('wg0') }}"
+  tags: [chk_iam_04]
+  tasks:
+    - name: Run the IdP sync (the timer does this every wireguard_gateway_idp_interval)
+      ansible.builtin.systemd_service:
+        name: wireguard-idp-sync.service
+        state: started
+
+    - name: Read the peers and the deny list
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - wg show {{ iface }} peers
+        - cat /etc/wireguard/{{ iface }}-denied.tsv
+      register: offboarding_vpn_after
+      changed_when: false
+
+    - name: The disabled user's peer is gone and stays denied
+      ansible.builtin.assert:
+        that:
+          - test.offboarding_peer_key not in offboarding_vpn_after.results[0].stdout_lines
+          - test.offboarding_peer_key ~ "\t" in offboarding_vpn_after.results[1].stdout
+        fail_msg: The VPN peer of the disabled user is still active or not on the deny list.
+        quiet: true
+
+    - name: Remove the test peer
+      ansible.builtin.lineinfile:
+        path: /etc/wireguard/{{ iface }}-peers.tsv
+        regexp: "^{{ test.iam_test_prefix }}-peer\t"
+        state: absent
+
+- name: Web sessions, tokens and certificates end
+  hosts: keycloak[0]
+  gather_facts: false
+  become: false
+  vars:
+    iam_test_kc: "{{ keycloak_hostname }}"
+    iam_test_realm: "{{ keycloak_realm | default('org') }}"
+    iam_test_admin_user: "{{ keycloak_admin_user }}"
+    iam_test_admin_password: "{{ keycloak_admin_password }}"
+    iam_test_ca_file: "{{ offboarding_test_ca_file | default(none) }}"
+    session_cap_seconds: "{{ (session_max_hours | default(24) | int) * 3600 }}"
+  tags: [chk_iam_04]
+  tasks:
+    - name: Check every kind of access and always clean up
+      delegate_to: localhost
+      run_once: true
+      block:
+        - name: New logins are refused
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/../tools/sso_probe.py"]
+            stdin: >-
+              {{ {'keycloak_url': iam_test_kc, 'realm': iam_test_realm, 'ca_file': iam_test_ca_file,
+                  'user': offboarding_user, 'probes': offboarding_browser_probes + [offboarding_openbao_probe]} | to_json }}
+          register: offboarding_new_logins
+          changed_when: false
+          no_log: true
+
+        - name: The refresh token is refused
+          ansible.builtin.uri:
+            url: "{{ iam_test_kc }}/realms/{{ iam_test_realm }}/protocol/openid-connect/token"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: refresh_token
+              client_id: "{{ offboarding_token_probe.client_id }}"
+              refresh_token: "{{ (offboarding_before.stdout | from_json).refresh.refresh_token }}"
+            status_code: [200, 400, 401]
+          register: offboarding_refresh
+          when: (offboarding_before.stdout | from_json).refresh is defined
+          no_log: true
+
+        - name: Look up the OpenBao token issued before
+          ansible.builtin.uri:
+            url: "{{ pki_openbao_addr }}/v1/auth/token/lookup-self"
+            headers: {X-Vault-Token: "{{ (offboarding_before.stdout | from_json).openbao.token }}"}
+            ca_path: "{{ iam_test_ca_file | default(omit, true) }}"
+            status_code: [200, 403]
+          register: offboarding_bao_token
+          no_log: true
+
+        - name: Wait until oauth2-proxy and Grafana have refreshed their tokens with Keycloak
+          ansible.builtin.wait_for:
+            timeout: "{{ offboarding_wait_seconds | int }}"
+
+        - name: Reuse the old browser sessions
+          ansible.builtin.command:
+            argv: [python3, "{{ playbook_dir }}/../tools/sso_probe.py"]
+            stdin: >-
+              {{ {'keycloak_url': iam_test_kc, 'realm': iam_test_realm, 'ca_file': iam_test_ca_file,
+                  'user': offboarding_user, 'cookie_dir': iam_test_dir ~ '/cookies',
+                  'probes': offboarding_browser_probes | map('combine', {'reuse_session': true}) | list} | to_json }}
+          register: offboarding_old_sessions
+          changed_when: false
+          no_log: true
+
+        - name: Build the report
+          ansible.builtin.set_fact:
+            offboarding_report:
+              tested_at: "{{ now(utc=true).isoformat() }}"
+              user: "{{ offboarding_user.username }}"
+              # service -> login result (ok / denied / error) of a fresh login
+              new_logins: >-
+                {{ dict((offboarding_new_logins.stdout | from_json).keys()
+                        | zip((offboarding_new_logins.stdout | from_json).values() | map(attribute='login'))) }}
+              # service -> what the session from before the disable still gets ("none" = nothing)
+              old_sessions: >-
+                {{ dict((offboarding_old_sessions.stdout | from_json).keys()
+                        | zip((offboarding_old_sessions.stdout | from_json).values() | map(attribute='value'))) }}
+              refresh_status: "{{ offboarding_refresh.status | default('not tested') }}"
+              openbao_token_ttl_left: "{{ offboarding_bao_token.json.data.ttl | default(0) }}"
+              seconds_after_disable: "{{ now(utc=true).timestamp() | int - offboarding_disabled_at | int }}"
+
+      always:
+        - name: Refresh the admin API token for the clean-up
+          ansible.builtin.include_tasks: tasks/iam_test_token.yml
+
+        - name: Delete the test user and group
+          ansible.builtin.include_tasks: tasks/iam_test_cleanup.yml
+
+        - name: Revoke the OpenBao token issued during the test
+          ansible.builtin.uri:
+            url: "{{ pki_openbao_addr }}/v1/auth/token/revoke-self"
+            method: POST
+            headers: {X-Vault-Token: "{{ (offboarding_before.stdout | from_json).openbao.token | default('') }}"}
+            ca_path: "{{ iam_test_ca_file | default(omit, true) }}"
+            status_code: [204, 403]
+          failed_when: false
+          no_log: true
+
+        - name: Remove the controller working directory (cookies)
+          ansible.builtin.file:
+            path: "{{ iam_test_dir }}"
+            state: absent
+
+    - name: Keep the report as evidence
+      become: true
+      tags: [chk_evd_02]
+      block:
+        - name: Create the evidence directory
+          ansible.builtin.file:
+            path: /var/lib/compliance-evidence/offboarding
+            state: directory
+            owner: root
+            group: root
+            mode: "0750"
+
+        - name: Write the report
+          ansible.builtin.copy:
+            content: "{{ offboarding_report | to_nice_json }}\n"
+            dest: /var/lib/compliance-evidence/offboarding/{{ now(utc=true).strftime('%Y-%m-%dT%H%M%SZ') }}.json
+            owner: root
+            group: root
+            mode: "0640"
+
+        - name: Register the reports with the backup role (EVD-02)
+          ansible.builtin.include_role:
+            name: backup_register
+          vars:
+            backup_register_name: offboarding-reports
+            backup_register_paths: [/var/lib/compliance-evidence/offboarding]
+            backup_register_rpo_hours: 24
+            backup_register_rto_hours: 24
+
+    - name: Disabling the user removed every access within the limits
+      ansible.builtin.assert:
+        that:
+          - offboarding_report.new_logins.values() | reject('equalto', 'denied') | list | length == 0
+          - offboarding_report.old_sessions.values() | reject('equalto', 'none') | list | length == 0
+          - offboarding_report.refresh_status in ['not tested', 400, 401, '400', '401']
+          - offboarding_report.openbao_token_ttl_left | int <= session_cap_seconds | int
+          - openbao_ssh_cert_ttl | default('8h') is match('^[0-9]+[smh]$')
+        fail_msg: "Access survived disabling the user: {{ offboarding_report }}"
+        quiet: true
+      tags: [chk_iam_04]

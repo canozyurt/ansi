@@ -1,0 +1,99 @@
+---
+# Creates one throwaway Keycloak user holding role iam_test_role (IAM-04, IAM-09 integration tests).
+# Access comes through a group iam-test-<role> that holds the role, never a per-user role mapping (IAM-03).
+# Second factor: a software WebAuthn key for privileged roles (the MFA flow demands it), TOTP otherwise.
+# Runs on the controller. Needs: iam_test_kc, iam_test_realm, iam_test_token (admin API), iam_test_prefix,
+# iam_test_dir. Adds the user to the fact iam_test_users (role -> credentials for tools/sso_probe.py).
+- name: Work out the test user of {{ iam_test_role }}
+  ansible.builtin.set_fact:
+    iam_test_api: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}"
+    iam_test_username: "{{ iam_test_prefix }}-{{ iam_test_role }}"
+    iam_test_group: "iam-test-{{ iam_test_role }}"
+    iam_test_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+    iam_test_totp: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+    iam_test_privileged: "{{ rbac_model_roles[iam_test_role].privileged | default(false) | bool }}"
+  no_log: true
+
+- name: Create a software WebAuthn key for {{ iam_test_role }}
+  ansible.builtin.command:
+    argv: [python3, "{{ playbook_dir }}/../tools/sso_probe.py", new-webauthn]
+  register: iam_test_webauthn
+  changed_when: false
+  when: iam_test_privileged | bool
+  no_log: true
+
+- name: Read the role {{ iam_test_role }}
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/roles/{{ iam_test_role }}"
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+  register: iam_test_role_rep
+
+- name: Create the test group {{ iam_test_group }}
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/groups"
+    method: POST
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+    body_format: json
+    body: {name: "{{ iam_test_group }}", attributes: {purpose: [iam-integration-test]}}
+    status_code: [201, 409]
+  changed_when: iam_test_group_created.status == 201
+  register: iam_test_group_created
+
+- name: Find the test group
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/groups?search={{ iam_test_group }}&exact=true"
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+  register: iam_test_group_found
+
+- name: Give the group the role (the only grant; IAM-03)
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/groups/{{ (iam_test_group_found.json | selectattr('name', 'equalto', iam_test_group) | first).id }}/role-mappings/realm"
+    method: POST
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+    body_format: json
+    body: ["{{ {'id': iam_test_role_rep.json.id, 'name': iam_test_role_rep.json.name} }}"]
+    status_code: [204]
+  changed_when: true
+
+- name: Create the test user with its password and second factor
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/partialImport"
+    method: POST
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+    body_format: json
+    body:
+      ifResourceExists: FAIL
+      users:
+        - username: "{{ iam_test_username }}"
+          email: "{{ iam_test_username }}@iam-test.invalid"
+          emailVerified: true
+          firstName: IAM
+          lastName: "test {{ iam_test_role }}"
+          enabled: true
+          groups: ["/{{ iam_test_group }}"]
+          requiredActions: []
+          attributes: {purpose: [iam-integration-test]}
+          credentials: >-
+            {{ [{'type': 'password', 'value': iam_test_password, 'temporary': false}]
+               + ([(iam_test_webauthn.stdout | from_json).keycloak_credential] if iam_test_privileged | bool else
+                  [{'type': 'otp', 'userLabel': 'iam-test', 'secretData': ({'value': iam_test_totp} | to_json),
+                    'credentialData': ({'subType': 'totp', 'digits': 6, 'period': 30, 'algorithm': 'HmacSHA256',
+                                        'counter': 0} | to_json)}]) }}
+    status_code: [200]
+  changed_when: true
+  no_log: true
+
+- name: Read the test user's id
+  ansible.builtin.uri:
+    url: "{{ iam_test_api }}/users?username={{ iam_test_username }}&exact=true"
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+  register: iam_test_user_found
+
+- name: Remember the test user of {{ iam_test_role }}
+  ansible.builtin.set_fact:
+    iam_test_users: >-
+      {{ iam_test_users | default({}) | combine({iam_test_role: {
+           'username': iam_test_username, 'password': iam_test_password, 'id': iam_test_user_found.json[0].id,
+           'totp_secret': (none if iam_test_privileged | bool else iam_test_totp),
+           'webauthn': ((iam_test_webauthn.stdout | from_json) if iam_test_privileged | bool else none)}}) }}
+  no_log: true

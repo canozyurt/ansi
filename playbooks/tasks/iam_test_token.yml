@@ -1,0 +1,19 @@
+---
+# Admin API token for the integration tests (master realm admin-cli, the same account the roles use).
+- name: Get an admin API token
+  ansible.builtin.uri:
+    url: "{{ iam_test_kc }}/realms/master/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: admin-cli
+      username: "{{ iam_test_admin_user }}"
+      password: "{{ iam_test_admin_password }}"
+  register: iam_test_token_answer
+  no_log: true
+
+- name: Keep the token
+  ansible.builtin.set_fact:
+    iam_test_token: "{{ iam_test_token_answer.json.access_token }}"
+  no_log: true

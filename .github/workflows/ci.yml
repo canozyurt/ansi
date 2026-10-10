@@ -54,6 +54,15 @@ jobs:
       - name: Every adopted tool is reviewed for licence, SSO, audit log and HA [chk_evd_04]
         run: python3 tools/tool_registry.py
 
+      # IAM-03 / IAM-09: access goes to roles (IdP groups), never to a username; the role matrix matches the code.
+      - name: No access granted to individual users [chk_iam_03]
+        run: python3 tools/rbac_lint.py --report
+
+      - name: Role matrix matches the role mappings in the code [chk_iam_09]
+        run: |
+          python3 tools/role_matrix.py
+          { echo "## Role matrix (IAM-09)"; python3 tools/role_matrix.py --md | grep '^|'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Self-tests of the CI gates
         run: python3 -m unittest discover -s tools/tests -v
 
