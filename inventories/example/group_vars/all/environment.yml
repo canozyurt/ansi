@@ -1,0 +1,5 @@
+---
+# Which environment this inventory deploys (CHG-04): production, staging, test or dev. One inventory per
+# environment, no host in two inventories, and no production backup target or restore source in a
+# non-production inventory (tools/inventory_lint.py, docs/inventories.md).
+inventory_environment: production
