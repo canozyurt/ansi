@@ -12,6 +12,8 @@
     group: root
     mode: "0755"
 
+# pin-exception: repository signing key over TLS; apt verifies every package against it. Follow-up:
+# check its fingerprint like roles/wazuh_agent does.
 - name: Download the Docker repository signing key
   ansible.builtin.get_url:
     url: "{{ container_runtime_repo_url }}/gpg"

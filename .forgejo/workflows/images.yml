@@ -71,7 +71,7 @@ jobs:
           printf '%s\n' "$COSIGN_PRIVATE_KEY" > "$RUNNER_TEMP/cosign.key"
           echo "COSIGN_KEY=$RUNNER_TEMP/cosign.key" >> "$GITHUB_ENV"
 
-      - name: Mirror, attach SBOMs and sign (CHG-08)
+      - name: Mirror, attach SBOMs and sign [chk_chg_08]
         env:
           IMAGE_MIRROR: ${{ vars.IMAGE_MIRROR }}
           REGISTRY_USER: ${{ secrets.REGISTRY_USER }}

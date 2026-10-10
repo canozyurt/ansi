@@ -1,0 +1,13 @@
+---
+# Exceptions to the container policy checked by tools/container_policy.py (HRD-02).
+# Prefer an inline "# policy-exception: <rule>: <reason>" comment in the task; use this file only for
+# exceptions that hold for many tasks. Every entry needs a rule and a reason; role and task narrow it
+# (no role = every role). Review this file whenever a role is added.
+exceptions:
+  - rule: host_network
+    reason: >-
+      Project-wide design (docs/role-contract.md, Containers): every service container uses
+      network_mode host so the host nftables firewall (roles/firewall, NET-01/NET-03) is the only
+      packet filter and Docker never rewrites it with its own NAT/FORWARD rules for published ports.
+      Isolation comes from per-port firewall rules restricted to source CIDRs, TLS on every listener
+      and the non-root, capability-free container settings the other rules enforce.

@@ -1,0 +1,18 @@
+---
+# Accepted image findings for the CI image scan (tools/trivy_gate.py; CHG-05, SEC-01, HRD-05).
+# CI fails on every CRITICAL vulnerability and every secret found in a pinned image unless it is listed
+# here. Each waiver needs:
+#   id:       CVE/GHSA id, or the Trivy secret rule id
+#   image:    optional; repository (with or without tag) the waiver is limited to
+#   package:  optional; package name the waiver is limited to
+#   reason:   why the finding is not exploitable here or why it cannot be fixed yet
+#   expires:  YYYY-MM-DD, at most 180 days ahead; an expired waiver fails CI
+#   approved_by: who accepted the risk (security-admin role)
+# Example:
+#   - id: CVE-2026-00000
+#     image: docker.io/library/haproxy
+#     package: libexample
+#     reason: "Only reachable through the X feature, which this repo disables (roles/edge)."
+#     expires: 2026-12-31
+#     approved_by: security-admin
+waivers: []

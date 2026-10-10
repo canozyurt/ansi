@@ -32,7 +32,7 @@ jobs:
       - name: Audit tests (fixture inventory with known violations)
         run: python3 -m unittest discover -s tools/tests -v
 
-      - name: Audit the example inventory; docs/network.md must be current (NET-02, NET-03)
+      - name: Audit the example inventory; docs/network.md must be current [chk_net_02] [chk_net_03]
         run: python3 tools/firewall_audit.py --check-doc docs/network.md
 
       - name: Port matrix

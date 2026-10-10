@@ -14,6 +14,7 @@
     ulimits: ["nofile:{{ wazuh_indexer_nofile }}:{{ wazuh_indexer_nofile }}"]
     cap_drop: [ALL]
     security_opts: [no-new-privileges:true]
+    # policy-exception: read_only: OpenSearch writes its keystore and plugin state into the image (see tasks/deploy.yml).
     read_only: false
     labels:
       com.compliant-infra.role: wazuh-indexer

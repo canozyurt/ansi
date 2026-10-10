@@ -208,6 +208,8 @@
     # CHOWN/FOWNER/DAC_OVERRIDE to fix ownership of its state, SETUID/SETGID to drop privileges,
     # KILL to stop its own daemons running as another user, SYS_CHROOT because analysisd and remoted
     # confine themselves to /var/ossec.
+    # policy-exception: user,read_only: the image's s6 init must start as root and drops each daemon to the "wazuh" user;
+    # it rewrites ownership and state under /var/ossec inside the image at start.
     cap_drop: [ALL]
     capabilities: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL, SYS_CHROOT]
     security_opts: [no-new-privileges:true]
