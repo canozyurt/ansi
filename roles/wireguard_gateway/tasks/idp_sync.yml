@@ -1,0 +1,188 @@
+---
+# IAM-04: VPN peers belong to Keycloak users. A disabled (or deleted) user's peers are removed within
+# wireguard_gateway_idp_interval, without an Ansible run.
+- name: Check the IdP sync settings
+  ansible.builtin.assert:
+    that:
+      - wireguard_gateway_idp_url is match('^https://')
+      - wireguard_gateway_idp_client_id | length > 0
+      - wireguard_gateway_idp_secrets_backend == 'openbao' or wireguard_gateway_idp_client_secret | length >= 32
+    fail_msg: >-
+      The VPN IdP sync needs an https Keycloak URL and a client secret of 32+ characters (Ansible Vault), or
+      secrets_backend openbao. Set wireguard_gateway_idp_sync false only where no Keycloak exists (labs).
+    quiet: true
+  tags: [chk_iam_04]
+
+- name: Keep the sync client's secret in OpenBao (or the inventory vault) and render it into tmpfs
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ wireguard_gateway_idp_secrets_backend }}"
+    openbao_secrets_service: vpn-idp-sync
+    openbao_secrets_items:
+      - { name: client_secret, seed: "{{ wireguard_gateway_idp_client_secret }}", length: 48 }
+    openbao_secrets_files:
+      - { name: client_secret }
+    openbao_secrets_uid: 0
+    openbao_secrets_manage_host: "{{ ansible_play_hosts | first }}"
+  tags: [chk_iam_04, chk_iam_08, chk_sec_02]
+
+- name: Note where the sync reads its client secret
+  ansible.builtin.set_fact:
+    wireguard_gateway_idp_secret_value: "{{ openbao_secrets_values.client_secret }}"
+    wireguard_gateway_idp_secret_file: >-
+      {{ '/run/compliant-secrets/vpn-idp-sync/client_secret' if openbao_secrets_active | bool
+         else '/etc/wireguard/idp-sync.secret' }}
+    wireguard_gateway_idp_secret_runtime: "{{ openbao_secrets_active | bool }}"
+  no_log: true
+
+- name: Write the sync client's secret (vault-file backend)
+  ansible.builtin.copy:
+    content: "{{ wireguard_gateway_idp_secret_value }}"
+    dest: /etc/wireguard/idp-sync.secret
+    owner: root
+    group: root
+    mode: "0600"
+  when: not wireguard_gateway_idp_secret_runtime | bool
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Remove the on-disk secret once OpenBao Agent renders it into tmpfs
+  ansible.builtin.file:
+    path: /etc/wireguard/idp-sync.secret
+    state: absent
+  when: wireguard_gateway_idp_secret_runtime | bool
+  tags: [chk_sec_02]
+
+# On a first install access.yml runs before identity.yml: Keycloak is not there yet. The client is then
+# registered by the last play of playbooks/identity.yml; until then the sync fails and alerts.
+- name: Check whether Keycloak answers
+  ansible.builtin.uri:
+    url: "{{ wireguard_gateway_idp_url }}/realms/{{ wireguard_gateway_idp_realm }}/.well-known/openid-configuration"
+    timeout: 10
+  register: wireguard_gateway_idp_reachable
+  failed_when: false
+  run_once: true
+  when: wireguard_gateway_idp_register_client | bool
+
+- name: Report a Keycloak that is not there yet
+  ansible.builtin.debug:
+    msg: >-
+      Keycloak ({{ wireguard_gateway_idp_url }}) does not answer; the VPN IdP sync client is registered by
+      playbooks/identity.yml once Keycloak runs.
+  when:
+    - wireguard_gateway_idp_register_client | bool
+    - wireguard_gateway_idp_reachable.status | default(0) != 200
+
+- name: Register the sync client in Keycloak (service account that may only view users)
+  when:
+    - wireguard_gateway_idp_register_client | bool
+    - wireguard_gateway_idp_reachable.status | default(0) == 200
+  run_once: true
+  module_defaults:
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ wireguard_gateway_idp_url }}"
+      auth_realm: master
+      auth_username: "{{ wireguard_gateway_idp_admin_user }}"
+      auth_password: "{{ wireguard_gateway_idp_admin_password }}"
+      validate_certs: true
+  tags: [chk_iam_04]
+  block:
+    - name: Create or update the client
+      community.general.keycloak_client:
+        realm: "{{ wireguard_gateway_idp_realm }}"
+        client_id: "{{ wireguard_gateway_idp_client_id }}"
+        name: VPN peer sync (IAM-04)
+        protocol: openid-connect
+        public_client: false
+        secret: "{{ wireguard_gateway_idp_secret_value }}"
+        client_authenticator_type: client-secret
+        standard_flow_enabled: false
+        implicit_flow_enabled: false
+        direct_access_grants_enabled: false
+        service_accounts_enabled: true
+        state: present
+      no_log: true
+
+    - name: Let the service account view users (and nothing else)
+      community.general.keycloak_user_rolemapping:
+        realm: "{{ wireguard_gateway_idp_realm }}"
+        service_account_user_client_id: "{{ wireguard_gateway_idp_client_id }}"
+        client_id: realm-management
+        roles:
+          - name: view-users
+        state: present
+
+- name: Write the sync settings (no secrets)
+  ansible.builtin.copy:
+    content: >-
+      {{ {'keycloak_url': wireguard_gateway_idp_url, 'realm': wireguard_gateway_idp_realm,
+          'client_id': wireguard_gateway_idp_client_id, 'client_secret_file': wireguard_gateway_idp_secret_file,
+          'ca_file': wireguard_gateway_idp_ca_file, 'interface': wireguard_gateway_interface,
+          'required_roles': wireguard_gateway_idp_required_roles,
+          'metrics_dir': wireguard_gateway_metrics_dir} | to_nice_json(indent=2) }}
+    dest: /etc/wireguard/idp-sync.json
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_iam_04]
+
+- name: Install the IdP sync script
+  ansible.builtin.copy:
+    src: wireguard-idp-sync.py
+    dest: /usr/local/sbin/wireguard-idp-sync
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [chk_iam_04]
+
+- name: Install the IdP sync service and timer
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: /etc/systemd/system/{{ item.name }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: wireguard-idp-sync.service
+      content: |
+        # Managed by Ansible (wireguard_gateway). IAM-04: remove VPN peers of users disabled in Keycloak.
+        [Unit]
+        Description=Remove VPN peers whose owner is disabled or missing in Keycloak
+        After=network-online.target wg-quick@{{ wireguard_gateway_interface }}.service
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/wireguard-idp-sync /etc/wireguard/idp-sync.json
+        NoNewPrivileges=true
+        PrivateTmp=true
+        ProtectHome=true
+        ProtectSystem=strict
+        ReadWritePaths=/etc/wireguard {{ wireguard_gateway_metrics_dir }}
+    - name: wireguard-idp-sync.timer
+      content: |
+        # Managed by Ansible (wireguard_gateway).
+        [Unit]
+        Description=Check VPN peer owners against Keycloak every {{ wireguard_gateway_idp_interval }}
+
+        [Timer]
+        OnBootSec=2min
+        OnUnitActiveSec={{ wireguard_gateway_idp_interval }}
+        RandomizedDelaySec=30s
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: wireguard_gateway_idp_units
+  tags: [chk_iam_04]
+
+- name: Start the IdP sync timer
+  ansible.builtin.systemd_service:
+    name: wireguard-idp-sync.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ wireguard_gateway_idp_units is changed }}"
+  when: wireguard_gateway_manage_service | bool
+  tags: [chk_iam_04]

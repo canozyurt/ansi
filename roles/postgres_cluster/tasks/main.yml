@@ -34,6 +34,9 @@
     postgres_cluster_repos: "{{ query('ansible.builtin.template', 'repos.json.j2') | first | from_json }}"
   no_log: true
 
+- name: Take service-owned passwords from OpenBao
+  ansible.builtin.import_tasks: secrets.yml
+
 - name: Check the cluster settings
   ansible.builtin.import_tasks: validate.yml
 

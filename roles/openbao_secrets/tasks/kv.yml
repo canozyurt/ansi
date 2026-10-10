@@ -1,0 +1,147 @@
+---
+# KV v2 secret <mount>/<prefix>/<service>: one key per item. Rotation times are kept per key in the
+# secret's custom_metadata (rotate_days_<key>, rotated_at_<key>), which the rotation report reads (IAM-08).
+- name: Check the OpenBao connection settings
+  ansible.builtin.assert:
+    that:
+      - openbao_secrets_addr is match('^https://')
+      - openbao_secrets_token | length > 0
+    fail_msg: >-
+      secrets_backend openbao needs pki_openbao_addr (https) and openbao_admin_token (Ansible Vault). Use
+      secrets_backend vault-file in labs without OpenBao.
+    quiet: true
+
+- name: Work out the secret's paths
+  ansible.builtin.set_fact:
+    openbao_secrets_path: "{{ openbao_secrets_kv_prefix }}/{{ openbao_secrets_service }}"
+    openbao_secrets_policy: "svc-{{ openbao_secrets_service }}"
+    openbao_secrets_api: "{{ openbao_secrets_addr }}/v1"
+
+- name: Create, rotate and protect the secret (once per service)
+  when: inventory_hostname == openbao_secrets_manage_host
+  tags: [chk_iam_08, chk_sec_02]
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        X-Vault-Token: "{{ openbao_secrets_token }}"
+      ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+      timeout: 30
+  block:
+    - name: Read the current values
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/{{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_path }}"
+        status_code: [200, 404]
+      register: openbao_secrets_current
+      no_log: true
+
+    - name: Read the rotation metadata
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/{{ openbao_secrets_kv_mount }}/metadata/{{ openbao_secrets_path }}"
+        status_code: [200, 404]
+      register: openbao_secrets_metadata
+
+    - name: Work out the new values (generate missing keys, rotate due keys, follow inventory keys)
+      ansible.builtin.set_fact:
+        openbao_secrets_plan: "{{ query('ansible.builtin.template', 'plan.json.j2') | first | from_json }}"
+      vars:
+        openbao_secrets_now: "{{ now(utc=true).timestamp() | int }}"
+        openbao_secrets_have: "{{ (openbao_secrets_current.json | default({})).data.data | default({}, true) }}"
+        openbao_secrets_have_meta: >-
+          {{ (openbao_secrets_metadata.json | default({})).data.custom_metadata | default({}, true) }}
+      no_log: true
+
+    - name: Apply rotated PostgreSQL passwords before the services see them
+      ansible.builtin.include_tasks: postgres.yml
+      loop: "{{ openbao_secrets_items | selectattr('postgres', 'defined') | selectattr('name', 'in', openbao_secrets_plan.rotated) | list }}"
+      loop_control:
+        loop_var: openbao_secrets_pg_item
+        label: "{{ openbao_secrets_pg_item.name }}"
+
+    - name: Write the values (check-and-set against the version read above)
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/{{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_path }}"
+        method: POST
+        body_format: json
+        body:
+          data: "{{ openbao_secrets_plan.data }}"
+          options:
+            cas: "{{ (openbao_secrets_current.json | default({})).data.metadata.version | default(0) }}"
+        status_code: [200, 204]
+      when: openbao_secrets_plan.data_changed | bool
+      changed_when: true
+      no_log: true
+
+    - name: Write the rotation metadata
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/{{ openbao_secrets_kv_mount }}/metadata/{{ openbao_secrets_path }}"
+        method: POST
+        body_format: json
+        body:
+          custom_metadata: "{{ openbao_secrets_plan.metadata }}"
+        status_code: [200, 204]
+      when: openbao_secrets_plan.metadata_changed | bool
+      changed_when: true
+
+    - name: Read the service's policy
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/sys/policies/acl/{{ openbao_secrets_policy }}"
+        status_code: [200, 404]
+      register: openbao_secrets_policy_current
+
+    - name: Write the service's policy (read this one secret, nothing else)
+      ansible.builtin.uri:
+        url: "{{ openbao_secrets_api }}/sys/policies/acl/{{ openbao_secrets_policy }}"
+        method: POST
+        body_format: json
+        body:
+          policy: "{{ openbao_secrets_policy_text }}"
+        status_code: [200, 204]
+      when: (openbao_secrets_policy_current.json | default({})).data.policy | default('') != openbao_secrets_policy_text
+      changed_when: true
+      vars:
+        openbao_secrets_policy_text: |
+          # Managed by Ansible (openbao_secrets): read-only access to the secrets of {{ openbao_secrets_service }}.
+          path "{{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_path }}" {
+            capabilities = ["read"]
+          }
+
+    - name: Note which keys were rotated
+      ansible.builtin.set_fact:
+        openbao_secrets_rotated: "{{ openbao_secrets_plan.rotated }}"
+
+- name: Read the values Ansible needs (API-applied credentials, client registrations)
+  ansible.builtin.uri:
+    url: "{{ openbao_secrets_api }}/{{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_path }}"
+    headers:
+      X-Vault-Token: "{{ openbao_secrets_token }}"
+    ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+    timeout: 30
+  register: openbao_secrets_read
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Publish the values and the agent references
+  ansible.builtin.set_fact:
+    openbao_secrets_values: "{{ openbao_secrets_read.json.data.data }}"
+    # Agent template expression per key; callers put these into the files the agent renders.
+    openbao_secrets_refs: >-
+      {%- set out = {} -%}
+      {%- for i in openbao_secrets_items -%}
+      {%-   set _ = out.update({i.name: '[% with secret "' ~ openbao_secrets_kv_mount ~ '/data/' ~ openbao_secrets_path
+                                ~ '" %][% index .Data.data "' ~ i.name ~ '" %][% end %]'}) -%}
+      {%- endfor -%}
+      {{ out }}
+    # Same, URL-escaped (for values placed in URLs, e.g. a password in a redis:// address).
+    openbao_secrets_refs_urlquery: >-
+      {%- set out = {} -%}
+      {%- for i in openbao_secrets_items -%}
+      {%-   set _ = out.update({i.name: '[% with secret "' ~ openbao_secrets_kv_mount ~ '/data/' ~ openbao_secrets_path
+                                ~ '" %][% index .Data.data "' ~ i.name ~ '" | urlquery %][% end %]'}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_secrets_active: "{{ openbao_secrets_agent | bool }}"
+    openbao_secrets_rotated: "{{ hostvars[openbao_secrets_manage_host].openbao_secrets_rotated | default([]) }}"
+    # Values of every service handled on this host in this play (callers that loop over services).
+    openbao_secrets_all: >-
+      {{ openbao_secrets_all | default({}) | combine({openbao_secrets_service: openbao_secrets_read.json.data.data}) }}
+  no_log: true

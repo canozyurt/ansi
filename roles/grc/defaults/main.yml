@@ -59,6 +59,14 @@ grc_db_sslmode: require
 
 # Django secret key (50+ random characters) from Vault or OpenBao.
 grc_secret_key: ""
+# Runtime secrets (IAM-08, SEC-02). With secrets_backend openbao the database password and Django secret key
+# live in OpenBao (seeded once from the variables above, or generated); the database password rotates every
+# grc_secret_rotate_days when grc_db_postgres names its PostgreSQL role. OpenBao Agent renders the
+# application environment and the dump credentials into tmpfs, and the containers source it at start;
+# /opt/grc keeps no secret. vault-file (default, labs): env files as before.
+grc_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+grc_secret_rotate_days: "{{ secret_rotation_days | default(90) }}"
+grc_db_postgres: {}    # e.g. { group: pg_main, cluster: main, user: ciso_assistant }
 # Break-glass superuser (local login kept when SSO is forced). Store the password sealed.
 grc_admin_email: ""
 grc_admin_password: ""

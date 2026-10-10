@@ -1,0 +1,184 @@
+---
+# Role matrix (IAM-09): what each default role (roles/rbac_model) gets in each service. "none" means no
+# access (login refused or no permissions). tools/role_matrix.py checks every row against the variable
+# that implements it (source) and fails CI on any difference, so this file is the reviewed statement of
+# access and the code cannot drift from it. playbooks/test_role_matrix.yml checks the running services
+# against it with one test user per role (integration test, written, not yet run).
+#
+# source shapes (how tools/role_matrix.py reads the code):
+#   list_attr   list of {role_key: <role>, value_key: <permission>}; the first match wins
+#   keys        {<role>: <permission or list>}
+#   values      {<permission>: [<roles>]}; a role's permission is the sorted list of entries naming it
+#   lists       {<var>: <permission>, ...}; each var is a list of roles; the first var naming the role wins
+#               ("{{ rbac_model_roles | list }}" means every role)
+#   scalars     {<var>: <permission>, ...}; each var names one role
+#   capability  an oauth2_proxy instance: roles whose rbac_model level for <capability> reaches <min_level>
+#               get <permission>
+#   documented  not machine-readable (fixed by the service or by Keycloak itself); reviewed by hand
+# default: what roles not named by the source get (default "none").
+# probe_filter: regex; the integration test compares only the matching list items (what a probe can see).
+
+roles: [platform-admin, security-admin, operator, developer, auditor, member]
+
+services:
+  keycloak:
+    description: Keycloak account console of the organisation realm; the master realm admin console is break-glass only
+    source: {shape: documented, note: "Realm roles carry no realm-management client roles (roles/keycloak/tasks/realm.yml)."}
+    permissions:
+      platform-admin: own-account
+      security-admin: own-account
+      operator: own-account
+      developer: own-account
+      auditor: own-account
+      member: own-account
+
+  openbao:
+    description: OpenBao policies attached to the identity group of each role (OIDC login)
+    source: {shape: keys, file: roles/openbao/defaults/main.yml, var: openbao_role_policies}
+    permissions:
+      platform-admin: [admin]
+      security-admin: [security-audit]
+      operator: [ops]
+      developer: [developer]
+      auditor: [auditor]
+      member: none
+
+  ssh:
+    description: SSH certificate principals signed by the OpenBao SSH CA (host login accounts, roles/admin_login)
+    source: {shape: keys, file: roles/openbao/defaults/main.yml, var: openbao_ssh_role_principals}
+    permissions:
+      platform-admin: [platform-admin]
+      security-admin: none
+      operator: [operator]
+      developer: none
+      auditor: none
+      member: none
+
+  vpn:
+    description: WireGuard admin VPN; a peer is kept only while its owner holds one of these roles (IAM-04)
+    source:
+      shape: lists
+      file: inventories/example/group_vars/vpn/identity.yml
+      vars: {wireguard_gateway_idp_required_roles: access}
+    permissions:
+      platform-admin: access
+      security-admin: access
+      operator: access
+      developer: none
+      auditor: none
+      member: none
+
+  grafana:
+    description: Grafana organisation role from the roles claim (role_attribute_strict)
+    source: {shape: list_attr, file: roles/grafana/defaults/main.yml, var: grafana_oidc_role_map, role_key: role, value_key: grafana_role}
+    permissions:
+      platform-admin: Admin
+      security-admin: Editor
+      operator: Editor
+      developer: Viewer
+      auditor: Viewer
+      member: none
+
+  prometheus:
+    description: Prometheus UI through oauth2-proxy (read-only API)
+    source:
+      shape: capability
+      file: inventories/example/group_vars/monitoring/identity.yml
+      instance: prometheus
+      permission: access
+    permissions:
+      platform-admin: access
+      security-admin: access
+      operator: access
+      developer: access
+      auditor: access
+      member: none
+
+  alertmanager:
+    description: Alertmanager UI through oauth2-proxy (silences)
+    source:
+      shape: capability
+      file: inventories/example/group_vars/monitoring/identity.yml
+      instance: alertmanager
+      permission: access
+    permissions:
+      platform-admin: access
+      security-admin: none
+      operator: access
+      developer: none
+      auditor: none
+      member: none
+
+  siem-indexer:
+    description: Wazuh indexer / dashboard (OpenSearch security roles)
+    source: {shape: values, file: roles/wazuh_indexer/defaults/main.yml, var: wazuh_indexer_role_mapping}
+    permissions:
+      platform-admin: [all_access, security_rest_api_access, wazuh_ui_admin]
+      security-admin: [all_access, security_rest_api_access, wazuh_ui_admin]
+      operator: [kibana_read_only, kibana_user, wazuh_alerts_read, wazuh_ui_user]
+      developer: none
+      auditor: [kibana_read_only, kibana_user, readall, wazuh_ui_user]
+      member: none
+
+  siem-manager-api:
+    description: Wazuh manager API (run_as from the dashboard)
+    source: {shape: keys, file: roles/wazuh_manager/defaults/main.yml, var: wazuh_manager_api_role_mapping}
+    permissions:
+      platform-admin: administrator
+      security-admin: administrator
+      operator: none
+      developer: none
+      auditor: readonly
+      member: none
+
+  rabbitmq:
+    description: RabbitMQ management UI / HTTP API (OAuth 2.0 scopes)
+    source: {shape: keys, file: roles/rabbitmq_cluster/defaults/main.yml, var: rabbitmq_cluster_role_scopes}
+    probe_filter: "^tag:"     # /api/whoami shows the tags only
+    permissions:
+      platform-admin: ["configure:*/*", "read:*/*", "tag:administrator", "write:*/*"]
+      security-admin: ["tag:monitoring"]
+      operator: ["read:*/amq.compliant-infra.no-access", "tag:monitoring", "tag:policymaker"]
+      developer: ["configure:{vhosts}/*", "read:{vhosts}/*", "tag:management", "write:{vhosts}/*"]
+      auditor: ["tag:monitoring"]
+      member: none
+
+  forgejo:
+    description: Forgejo (OIDC auth source; admin and restricted groups from the roles claim)
+    source:
+      shape: scalars
+      file: roles/forgejo/defaults/main.yml
+      vars: {forgejo_oidc_admin_role: site-admin, forgejo_oidc_restricted_role: restricted}
+      default: user
+    permissions:
+      platform-admin: site-admin
+      security-admin: user
+      operator: user
+      developer: user
+      auditor: user
+      member: user
+
+  grc:
+    description: CISO Assistant built-in user groups (rbac_model capability "evidence")
+    source: {shape: keys, file: roles/grc/defaults/main.yml, var: grc_role_user_groups}
+    permissions:
+      platform-admin: [BI-UG-GAD]
+      security-admin: [BI-UG-ADM]
+      operator: [BI-UG-GAD]
+      developer: none
+      auditor: [BI-UG-GAD]
+      member: none
+
+  registry:
+    description: Zot registry repository permissions
+    source:
+      shape: lists
+      file: roles/registry/defaults/main.yml
+      vars: {registry_admin_roles: admin, registry_push_roles: push, registry_read_roles: read}
+    permissions:
+      platform-admin: admin
+      security-admin: read
+      operator: read
+      developer: push
+      auditor: read
+      member: read

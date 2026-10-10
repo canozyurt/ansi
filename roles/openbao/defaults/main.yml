@@ -132,6 +132,8 @@ openbao_oidc_redirect_uris:
   - http://localhost:8250/oidc/callback     # bao login -method=oidc on the user's machine
 openbao_oidc_token_ttl: 1h
 openbao_oidc_token_max_ttl: 10h
+# Cap for login tokens and SSH certificates (IAM-04: a disabled user loses access within a day).
+openbao_session_max_seconds: "{{ (session_max_hours | default(24) | int) * 3600 }}"
 # Default role -> OpenBao policies. Roles not listed (member, extra roles) get no policy.
 openbao_role_policies:
   platform-admin: [admin]

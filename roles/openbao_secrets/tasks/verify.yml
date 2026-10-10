@@ -1,0 +1,91 @@
+---
+# SEC-02 check: no rendered configuration outside tmpfs holds a secret that OpenBao manages. Reads the
+# values of every service whose agent runs on this host (directories under /etc/openbao-agent) and
+# scans /etc and /opt for them. The report lists paths and key names only and is kept as evidence.
+- name: Find the services whose secrets this host renders
+  ansible.builtin.find:
+    paths: /etc/openbao-agent
+    file_type: directory
+  register: openbao_secrets_verify_dirs
+  tags: [chk_sec_02]
+
+- name: Read their current values
+  ansible.builtin.uri:
+    url: "{{ openbao_secrets_addr }}/v1/{{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_kv_prefix }}/{{ item.path | basename }}"
+    headers:
+      X-Vault-Token: "{{ openbao_secrets_token }}"
+    ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+    status_code: [200, 404]
+  loop: "{{ openbao_secrets_verify_dirs.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: openbao_secrets_verify_values
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Install the scanner
+  ansible.builtin.copy:
+    src: secret-scan.py
+    dest: /usr/local/sbin/compliant-secret-scan
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Scan /etc and /opt for the values
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/compliant-secret-scan]
+    stdin: "{{ openbao_secrets_verify_request | to_json }}"
+  vars:
+    openbao_secrets_verify_request:
+      values: >-
+        {%- set out = {} -%}
+        {%- for r in openbao_secrets_verify_values.results if r.status == 200 -%}
+        {%-   for k, v in r.json.data.data.items() -%}
+        {%-     set _ = out.update({(r.item.path | basename) ~ '/' ~ k: v | string}) -%}
+        {%-   endfor -%}
+        {%- endfor -%}
+        {{ out }}
+      paths: "{{ openbao_secrets_verify_paths }}"
+      exclude: "{{ openbao_secrets_verify_exclude }}"
+      min_length: 12
+  register: openbao_secrets_verify_scan
+  changed_when: false
+  failed_when: openbao_secrets_verify_scan.rc not in [0, 1]
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Create the evidence directory
+  ansible.builtin.file:
+    path: "{{ openbao_secrets_evidence_dir }}/secrets-on-disk"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Keep the scan report as evidence
+  ansible.builtin.copy:
+    content: "{{ openbao_secrets_verify_scan.stdout }}\n"
+    dest: "{{ openbao_secrets_evidence_dir }}/secrets-on-disk/{{ now(utc=true).strftime('%Y-%m-%d') }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [chk_sec_02, chk_evd_02]
+
+- name: Register the reports with the backup role (EVD-02)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: secrets-on-disk-reports
+    backup_register_paths: ["{{ openbao_secrets_evidence_dir }}/secrets-on-disk"]
+    backup_register_rpo_hours: 24
+    backup_register_rto_hours: 24
+  tags: [chk_evd_02]
+
+- name: Fail when a secret is stored outside tmpfs
+  ansible.builtin.assert:
+    that: (openbao_secrets_verify_scan.stdout | from_json).findings | length == 0
+    fail_msg: >-
+      Secrets managed by OpenBao were found in files outside tmpfs:
+      {{ (openbao_secrets_verify_scan.stdout | from_json).findings | map(attribute='path') | unique | list }}
+    quiet: true
+  tags: [chk_sec_02]

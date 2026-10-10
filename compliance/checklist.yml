@@ -37,8 +37,8 @@ requirements:
       iso27001: ["5.15", "5.16", "8.5"]
       iso27017: []
     check: "Molecule test: local login disabled; break-glass use raises an alert"
-    status: designed
-    progress: "Keycloak deployed (roles/keycloak) as the central IdP with a break-glass admin. Remaining: wire each service to it and disable local logins; break-glass alert. SIEM: SIEM dashboard uses OIDC (security plugin openid backend, \"roles\" claim mapped: admins all_access, auditor readall, operator alerts read-only, others none); the login form is kept only for the break-glass admin; rule 100120 alerts on break-glass use. Tested: redirect to the IdP, mapping, break-glass login (no real Keycloak login). RabbitMQ: management UI login through Keycloak (OAuth 2.0 + PKCE via oidc_client; roles claim mapped by scope aliases: platform-admin administrator, operator monitoring+policymaker, developer management on its vhosts, auditor monitoring); basic auth disabled in the UI, kept for the HTTP API break-glass admin (not tested)."
+    status: implemented
+    progress: "Every UI logs in through Keycloak (docs/sso-matrix.md): Grafana generic OAuth, OpenBao OIDC auth method, Prometheus and Alertmanager behind oauth2-proxy (roles/oauth2_proxy, pinned v7.12.0, PKCE, roles claim checked; basic auth kept for machines and break-glass), Wazuh dashboard, RabbitMQ, Forgejo, GRC and the registry via OIDC, SSH via OpenBao SSH CA certificates. Local logins are break-glass only. Central break-glass alert: one break_glass_accounts list feeds SIEM rules 100121-100123 (decoded logins, application login lines, OpenBao root token) forwarded to Alertmanager. Earlier tested parts: SIEM dashboard redirect and mapping. The new SSO wiring and alert rules are not tested (no Molecule run)."
   - id: IAM-02
     requirement: "MFA required for all users; phishing-resistant MFA (WebAuthn) for admins"
     core: true
@@ -57,8 +57,8 @@ requirements:
       iso27001: ["5.15", "5.18", "8.3"]
       iso27017: []
     check: "Config test: authorization rules reference groups only"
-    status: designed
-    progress: "Role model validated by roles/rbac_model; Keycloak maps default groups to roles. Services consume rbac_model_role_groups as they are added."
+    status: implemented
+    progress: "tools/rbac_lint.py runs in CI (step chk_iam_03): every role-mapping variable must name rbac_model roles, group assignments map groups (no e-mails), and per-user constructs fail (allow lists of e-mails/users, role expressions on login/e-mail, OpenBao roles bound to a user claim, userpass/entity grants, per-user Keycloak role mappings, named sudoers lines, literal users lists); exceptions need a reason in compliance/rbac-lint-allow.yml. Self-tests in tools/tests/test_identity_gates.py pass. oauth2-proxy admits roles from rbac_model capabilities only. Runs clean on the repo (static check; services not tested)."
   - id: IAM-04
     requirement: "Disabling a user in the directory removes all access (web sessions, SSH, VPN) within 24 hours"
     core: true
@@ -67,8 +67,8 @@ requirements:
       iso27001: ["5.18"]
       iso27017: []
     check: "Integration test: disable a test user, assert every service denies it"
-    status: designed
-    progress: "VPN peers carry owner + expiry and are removed at expiry even without an Ansible run (tested); SSH certificates last 8 h and need an SSO login; admin_login_removed_accounts removes principal mappings. Remaining: VPN peers are not tied to the IdP (a disabled user keeps the tunnel until expiry); end-to-end disable test."
+    status: implemented
+    progress: "Disabling a user in Keycloak ends access within a day: VPN peers are tied to Keycloak users by wireguard-idp-sync (timer every 15 min, service account with view-users only; peers of missing/disabled users or users without a required role are removed and kept out by the minute check; the deny list is kept and VpnIdpSyncFailing alerts when Keycloak is unreachable); sessions capped at session_max_hours 24 by asserts (Keycloak SSO and offline sessions, OpenBao OIDC tokens and SSH certificates, Grafana, oauth2-proxy refresh every 5 min); SSH certificates 8 h. Earlier tested: VPN peer expiry. playbooks/test_offboarding.yml (disable one user, assert VPN, new logins, refresh token, old sessions and token lifetimes) is written, not run. Sync script logic checked on sample files only (not tested on a gateway)."
   - id: IAM-05
     requirement: "Access review report (users, groups, admins) produced every quarter"
     core: true
@@ -107,8 +107,8 @@ requirements:
       iso27001: ["5.17"]
       iso27017: []
     check: "Secrets manager audit: every credential has a rotation policy"
-    status: designed
-    progress: "OpenBao issues expiring AppRole secret_ids and short-lived tokens to tls_cert, periodic narrow tokens for snapshots, and revokes the root token after init. Remaining: move service passwords (Keycloak DB etc.) to OpenBao with rotation. PostgreSQL: OpenBao database secrets engine issues 1-hour users per database and access level, connection password rotated by OpenBao (tested against an OpenBao dev server)."
+    status: implemented
+    progress: "roles/openbao_secrets keeps service secrets in OpenBao KV (services/<service>): generated (or seeded once from the vault), rotated every rotate_days by playbooks/rotate_secrets.yml (database passwords applied to PostgreSQL first, OIDC client secrets re-registered), per-service read-only policy and host-bound AppRole; rotation report and metrics with ServiceSecretRotationOverdue alert. Migrated: Keycloak, Grafana, Forgejo, GRC, oauth2-proxy, VPN sync client, Valkey and RabbitMQ application users, PostgreSQL service users. Still static in Ansible Vault (docs/secrets.md): OpenBao's own material, Wazuh internal users, Patroni/etcd, Garage, backup repository and Prometheus machine accounts. Fallback secrets_backend vault-file (example inventory default for the first install). Earlier tested: PostgreSQL dynamic users against an OpenBao dev server. The new role is not tested."
   - id: IAM-09
     requirement: "Every service deploys the default roles (platform-admin, security-admin, operator, developer, auditor, member) mapped to its native permissions; organizations only assign groups to roles"
     core: true
@@ -117,8 +117,8 @@ requirements:
       iso27001: ["5.3", "5.15", "5.18", "8.2"]
       iso27017: []
     check: "Integration test: a test user in each role gets exactly the permissions in the role matrix"
-    status: designed
-    progress: "Default roles defined in roles/rbac_model and created as Keycloak realm roles; per-service mappings come with each service role. SIEM: SIEM role mappings for the indexer and the Wazuh API (run_as: admins administrator, auditor readonly)."
+    status: implemented
+    progress: "compliance/role-matrix.yml states each default role's access in 13 services; tools/role_matrix.py (CI step chk_iam_09) checks it against the mapping variables in the code and that every mapping variable has a row (self-tests pass). playbooks/test_role_matrix.yml (one throwaway user per role through group iam-test-<role>, real TOTP/WebAuthn second factor via tools/sso_probe.py, observed access compared with the matrix, report kept as evidence) is written, not run. Earlier: SIEM role mappings tested."
   - id: SEC-01
     requirement: "No secrets in git, inventories or images"
     core: true
@@ -137,8 +137,8 @@ requirements:
       iso27001: ["5.17", "8.24"]
       iso27017: []
     check: "Molecule test: no plaintext secrets on disk; audit log enabled"
-    status: designed
-    progress: "OpenBao (roles/openbao) runs KV v2 with two declarative audit devices (stdout to journald, file for the SIEM); verified by molecule/openbao. Remaining: services read their secrets from OpenBao at runtime instead of inventory variables."
+    status: implemented
+    progress: "Services read secrets at runtime: OpenBao Agent (pinned openbao image, one per service and host, AppRole bound to the host) renders them into tmpfs (/run/compliant-secrets, 0400, service uid) and a path unit restarts the service on change; every read is in OpenBao's audit log (audit devices verified by molecule/openbao). Roles remove their old on-disk copies; playbooks/verify_secrets_on_disk.yml scans /etc and /opt for any OpenBao-managed value and keeps a report as evidence. Fallback secrets_backend vault-file (0600 files) stays for labs and the first install. The agent, rendering and scan are not tested."
   - id: SEC-03
     requirement: "All traffic, internal included, uses TLS 1.2 or newer with weak ciphers disabled"
     core: true

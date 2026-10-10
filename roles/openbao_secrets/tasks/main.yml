@@ -1,0 +1,43 @@
+---
+- name: Check the secrets request
+  ansible.builtin.assert:
+    that:
+      - openbao_secrets_backend in ['openbao', 'vault-file']
+      - openbao_secrets_service is match('^[a-z0-9][a-z0-9_-]{0,62}$')
+      - openbao_secrets_items | map(attribute='name') | reject('match', '^[a-z][a-z0-9_]{0,62}$') | list | length == 0
+      - openbao_secrets_items | map(attribute='name') | unique | length == openbao_secrets_items | length
+      - openbao_secrets_items | map(attribute='source', default='generate') | difference(['generate', 'inventory']) | length == 0
+      - openbao_secrets_files | map(attribute='name') | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$') | list | length == 0
+    fail_msg: >-
+      openbao_secrets: secrets_backend must be openbao or vault-file; the service name [a-z0-9_-], item names
+      [a-z0-9_] and unique, sources generate or inventory, and file names plain file names.
+    quiet: true
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Use the inventory values (vault-file backend)
+  ansible.builtin.set_fact:
+    openbao_secrets_values: "{{ openbao_secrets_seed_values }}"
+    openbao_secrets_refs: "{{ openbao_secrets_seed_values }}"
+    openbao_secrets_refs_urlquery: "{{ openbao_secrets_seed_values }}"
+    openbao_secrets_active: false
+    openbao_secrets_rotated: []
+    openbao_secrets_all: "{{ openbao_secrets_all | default({}) | combine({openbao_secrets_service: openbao_secrets_seed_values}) }}"
+  vars:
+    openbao_secrets_seed_values: >-
+      {%- set out = {} -%}
+      {%- for i in openbao_secrets_items -%}
+      {%-   set _ = out.update({i.name: (i.seed | default('')) | string}) -%}
+      {%- endfor -%}
+      {{ out }}
+  when: openbao_secrets_backend == 'vault-file'
+  no_log: true
+
+- name: Keep the secrets in OpenBao
+  ansible.builtin.import_tasks: kv.yml
+  when: openbao_secrets_backend == 'openbao'
+
+- name: Render the secrets at runtime with OpenBao Agent
+  ansible.builtin.import_tasks: agent.yml
+  when:
+    - openbao_secrets_backend == 'openbao'
+    - openbao_secrets_agent | bool

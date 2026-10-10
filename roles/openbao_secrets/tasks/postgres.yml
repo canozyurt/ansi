@@ -1,0 +1,60 @@
+---
+# Applies a rotated password to its PostgreSQL role (roles/postgres_cluster) on the cluster's leader before
+# the new value is published to the services. Only the SCRAM verifier is sent (pgaudit logs the
+# statement); the salt follows postgres_cluster's formula, so its next run computes the same verifier.
+- name: Find the leader of {{ openbao_secrets_pg_item.postgres.cluster }}
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ openbao_secrets_pg_item.postgres.cluster }}-postgres", psql, -X, -At, -h, /var/run/postgresql,
+           -p, "{{ openbao_secrets_pg_item.postgres.port | default(5432) }}", -U, postgres, -d, postgres,
+           -c, "SELECT NOT pg_is_in_recovery()"]
+  delegate_to: "{{ openbao_secrets_pg_host }}"
+  loop: "{{ groups[openbao_secrets_pg_item.postgres.group] }}"
+  loop_control:
+    loop_var: openbao_secrets_pg_host
+  register: openbao_secrets_pg_role
+  changed_when: false
+  failed_when: false
+
+- name: Require a leader before rotating
+  ansible.builtin.assert:
+    that: openbao_secrets_pg_role.results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 't') | list | length == 1
+    fail_msg: >-
+      No single leader found in {{ openbao_secrets_pg_item.postgres.group }}; {{ openbao_secrets_pg_item.name }} of
+      {{ openbao_secrets_service }} was not rotated (nothing was changed).
+    quiet: true
+
+- name: Compute the SCRAM verifier of the new password
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import base64, hashlib, hmac, json, sys
+        req = json.load(sys.stdin)
+        pw = req["password"].encode()
+        salt = hmac.new(pw, ("compliant-infra:%s:%s" % (req["cluster"], req["user"])).encode(), hashlib.sha256).digest()[:16]
+        salted = hashlib.pbkdf2_hmac("sha256", pw, salt, 4096)
+        client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+        stored_key = hashlib.sha256(client_key).digest()
+        server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+        b64 = lambda b: base64.b64encode(b).decode()
+        print("SCRAM-SHA-256$4096:%s$%s:%s" % (b64(salt), b64(stored_key), b64(server_key)))
+    stdin: >-
+      {{ {'cluster': openbao_secrets_pg_item.postgres.cluster, 'user': openbao_secrets_pg_item.postgres.user,
+          'password': openbao_secrets_plan.data[openbao_secrets_pg_item.name]} | to_json }}
+  register: openbao_secrets_pg_verifier
+  changed_when: false
+  no_log: true
+
+- name: Set the new password on the leader
+  ansible.builtin.command:
+    argv: [docker, exec, -i, "{{ openbao_secrets_pg_item.postgres.cluster }}-postgres", psql, -X, -q, -v, ON_ERROR_STOP=1,
+           -h, /var/run/postgresql, -p, "{{ openbao_secrets_pg_item.postgres.port | default(5432) }}", -U, postgres, -d, postgres]
+    stdin: >-
+      ALTER ROLE "{{ openbao_secrets_pg_item.postgres.user }}" PASSWORD '{{ openbao_secrets_pg_verifier.stdout | trim }}';
+  delegate_to: >-
+    {{ (openbao_secrets_pg_role.results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 't')
+        | map(attribute='openbao_secrets_pg_host') | list) | first }}
+  changed_when: true
+  no_log: true
+  tags: [chk_iam_08]

@@ -30,6 +30,9 @@
         sso_session_idle_timeout: "{{ keycloak_sso_session_idle_timeout }}"
         sso_session_max_lifespan: "{{ keycloak_sso_session_max_lifespan }}"
         access_token_lifespan: "{{ keycloak_access_token_lifespan }}"
+        offline_session_idle_timeout: "{{ keycloak_offline_session_idle_timeout }}"
+        offline_session_max_lifespan_enabled: true
+        offline_session_max_lifespan: "{{ keycloak_offline_session_max_lifespan }}"
         revoke_refresh_token: true
         refresh_token_max_reuse: 0
         events_enabled: true

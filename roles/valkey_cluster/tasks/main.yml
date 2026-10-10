@@ -21,6 +21,9 @@
     valkey_cluster_cli: [valkey-cli, --tls, --cacert, /tls/ca-bundle.crt, -h, 127.0.0.1, --user, admin, --no-auth-warning]
     valkey_cluster_quorum: "{{ [2, (groups[valkey_cluster_cfg.group] | default([1])) | length] | min }}"
 
+- name: Take the application users' passwords from OpenBao
+  ansible.builtin.import_tasks: secrets.yml
+
 - name: Check the instance settings
   ansible.builtin.import_tasks: validate.yml
 

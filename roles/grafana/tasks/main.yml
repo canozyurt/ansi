@@ -2,13 +2,13 @@
 - name: Check required settings
   ansible.builtin.assert:
     that:
-      - grafana_admin_password | length >= 16
-      - grafana_secret_key | length >= 32
+      - grafana_admin_password | length >= 16 or grafana_secrets_backend == 'openbao'
+      - grafana_secret_key | length >= 32 or grafana_secrets_backend == 'openbao'
       - grafana_prometheus_password | length >= 16
       - grafana_metrics_password | length >= 16
       - grafana_root_url is match('^https://')
       - grafana_prometheus_hosts | length > 0
-      - not (grafana_oidc_enabled | bool) or grafana_oidc_client_secret | length >= 32
+      - not (grafana_oidc_enabled | bool) or grafana_oidc_client_secret | length >= 32 or grafana_secrets_backend == 'openbao'
       - not (grafana_oidc_enabled | bool) or grafana_oidc_keycloak_url is match('^https://')
     fail_msg: >-
       Set grafana_admin_password (16+), grafana_secret_key (32+), monitoring_grafana_password and
@@ -26,6 +26,57 @@
     quiet: true
   tags: [chk_ha_01]
 
+- name: Keep sessions at most a day long (IAM-04)
+  ansible.builtin.assert:
+    that:
+      - grafana_login_maximum_lifetime is match('^[0-9]+[mh]$')
+      - >-
+        (grafana_login_maximum_lifetime[:-1] | int) * {'m': 60, 'h': 3600}[grafana_login_maximum_lifetime[-1]]
+        <= (session_max_hours | default(24) | int) * 3600
+    fail_msg: grafana_login_maximum_lifetime (m or h) must not exceed {{ session_max_hours | default(24) }} hours (IAM-04).
+    quiet: true
+  tags: [chk_iam_04]
+
+- name: Keep Grafana's secrets in OpenBao and render them into tmpfs
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ grafana_secrets_backend }}"
+    openbao_secrets_service: grafana
+    openbao_secrets_items:
+      - { name: admin_password, seed: "{{ grafana_admin_password }}", rotate_days: "{{ grafana_secret_rotate_days }}" }
+      # Encrypts stored datasource secrets: never rotated automatically.
+      - { name: secret_key, seed: "{{ grafana_secret_key }}", length: 48, rotate_days: 0 }
+      - { name: oidc_client_secret, seed: "{{ grafana_oidc_client_secret }}", length: 48, rotate_days: "{{ grafana_secret_rotate_days }}" }
+      # Shared with Prometheus: owned by the monitoring inventory.
+      - { name: metrics_password, source: inventory, seed: "{{ grafana_metrics_password }}" }
+      - { name: prometheus_password, source: inventory, seed: "{{ grafana_prometheus_password }}" }
+    openbao_secrets_files:
+      - { name: admin_password }
+      - { name: secret_key }
+      - { name: oidc_client_secret }
+      - { name: metrics_password }
+      - { name: prometheus_password }
+    openbao_secrets_uid: "{{ grafana_container_uid }}"
+    openbao_secrets_gid: 0
+    openbao_secrets_on_change_container: "{{ grafana_container_name }}"
+    openbao_secrets_on_change:
+      - "sleep {{ grafana_cluster_hosts.index(inventory_hostname) * grafana_secrets_restart_stagger if inventory_hostname in grafana_cluster_hosts else 0 }}"
+      - "docker restart {{ grafana_container_name }}"
+      # The admin password is stored in each node's database at first start; apply a rotated one.
+      - >-
+        docker exec -i {{ grafana_container_name }} grafana cli --homepath /usr/share/grafana
+        admin reset-admin-password --password-from-stdin < /run/compliant-secrets/grafana/admin_password
+    openbao_secrets_manage_host: "{{ grafana_cluster_hosts | select('in', ansible_play_hosts) | first }}"
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Note where Grafana reads its secrets
+  ansible.builtin.set_fact:
+    grafana_secrets_runtime: "{{ openbao_secrets_active | bool }}"
+    grafana_oidc_client_secret_current: "{{ openbao_secrets_values.oidc_client_secret }}"
+    grafana_secret_values: "{{ openbao_secrets_values }}"
+  no_log: true
+
 - name: Register Grafana as an OIDC client in Keycloak
   ansible.builtin.include_role:
     name: oidc_client
@@ -33,7 +84,7 @@
     oidc_client_enabled: "{{ grafana_oidc_enabled }}"
     oidc_client_id: "{{ grafana_oidc_client_id }}"
     oidc_client_name: Grafana
-    oidc_client_secret: "{{ grafana_oidc_client_secret }}"
+    oidc_client_secret: "{{ grafana_oidc_client_secret_current }}"
     oidc_client_keycloak_url: "{{ grafana_oidc_keycloak_url }}"
     oidc_client_realm: "{{ grafana_oidc_realm }}"
     oidc_client_root_url: "{{ grafana_root_url }}"

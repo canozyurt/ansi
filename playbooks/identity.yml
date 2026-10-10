@@ -4,3 +4,17 @@
   become: true
   roles:
     - role: keycloak
+
+# IAM-04: the VPN gateways check peer owners against Keycloak. On a first install access.yml ran before
+# Keycloak existed, so the sync client is registered here.
+- name: Register the VPN IdP sync client in Keycloak
+  hosts: vpn
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Configure the VPN IdP sync
+      ansible.builtin.include_role:
+        name: wireguard_gateway
+        tasks_from: idp_sync
+      when: wireguard_gateway_idp_sync | default((keycloak_hostname | default('')) | length > 0) | bool
+      tags: [chk_iam_04]

@@ -1,0 +1,9 @@
+---
+# IAM-04: VPN peers follow Keycloak (roles/wireguard_gateway, tasks/idp_sync.yml). A peer's owner (or
+# idp_user) must exist, be enabled and hold one of these roles; otherwise its peer is removed within
+# wireguard_gateway_idp_interval.
+wireguard_gateway_idp_required_roles: [platform-admin, security-admin, operator]
+wireguard_gateway_idp_interval: 15min
+wireguard_gateway_idp_client_secret: "{{ vault_vpn_idp_sync_client_secret }}"
+# Registers the sync client in Keycloak (master realm admin, sealed break-glass credentials).
+wireguard_gateway_idp_admin_password: "{{ vault_keycloak_admin_password }}"

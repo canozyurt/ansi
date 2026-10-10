@@ -1,6 +1,7 @@
 ---
 # Monitoring and alerting (LOG-05). node_exporter runs on every host; Prometheus, Alertmanager,
-# blackbox_exporter and Grafana run on the monitoring group.
+# blackbox_exporter and Grafana run on the monitoring group; oauth2-proxy puts Keycloak SSO in front of
+# the Prometheus and Alertmanager UIs.
 - name: Deploy node_exporter on every host
   hosts: all
   become: true
@@ -15,3 +16,6 @@
     - role: alertmanager
     - role: prometheus
     - role: grafana
+    # SSO in front of the Prometheus and Alertmanager UIs (IAM-01); needs Keycloak.
+    - role: oauth2_proxy
+      when: oauth2_proxy_instances | default([]) | length > 0

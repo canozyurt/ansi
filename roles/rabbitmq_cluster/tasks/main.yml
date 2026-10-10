@@ -34,6 +34,9 @@
     rabbitmq_cluster_member_addresses: >-
       {{ rabbitmq_cluster_hosts | map('extract', hostvars) | map(attribute='rabbitmq_cluster_my_address', default='') | list }}
 
+- name: Take the application users' passwords from OpenBao
+  ansible.builtin.import_tasks: secrets.yml
+
 - name: Check the cluster settings
   ansible.builtin.import_tasks: validate.yml
 

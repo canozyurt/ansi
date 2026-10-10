@@ -17,7 +17,8 @@
          'timeInterval': grafana_scrape_interval,
          'prometheusType': 'Prometheus'
        },
-       'secureJsonData': {'basicAuthPassword': grafana_prometheus_password}
+       'secureJsonData': {'basicAuthPassword': '$__file{/run/secrets/prometheus_password}'
+                          if grafana_secrets_runtime | default(false) | bool else grafana_prometheus_password}
      }) %}
 {% endfor %}
 # {{ ansible_managed }}

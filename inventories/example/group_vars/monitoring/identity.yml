@@ -1,0 +1,75 @@
+---
+# Identity and secrets on the monitoring hosts (IAM-01, IAM-04, IAM-08, IAM-09).
+
+# ------------------------------------------------------------------ SSO for Prometheus and Alertmanager
+# Neither has SSO of its own: people open the oauth2-proxy address on each monitoring host (Keycloak login,
+# "roles" claim checked against rbac_model capability "monitoring"). The native TLS + basic auth listeners
+# (9090, 9093) stay for machines and the break-glass accounts; see docs/sso-matrix.md.
+monitoring_sso_upstream_user: oauth2-proxy
+monitoring_sso_upstream_password: "{{ vault_monitoring_sso_upstream_password }}"
+prometheus_web_users_extra:
+  "{{ monitoring_sso_upstream_user }}": "{{ monitoring_sso_upstream_password }}"
+alertmanager_web_users_extra:
+  "{{ monitoring_sso_upstream_user }}": "{{ monitoring_sso_upstream_password }}"
+
+oauth2_proxy_instances:
+  - name: prometheus
+    hostname: "{{ inventory_hostname }}:9443"
+    redirect_hosts: "{{ groups['monitoring'] | map('regex_replace', '$', ':9443') | list }}"
+    port: 9443
+    upstream: "https://127.0.0.1:{{ prometheus_port | default(9090) }}"
+    capability: monitoring
+    min_level: read          # every role with monitoring read or more: platform-admin, security-admin, operator, developer, auditor
+    upstream_user: "{{ monitoring_sso_upstream_user }}"
+    upstream_password: "{{ monitoring_sso_upstream_password }}"
+  - name: alertmanager
+    hostname: "{{ inventory_hostname }}:9446"
+    redirect_hosts: "{{ groups['monitoring'] | map('regex_replace', '$', ':9446') | list }}"
+    port: 9446
+    upstream: "https://127.0.0.1:{{ alertmanager_port | default(9093) }}"
+    capability: monitoring
+    min_level: write         # silences change paging: platform-admin and operator
+    upstream_user: "{{ monitoring_sso_upstream_user }}"
+    upstream_password: "{{ monitoring_sso_upstream_password }}"
+# Client and cookie secrets (vault-file backend); with secrets_backend openbao they are generated in OpenBao.
+oauth2_proxy_client_secrets:
+  prometheus: "{{ vault_oauth2_proxy_prometheus_client_secret }}"
+  alertmanager: "{{ vault_oauth2_proxy_alertmanager_client_secret }}"
+oauth2_proxy_cookie_secrets:
+  prometheus: "{{ vault_oauth2_proxy_prometheus_cookie_secret }}"
+  alertmanager: "{{ vault_oauth2_proxy_alertmanager_cookie_secret }}"
+
+firewall_rules_oauth2_proxy:
+  - { name: prometheus-sso, port: 9443, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: alertmanager-sso, port: 9446, sources: ["{{ network_zones.mgmt }}"] }
+
+# ------------------------------------------------------------------ alert rules
+prometheus_rules_identity:
+  - name: identity
+    rules:
+      # IAM-08: a generated secret older than its rotation period (7 days of grace for the weekly run).
+      - alert: ServiceSecretRotationOverdue
+        expr: >-
+          (time() - openbao_secret_rotated_timestamp_seconds)
+          > on(service, key) ((openbao_secret_rotate_days > 0) * 86400 + 7 * 86400)
+        labels: {severity: warning}
+        annotations: {summary: "A service secret in OpenBao is past its rotation period; run playbooks/rotate_secrets.yml"}
+      - alert: SecretRotationReportStale
+        expr: time() - openbao_secret_rotation_report_timestamp_seconds > 8 * 86400
+        labels: {severity: warning}
+        annotations: {summary: "playbooks/rotate_secrets.yml has not run for more than 8 days"}
+      # IAM-04: VPN peers follow the IdP. A failing sync keeps the last deny list (fails closed for known
+      # disabled users) but new disables are not applied.
+      - alert: VpnIdpSyncFailing
+        expr: wireguard_idp_sync_success == 0
+        for: 1h
+        labels: {severity: warning}
+        annotations: {summary: "The VPN gateway cannot check peer owners against Keycloak; disabled users keep VPN access"}
+      - alert: VpnIdpSyncStale
+        expr: time() - wireguard_idp_sync_timestamp_seconds > 3 * 3600
+        labels: {severity: warning}
+        annotations: {summary: "The VPN IdP sync timer has not run for 3 hours"}
+      - alert: VpnPeerOfDisabledUser
+        expr: wireguard_peer_idp_denied == 1
+        labels: {severity: info}
+        annotations: {summary: "A VPN peer was removed because its owner is disabled or missing in Keycloak; remove it from wireguard_peers"}

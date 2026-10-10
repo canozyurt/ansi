@@ -71,7 +71,53 @@
   changed_when: tls_cert_changed | bool
   notify: Restart forgejo
 
-- name: Write the Forgejo configuration (contains secrets)
+- name: Note where the configuration template is
+  ansible.builtin.set_fact:
+    forgejo_app_ini_template: "{{ role_path }}/templates/app.ini.j2"
+
+- name: Keep Forgejo's secrets in OpenBao and render app.ini into tmpfs
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ forgejo_secrets_backend }}"
+    openbao_secrets_service: forgejo
+    openbao_secrets_items:
+      - name: db_password
+        seed: "{{ forgejo_db_password }}"
+        rotate_days: "{{ forgejo_secret_rotate_days if forgejo_db_postgres | length > 0 else 0 }}"
+        postgres: "{{ forgejo_db_postgres if forgejo_db_postgres | length > 0 else omit }}"
+      - { name: secret_key, seed: "{{ forgejo_secret_key }}", length: 64, rotate_days: 0 }
+      - { name: internal_token, seed: "{{ forgejo_internal_token }}", length: 64, rotate_days: "{{ forgejo_secret_rotate_days }}" }
+      - { name: jwt_secret, seed: "{{ forgejo_jwt_secret }}", length: 43, rotate_days: "{{ forgejo_secret_rotate_days }}" }
+      - { name: lfs_jwt_secret, seed: "{{ forgejo_lfs_jwt_secret }}", length: 43, rotate_days: "{{ forgejo_secret_rotate_days }}" }
+      - { name: s3_secret_key, source: inventory, seed: "{{ forgejo_s3_secret_key }}" }
+      - { name: cache_password, source: inventory, seed: "{{ forgejo_cache_password }}" }
+      - { name: metrics_token, source: inventory, seed: "{{ forgejo_metrics_token }}" }
+    openbao_secrets_files:
+      - name: app.ini
+        content: >-
+          {{ lookup('ansible.builtin.template', forgejo_app_ini_template, template_vars={
+               'forgejo_db_password': openbao_secrets_refs.db_password,
+               'forgejo_secret_key': openbao_secrets_refs.secret_key,
+               'forgejo_internal_token': openbao_secrets_refs.internal_token,
+               'forgejo_jwt_secret': openbao_secrets_refs.jwt_secret,
+               'forgejo_lfs_jwt_secret': openbao_secrets_refs.lfs_jwt_secret,
+               'forgejo_s3_secret_key': openbao_secrets_refs.s3_secret_key if forgejo_s3_secret_key | length > 0 else '',
+               'forgejo_cache_password': openbao_secrets_refs_urlquery.cache_password if forgejo_cache_password | length > 0 else '',
+               'forgejo_metrics_token': openbao_secrets_refs.metrics_token}) }}
+    openbao_secrets_uid: "{{ forgejo_container_uid }}"
+    openbao_secrets_on_change_container: "{{ forgejo_container_name }}"
+    openbao_secrets_on_change: ["/usr/local/sbin/forgejo-restart-if-running {{ forgejo_container_name }}"]
+    openbao_secrets_manage_host: "{{ forgejo_cluster_hosts | select('in', ansible_play_hosts) | first }}"
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Note where Forgejo reads its configuration
+  ansible.builtin.set_fact:
+    forgejo_secrets_runtime: "{{ openbao_secrets_active | bool }}"
+    forgejo_conf_mount: >-
+      {{ '/run/compliant-secrets/forgejo' if openbao_secrets_active | bool else forgejo_config_dir ~ '/conf' }}
+
+- name: Write the Forgejo configuration (contains secrets; vault-file backend)
   ansible.builtin.template:
     src: app.ini.j2
     dest: "{{ forgejo_config_dir }}/conf/app.ini"
@@ -80,7 +126,15 @@
     mode: "0600"
   no_log: true
   notify: Restart forgejo
+  when: not forgejo_secrets_runtime | bool
   tags: [chk_sec_02, chk_iam_01, chk_chg_01]
+
+- name: Remove the on-disk configuration once OpenBao Agent renders it into tmpfs
+  ansible.builtin.file:
+    path: "{{ forgejo_config_dir }}/conf/app.ini"
+    state: absent
+  when: forgejo_secrets_runtime | bool
+  tags: [chk_sec_02]
 
 - name: Read the running Forgejo container
   community.docker.docker_container_info:
@@ -104,7 +158,8 @@
     volumes:
       - "{{ forgejo_data_dir }}:/var/lib/gitea"
       - "{{ forgejo_repo_dir }}:/var/lib/gitea/repositories"
-      - "{{ forgejo_config_dir }}/conf/app.ini:/var/lib/gitea/custom/conf/app.ini:ro"
+      # The directory, not the file: the agent replaces app.ini atomically (new inode).
+      - "{{ forgejo_conf_mount }}:/var/lib/gitea/custom/conf:ro"
       - "{{ forgejo_config_dir }}/tls:/etc/forgejo/tls:ro"
       - "{{ forgejo_dump_dir }}:/backup"
       # The host trust store (with the internal CA) for Keycloak, S3 and webhooks.

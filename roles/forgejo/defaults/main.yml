@@ -99,6 +99,16 @@ forgejo_jwt_secret: ""                 # JWT_SECRET (43 characters, base64url)
 forgejo_lfs_jwt_secret: ""             # LFS_JWT_SECRET (43 characters, base64url)
 # Bearer token Prometheus presents to /metrics.
 forgejo_metrics_token: ""
+# Runtime secrets (IAM-08, SEC-02). With secrets_backend openbao every secret of app.ini lives in OpenBao:
+# the database password, SECRET_KEY, INTERNAL_TOKEN and the JWT secrets are seeded once from the variables
+# above (or generated) and rotated every forgejo_secret_rotate_days (SECRET_KEY never: it encrypts stored
+# 2FA secrets); the S3 key, cache password and metrics token follow the inventory. OpenBao Agent renders
+# app.ini into tmpfs and restarts the active node; /opt/forgejo keeps no secret. vault-file: as before.
+forgejo_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+forgejo_secret_rotate_days: "{{ secret_rotation_days | default(90) }}"
+# PostgreSQL role to update when the database password rotates, e.g. { group: pg_main, cluster: main,
+# user: forgejo }. Empty: the database password is not rotated (managed elsewhere).
+forgejo_db_postgres: {}
 
 # --------------------------------------------------------------------------- listeners and TLS
 forgejo_https_port: 3443

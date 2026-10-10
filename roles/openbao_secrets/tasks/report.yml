@@ -1,0 +1,94 @@
+---
+# Rotation report (IAM-08): every service secret, its rotation policy and age, kept as evidence and exported
+# as node_exporter textfile metrics (alerts in group_vars/monitoring/identity.yml). Values are never read.
+- name: List the services that keep secrets in OpenBao
+  ansible.builtin.uri:
+    url: "{{ openbao_secrets_addr }}/v1/{{ openbao_secrets_kv_mount }}/metadata/{{ openbao_secrets_kv_prefix }}?list=true"
+    headers:
+      X-Vault-Token: "{{ openbao_secrets_token }}"
+    ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+    status_code: [200, 404]
+  register: openbao_secrets_report_list
+  tags: [chk_iam_08]
+
+- name: Read each service's rotation metadata
+  ansible.builtin.uri:
+    url: "{{ openbao_secrets_addr }}/v1/{{ openbao_secrets_kv_mount }}/metadata/{{ openbao_secrets_kv_prefix }}/{{ item }}"
+    headers:
+      X-Vault-Token: "{{ openbao_secrets_token }}"
+    ca_path: "{{ openbao_secrets_ca_file | default(omit, true) }}"
+  loop: "{{ (openbao_secrets_report_list.json | default({})).data.keys | default([]) | reject('search', '/$') | list }}"
+  register: openbao_secrets_report_meta
+  tags: [chk_iam_08]
+
+- name: Build the report
+  ansible.builtin.set_fact:
+    openbao_secrets_report: >-
+      {%- set now = now(utc=true).timestamp() | int -%}
+      {%- set rows = [] -%}
+      {%- for r in openbao_secrets_report_meta.results | default([]) -%}
+      {%-   set meta = r.json.data.custom_metadata | default({}, true) -%}
+      {%-   for k in meta.keys() | select('match', '^rotate_days_') | map('regex_replace', '^rotate_days_', '') | sort -%}
+      {%-     set days = meta['rotate_days_' ~ k] | int -%}
+      {%-     set at = meta.get('rotated_at_' ~ k, '0') | int -%}
+      {%-     set _ = rows.append({'service': r.item, 'key': k, 'source': meta.get('source_' ~ k, 'generate'),
+                                   'rotate_days': days, 'rotated_at': at, 'age_days': ((now - at) / 86400) | round(1),
+                                   'overdue': days > 0 and (now - at) > days * 86400}) -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {{ {'generated_at': now, 'secrets': rows,
+          'without_rotation': rows | selectattr('rotate_days', 'equalto', 0) | map(attribute='service') | list | length,
+          'overdue': rows | selectattr('overdue') | list | length} }}
+  tags: [chk_iam_08]
+
+- name: Create the evidence and metrics directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ openbao_secrets_evidence_dir }}/secret-rotation"
+    - "{{ openbao_secrets_textfile_dir }}"
+
+- name: Keep the report as evidence
+  ansible.builtin.copy:
+    content: "{{ openbao_secrets_report | to_nice_json(indent=2) }}\n"
+    dest: "{{ openbao_secrets_evidence_dir }}/secret-rotation/{{ now(utc=true).strftime('%Y-%m-%d') }}.json"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_iam_08, chk_evd_02]
+
+- name: Register the reports with the backup role (EVD-02)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: secret-rotation-reports
+    backup_register_paths: ["{{ openbao_secrets_evidence_dir }}/secret-rotation"]
+    backup_register_rpo_hours: 24
+    backup_register_rto_hours: 24
+  tags: [chk_evd_02]
+
+- name: Export the rotation state as metrics
+  ansible.builtin.copy:
+    content: |
+      # HELP openbao_secret_rotate_days Rotation period of a service secret in days (0 = not rotated by OpenBao).
+      # TYPE openbao_secret_rotate_days gauge
+      {% for s in openbao_secrets_report.secrets %}
+      openbao_secret_rotate_days{service="{{ s.service }}",key="{{ s.key }}",source="{{ s.source }}"} {{ s.rotate_days }}
+      {% endfor %}
+      # HELP openbao_secret_rotated_timestamp_seconds When the secret last changed (Unix time).
+      # TYPE openbao_secret_rotated_timestamp_seconds gauge
+      {% for s in openbao_secrets_report.secrets %}
+      openbao_secret_rotated_timestamp_seconds{service="{{ s.service }}",key="{{ s.key }}"} {{ s.rotated_at }}
+      {% endfor %}
+      # HELP openbao_secret_rotation_report_timestamp_seconds When the rotation report was written.
+      # TYPE openbao_secret_rotation_report_timestamp_seconds gauge
+      openbao_secret_rotation_report_timestamp_seconds {{ openbao_secrets_report.generated_at }}
+    dest: "{{ openbao_secrets_textfile_dir }}/openbao_secrets.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_iam_08, chk_log_05]

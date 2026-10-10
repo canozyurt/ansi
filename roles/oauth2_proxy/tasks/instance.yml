@@ -1,0 +1,188 @@
+---
+- name: Work out who may enter {{ oauth2_proxy_instance.name }}
+  ansible.builtin.set_fact:
+    oauth2_proxy_dir: "{{ oauth2_proxy_data_dir }}/{{ oauth2_proxy_instance.name }}"
+    oauth2_proxy_client_id: "{{ oauth2_proxy_instance.name }}-ui"
+    oauth2_proxy_url: "https://{{ oauth2_proxy_instance.hostname }}"
+    # Default roles whose level for the capability reaches min_level (IAM-03, IAM-09): roles, never users.
+    oauth2_proxy_allowed_roles: >-
+      {%- set levels = ['none', 'self', 'read', 'operate', 'write', 'admin'] -%}
+      {%- set out = [] -%}
+      {%- for role, spec in rbac_model_all_roles.items() -%}
+      {%-   if levels.index(spec.capabilities[oauth2_proxy_instance.capability] | default('none'))
+              >= levels.index(oauth2_proxy_instance.min_level) -%}
+      {%-     set _ = out.append(role) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out | sort }}
+  tags: [chk_iam_03, chk_iam_09]
+
+- name: Create the directories of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ oauth2_proxy_data_dir }}", mode: "0755" }
+    - { path: "{{ oauth2_proxy_dir }}", mode: "0755" }
+    - { path: "{{ oauth2_proxy_dir }}/conf", group: "{{ oauth2_proxy_uid }}", mode: "0750" }
+
+- name: Keep the secrets in OpenBao (or the inventory vault) for {{ oauth2_proxy_instance.name }}
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ oauth2_proxy_secrets_backend }}"
+    openbao_secrets_service: "oauth2-proxy-{{ oauth2_proxy_instance.name }}"
+    openbao_secrets_items:
+      - name: client_secret
+        seed: "{{ oauth2_proxy_client_secrets[oauth2_proxy_instance.name] | default('') }}"
+        length: 48
+        rotate_days: "{{ oauth2_proxy_secret_rotate_days }}"
+      - name: cookie_secret
+        seed: "{{ oauth2_proxy_cookie_secrets[oauth2_proxy_instance.name] | default('') }}"
+        length: 32
+        rotate_days: "{{ oauth2_proxy_secret_rotate_days }}"
+      - name: upstream_authorization
+        source: inventory
+        seed: >-
+          Basic {{ (oauth2_proxy_instance.upstream_user ~ ':' ~ oauth2_proxy_instance.upstream_password) | b64encode }}
+    openbao_secrets_files:
+      - { name: client_secret }
+      - { name: cookie_secret }
+      - { name: upstream_authorization }
+    openbao_secrets_uid: "{{ oauth2_proxy_uid }}"
+    openbao_secrets_on_change_container: "oauth2-proxy-{{ oauth2_proxy_instance.name }}"
+    openbao_secrets_on_change: ["docker restart oauth2-proxy-{{ oauth2_proxy_instance.name }}"]
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Note where the secrets are for {{ oauth2_proxy_instance.name }}
+  ansible.builtin.set_fact:
+    oauth2_proxy_secrets_runtime: "{{ openbao_secrets_active | bool }}"
+    oauth2_proxy_secret_values: "{{ openbao_secrets_values }}"
+    oauth2_proxy_secrets_dir: >-
+      {{ '/run/compliant-secrets/oauth2-proxy-' ~ oauth2_proxy_instance.name if openbao_secrets_active | bool
+         else oauth2_proxy_dir ~ '/secrets' }}
+  no_log: true
+
+- name: Check the secrets of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.assert:
+    that:
+      - oauth2_proxy_secret_values.client_secret | length >= 32
+      - oauth2_proxy_secret_values.cookie_secret | length in [16, 24, 32]
+      - oauth2_proxy_instance.upstream_password | default('') | length >= 16
+    fail_msg: >-
+      {{ oauth2_proxy_instance.name }}: set oauth2_proxy_client_secrets (32+) and oauth2_proxy_cookie_secrets (exactly 32
+      characters) in the vault, or use secrets_backend openbao, and an upstream_password (16+).
+    quiet: true
+  no_log: true
+
+- name: Write the secret files (vault-file backend) for {{ oauth2_proxy_instance.name }}
+  when: not oauth2_proxy_secrets_runtime | bool
+  no_log: true
+  tags: [chk_sec_02]
+  block:
+    - name: Create the secrets directory
+      ansible.builtin.file:
+        path: "{{ oauth2_proxy_dir }}/secrets"
+        state: directory
+        owner: "{{ oauth2_proxy_uid }}"
+        group: "{{ oauth2_proxy_uid }}"
+        mode: "0500"
+
+    - name: Write the secret files
+      ansible.builtin.copy:
+        content: "{{ oauth2_proxy_secret_values[item] }}"
+        dest: "{{ oauth2_proxy_dir }}/secrets/{{ item }}"
+        owner: "{{ oauth2_proxy_uid }}"
+        group: "{{ oauth2_proxy_uid }}"
+        mode: "0400"
+      loop: [client_secret, cookie_secret, upstream_authorization]
+      register: oauth2_proxy_secret_files
+
+- name: Remove the on-disk secrets once OpenBao Agent renders them into tmpfs for {{ oauth2_proxy_instance.name }}
+  ansible.builtin.file:
+    path: "{{ oauth2_proxy_dir }}/secrets"
+    state: absent
+  when: oauth2_proxy_secrets_runtime | bool
+  tags: [chk_sec_02]
+
+- name: Register the Keycloak client of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.include_role:
+    name: oidc_client
+  vars:
+    oidc_client_id: "{{ oauth2_proxy_client_id }}"
+    oidc_client_enabled: "{{ oidc_clients_enabled | default(true) }}"
+    oidc_client_name: "{{ oauth2_proxy_instance.name | title }} UI"
+    oidc_client_secret: "{{ oauth2_proxy_secret_values.client_secret }}"
+    oidc_client_keycloak_url: "{{ oauth2_proxy_keycloak_url }}"
+    oidc_client_realm: "{{ oauth2_proxy_realm }}"
+    oidc_client_root_url: "{{ oauth2_proxy_url }}"
+    # Every host's address (each replica has its own proxy), so a run on one host keeps the others.
+    oidc_client_redirect_uris: >-
+      {{ (oauth2_proxy_instance.redirect_hosts | default([oauth2_proxy_instance.hostname]))
+         | map('regex_replace', '^', 'https://') | map('regex_replace', '$', '/oauth2/callback') | list }}
+    oidc_client_post_logout_redirect_uris: >-
+      {{ (oauth2_proxy_instance.redirect_hosts | default([oauth2_proxy_instance.hostname]))
+         | map('regex_replace', '^', 'https://') | map('regex_replace', '$', '/') | list }}
+  tags: [chk_iam_01, chk_iam_09]
+
+- name: Get the TLS certificate of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: "oauth2-proxy-{{ oauth2_proxy_instance.name }}"
+    tls_cert_dir: "{{ oauth2_proxy_dir }}/tls"
+    tls_cert_owner: "{{ oauth2_proxy_uid }}"
+    tls_cert_common_name: "{{ oauth2_proxy_instance.hostname }}"
+    tls_cert_alt_names: ["{{ inventory_hostname }}"]
+    tls_cert_src_cert: "{{ oauth2_proxy_tls_cert_file }}"
+    tls_cert_src_key: "{{ oauth2_proxy_tls_key_file }}"
+  tags: [chk_sec_03]
+
+- name: Write the configuration of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ oauth2_proxy_dir }}/conf/{{ item }}"
+    owner: root
+    group: "{{ oauth2_proxy_uid }}"
+    mode: "0640"
+  loop: [alpha.yml, oauth2-proxy.cfg]
+  register: oauth2_proxy_config
+  tags: [chk_iam_01, chk_iam_04, chk_iam_09]
+
+- name: Run oauth2-proxy for {{ oauth2_proxy_instance.name }}
+  community.docker.docker_container:
+    name: "oauth2-proxy-{{ oauth2_proxy_instance.name }}"
+    image: "{{ oauth2_proxy_image }}"
+    command: [--config=/etc/oauth2-proxy/oauth2-proxy.cfg, --alpha-config=/etc/oauth2-proxy/alpha.yml]
+    network_mode: host
+    user: "{{ oauth2_proxy_uid }}:{{ oauth2_proxy_uid }}"
+    volumes:
+      - "{{ oauth2_proxy_dir }}/conf:/etc/oauth2-proxy:ro"
+      - "{{ oauth2_proxy_dir }}/tls:/etc/oauth2-proxy-tls:ro"
+      - "{{ oauth2_proxy_secrets_dir }}:/run/secrets:ro"
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    read_only: true
+    restart_policy: unless-stopped
+    memory: "{{ oauth2_proxy_memory_limit }}"
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opts: [no-new-privileges:true]
+    labels:
+      com.compliant-infra.role: oauth2_proxy
+    state: started
+    restart: >-
+      {{ oauth2_proxy_config is changed or tls_cert_changed | bool
+         or (oauth2_proxy_secret_files | default({})) is changed }}
+  tags: [chk_hrd_02, chk_iam_01]
+
+- name: Wait for oauth2-proxy of {{ oauth2_proxy_instance.name }}
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ oauth2_proxy_instance.port }}/ping"
+    validate_certs: false
+  register: oauth2_proxy_ping
+  until: oauth2_proxy_ping.status == 200
+  retries: 20
+  delay: 3

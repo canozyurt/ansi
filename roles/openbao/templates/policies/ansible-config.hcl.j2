@@ -1,5 +1,7 @@
 # Configuration runs of the openbao role (Ansible). Manages mounts, policies, auth methods, PKI, SSH
-# and transit configuration; cannot read KV secret values or use transit keys.
+# and transit configuration; cannot use transit keys. KV values are readable only under services/,
+# where roles/openbao_secrets generates, rotates and reads service credentials (IAM-08); every such
+# read is in the audit log.
 path "sys/mounts" { capabilities = ["read", "list"] }
 path "sys/mounts/*" { capabilities = ["create", "read", "update", "list"] }
 path "sys/auth" { capabilities = ["read", "list"] }
@@ -14,6 +16,9 @@ path "{{ openbao_ssh_mount }}/*" { capabilities = ["create", "read", "update", "
 path "transit/keys" { capabilities = ["list"] }
 path "transit/keys/*" { capabilities = ["create", "read", "update"] }
 path "secret/config" { capabilities = ["create", "read", "update"] }
+path "secret/data/services/*" { capabilities = ["create", "read", "update"] }
+path "secret/metadata/services/*" { capabilities = ["create", "read", "update", "list"] }
+path "secret/metadata/services" { capabilities = ["list"] }
 path "auth/approle/role/*" { capabilities = ["create", "read", "update", "list"] }
 path "auth/oidc/*" { capabilities = ["create", "read", "update", "list"] }
 path "auth/token/roles/*" { capabilities = ["create", "read", "update"] }

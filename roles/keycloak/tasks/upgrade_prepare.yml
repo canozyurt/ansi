@@ -45,12 +45,11 @@
 
     - name: Generate update metadata with the running version and configuration
       ansible.builtin.command:
-        argv:
-          - docker
-          - run
-          - --rm
-          - --network=none
-          - --env-file={{ keycloak_data_dir }}/keycloak.env
+        argv: >-
+          {{ ['docker', 'run', '--rm', '--network=none', '--env-file=' ~ keycloak_data_dir ~ '/keycloak.env']
+             + keycloak_secrets_run_args | default([]) + keycloak_compat_args }}
+      vars:
+        keycloak_compat_args:
           - --volume={{ keycloak_data_dir }}/upgrade:/upgrade
           - "{{ keycloak_running_image }}"
           - update-compatibility

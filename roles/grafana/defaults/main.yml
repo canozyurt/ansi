@@ -28,6 +28,15 @@ grafana_break_glass_login_form: false
 # Encrypts datasource secrets in the database (32+ characters, same on every node).
 grafana_secret_key: ""
 
+# Runtime secrets (IAM-08, SEC-02). With secrets_backend openbao the admin password, secret key and OIDC
+# client secret live in OpenBao (seeded once from the variables above, otherwise generated); the admin
+# password and client secret rotate every grafana_secret_rotate_days. OpenBao Agent renders every secret
+# Grafana reads into tmpfs files that Grafana loads through GF_*__FILE and $__file{}; nothing secret stays
+# in /opt/grafana. With vault-file (default, labs) the inventory values are written as before.
+grafana_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+grafana_secret_rotate_days: "{{ secret_rotation_days | default(90) }}"
+grafana_secrets_restart_stagger: 30
+
 # Session lifetimes aligned with the IdP (30 minutes idle, 10 hours maximum).
 grafana_login_maximum_inactive_lifetime: 30m
 grafana_login_maximum_lifetime: 10h

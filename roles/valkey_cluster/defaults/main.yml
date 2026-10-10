@@ -95,3 +95,8 @@ valkey_cluster_defaults:
 # DEBUG, FLUSHALL/FLUSHDB, KEYS, SHUTDOWN, REPLICAOF, MODULE, ACL and the other @admin/@dangerous
 # commands are denied.
 valkey_cluster_app_commands: "-@all +@read +@write +@connection +@transaction +@pubsub -@admin -@dangerous"
+
+# Runtime secrets (IAM-08): with secrets_backend openbao the application users' passwords live in OpenBao
+# (see tasks/secrets.yml); the instance's internal passwords still come from the inventory (docs/secrets.md).
+valkey_cluster_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+valkey_cluster_app_password_rotate_days: "{{ secret_rotation_days | default(90) }}"

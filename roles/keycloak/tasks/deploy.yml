@@ -32,10 +32,47 @@
   changed_when: tls_cert_changed | bool
   notify: Restart keycloak
 
+- name: Keep the database and bootstrap passwords in OpenBao and render them into tmpfs
+  ansible.builtin.include_role:
+    name: openbao_secrets
+  vars:
+    openbao_secrets_backend: "{{ keycloak_secrets_backend }}"
+    openbao_secrets_service: keycloak
+    openbao_secrets_items:
+      - name: db_password
+        seed: "{{ keycloak_db_password }}"
+        rotate_days: "{{ keycloak_db_password_rotate_days if keycloak_db_postgres | length > 0 else 0 }}"
+        postgres: "{{ keycloak_db_postgres if keycloak_db_postgres | length > 0 else omit }}"
+      # The break-glass admin: sealed in the inventory vault, rotated by its own procedure (docs/sso-matrix.md).
+      - { name: bootstrap_admin_password, source: inventory, seed: "{{ keycloak_admin_password }}" }
+    openbao_secrets_files:
+      - name: keycloak.conf
+        content: |
+          db-password={{ openbao_secrets_refs.db_password | default('') }}
+          bootstrap-admin-password={{ openbao_secrets_refs.bootstrap_admin_password | default('') }}
+    openbao_secrets_uid: "{{ keycloak_container_uid }}"
+    openbao_secrets_gid: 0
+    openbao_secrets_on_change_container: "{{ keycloak_container_name }}"
+    openbao_secrets_on_change:
+      - "sleep {{ keycloak_cluster_hosts.index(inventory_hostname) * keycloak_secrets_restart_stagger if inventory_hostname in keycloak_cluster_hosts else 0 }}"
+      - "docker restart {{ keycloak_container_name }}"
+    openbao_secrets_manage_host: "{{ keycloak_cluster_hosts | select('in', ansible_play_hosts) | first }}"
+  tags: [chk_iam_08, chk_sec_02]
+
+- name: Remember whether the agent renders the secrets
+  ansible.builtin.set_fact:
+    keycloak_secrets_runtime: "{{ openbao_secrets_active | bool }}"
+    # Database password for the pre-upgrade dump (from OpenBao or the inventory).
+    keycloak_db_password_current: "{{ openbao_secrets_values.db_password }}"
+    # Extra docker run argument for one-off Keycloak commands that read the same configuration.
+    keycloak_secrets_run_args: >-
+      {{ ['--volume=/run/compliant-secrets/keycloak:/run/secrets:ro'] if openbao_secrets_active | bool else [] }}
+  no_log: true
+
 - name: Prepare a version change
   ansible.builtin.import_tasks: upgrade_prepare.yml
 
-- name: Write the Keycloak environment (contains secrets)
+- name: Write the Keycloak environment (contains secrets unless OpenBao renders them)
   ansible.builtin.template:
     src: keycloak.env.j2
     dest: "{{ keycloak_data_dir }}/keycloak.env"
@@ -58,8 +95,9 @@
     # policy-exception: read_only: Keycloak (Quarkus) writes its build cache and transaction logs under /opt/keycloak/data at start.
     network_mode: host
     env_file: "{{ keycloak_data_dir }}/keycloak.env"
-    volumes:
-      - "{{ keycloak_data_dir }}/tls:/opt/keycloak/conf/tls:ro"
+    volumes: >-
+      {{ [keycloak_data_dir ~ '/tls:/opt/keycloak/conf/tls:ro']
+         + (['/run/compliant-secrets/keycloak:/run/secrets:ro'] if keycloak_secrets_runtime | bool else []) }}
     restart_policy: unless-stopped
     memory: "{{ keycloak_memory_limit }}"
     pids_limit: 1024

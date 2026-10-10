@@ -30,6 +30,7 @@ wireguard_gateway_log_connections: true
 #     allowed_ip: 10.99.0.10/32
 #     owner: alice@example.com
 #     expires: "2027-03-31"
+#     idp_user: alice            # optional: Keycloak username or e-mail if it differs from owner
 wireguard_gateway_peers: "{{ wireguard_peers | default([]) }}"
 wireguard_gateway_peer_max_days: 366
 
@@ -50,3 +51,25 @@ wireguard_gateway_check_interval: 60s
 # Start the interface. Tests without the kernel module and without wireguard-go set false.
 wireguard_gateway_manage_service: true
 wireguard_gateway_sysctl_apply: true
+
+# ---------------------------------------------------------------- peers follow the IdP (IAM-04)
+# Every wireguard_gateway_idp_interval a timer asks Keycloak (service-account client that may only view
+# users) whether each peer's owner (or idp_user) exists, is enabled and holds one of
+# wireguard_gateway_idp_required_roles; other peers are removed from the interface at once and kept out
+# (deny list) until the owner is enabled again. Keycloak unreachable: the deny list is kept and
+# VpnIdpSyncFailing alerts (the VPN stays usable to repair Keycloak).
+wireguard_gateway_idp_sync: "{{ (keycloak_hostname | default('')) | length > 0 }}"
+wireguard_gateway_idp_url: "{{ keycloak_hostname | default('') }}"
+wireguard_gateway_idp_realm: "{{ keycloak_realm | default('org') }}"
+wireguard_gateway_idp_client_id: vpn-idp-sync
+# From Ansible Vault (vault-file) or generated in OpenBao (secrets_backend openbao).
+wireguard_gateway_idp_client_secret: ""
+wireguard_gateway_idp_secrets_backend: "{{ secrets_backend | default('vault-file') }}"
+# Empty: an enabled account is enough. Set to the roles whose "hosts" capability allows admin access.
+wireguard_gateway_idp_required_roles: []
+wireguard_gateway_idp_interval: 15min
+wireguard_gateway_idp_ca_file: /etc/ssl/certs/ca-certificates.crt
+# Register the client in Keycloak from this role (run once); false when it is managed elsewhere.
+wireguard_gateway_idp_register_client: "{{ oidc_clients_enabled | default(true) }}"
+wireguard_gateway_idp_admin_user: "{{ keycloak_admin_user | default('break-glass-admin') }}"
+wireguard_gateway_idp_admin_password: "{{ keycloak_admin_password | default('') }}"

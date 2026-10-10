@@ -1,0 +1,35 @@
+---
+# Removes the throwaway users (iam_test_prefix-*) and the iam-test-* groups of an integration test.
+- name: Find the test users
+  ansible.builtin.uri:
+    url: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}/users?username={{ iam_test_prefix }}-&max=100"
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+  register: iam_test_cleanup_users
+
+- name: Delete the test users
+  ansible.builtin.uri:
+    url: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}/users/{{ item.id }}"
+    method: DELETE
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+    status_code: [204, 404]
+  loop: "{{ iam_test_cleanup_users.json | selectattr('username', 'match', '^' ~ iam_test_prefix ~ '-') | list }}"
+  loop_control:
+    label: "{{ item.username }}"
+  changed_when: true
+
+- name: Find the test groups
+  ansible.builtin.uri:
+    url: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}/groups?search=iam-test-"
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+  register: iam_test_cleanup_groups
+
+- name: Delete the test groups
+  ansible.builtin.uri:
+    url: "{{ iam_test_kc }}/admin/realms/{{ iam_test_realm }}/groups/{{ item.id }}"
+    method: DELETE
+    headers: {Authorization: "Bearer {{ iam_test_token }}"}
+    status_code: [204, 404]
+  loop: "{{ iam_test_cleanup_groups.json | selectattr('name', 'match', '^iam-test-') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
