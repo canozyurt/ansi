@@ -33,6 +33,10 @@ provisioner:
         container_runtime_daemon_extra:
           storage-driver: overlay2
           default-ulimits: {}
+        # Containers share the host kernel: write these settings but do not apply them (as in default).
+        common_chrony_daemon_opts: "-x"
+        common_auditd_manage_service: false
+        os_hardening_sysctl_apply: false
         # No backup servers in this scenario.
         cis_audit_backup: false
         docker_bench_backup: false
