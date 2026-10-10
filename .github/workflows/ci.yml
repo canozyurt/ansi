@@ -63,6 +63,11 @@ jobs:
           python3 tools/role_matrix.py
           { echo "## Role matrix (IAM-09)"; python3 tools/role_matrix.py --md | grep '^|'; } >> "$GITHUB_STEP_SUMMARY"
 
+      # Documents every release must keep current: DR runbooks and rebuild order (HA-02), the
+      # shared-responsibility matrix against ISO 27017 (DAT-03), every upgrade scenario in CI (CHG-07).
+      - name: Release documents are complete [chk_ha_02] [chk_dat_03] [chk_chg_07]
+        run: python3 tools/release.py check
+
       - name: Self-tests of the CI gates
         run: python3 -m unittest discover -s tools/tests -v
 
@@ -192,7 +197,9 @@ jobs:
           - keycloak
           - keycloak-upgrade
           - monitoring
+          - monitoring-upgrade
           - edge
+          - edge-upgrade
           - backup
           - openbao
           - openbao-upgrade
@@ -200,7 +207,9 @@ jobs:
           - security_scanning
           - governance
           - forgejo
+          - forgejo-upgrade
           - postgres
+          - postgres-upgrade
           - siem
           - registry
           - mail_relay
@@ -221,7 +230,22 @@ jobs:
           pip install -r requirements-dev.txt
           ansible-galaxy collection install -r requirements.yml
 
+      # An upgrade scenario needs the previous release in versions_upgrade_from (CHG-07); until the
+      # first release that includes the service, there is nothing to upgrade from.
+      - name: Check the upgrade path exists
+        id: upgrade_path
+        run: |
+          rc=0
+          python3 tools/release.py has-upgrade-path "${{ matrix.scenario }}" || rc=$?
+          case "$rc" in
+            0) echo "skip=false" >> "$GITHUB_OUTPUT" ;;
+            3) echo "::notice::${{ matrix.scenario }}: no previous release in versions_upgrade_from yet; skipped"
+               echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
       - name: Deploy, idempotence and verify [chk_chg_06]
+        if: steps.upgrade_path.outputs.skip != 'true'
         run: molecule test -s ${{ matrix.scenario }}
         env:
           MOLECULE_DISTRO: ${{ matrix.distro }}

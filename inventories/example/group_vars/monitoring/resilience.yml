@@ -1,0 +1,74 @@
+---
+# Alert rules for HA drills (HA-01), DR drills (HA-02) and disk encryption (SEC-04). The prometheus role
+# collects every prometheus_rules_<name> variable. Metrics come from node_exporter's textfile collector.
+prometheus_rules_resilience:
+  - name: resilience-drills
+    rules:
+      - alert: HADrillFailed
+        # Written by playbooks/ha_drill.yml on the probing node; only the latest drill is exported.
+        expr: ha_drill_last_status == 0
+        labels:
+          severity: warning
+          checklist: HA-01
+        annotations:
+          summary: "{% raw %}The last HA drill of {{ $labels.service }} {{ $labels.cluster }} failed{% endraw %}"
+          description: >-
+            The service did not keep working while one node was stopped, or the node did not recover.
+            Read the report in /var/lib/compliance-evidence/ha-drill/ on the probing node, fix the cause and
+            run playbooks/ha_drill.yml again.
+
+      - alert: DRDrillOverdue
+        # Written by playbooks/dr_drill.yml on the drill host. 13 months = 395 days.
+        expr: time() - max by (service) (dr_drill_last_success_timestamp_seconds) > 395 * 86400
+        labels:
+          severity: warning
+          checklist: HA-02
+        annotations:
+          summary: "{% raw %}No successful DR drill of {{ $labels.service }} in the last 13 months{% endraw %}"
+          description: >-
+            Run playbooks/dr_drill.yml for the service (docs/dr/README.md). The yearly drill restores the
+            latest backup into an isolated scratch environment and verifies it.
+
+      - alert: DRDrillNeverRan
+        # No drill report on any host at all (new installation, or the drill hosts were rebuilt).
+        expr: absent(dr_drill_last_success_timestamp_seconds)
+        for: 30d
+        labels:
+          severity: warning
+          checklist: HA-02
+        annotations:
+          summary: No DR drill report exists
+          description: Run playbooks/dr_drill.yml for every stateful service (docs/dr/README.md lists them).
+
+      - alert: DRDrillFailed
+        expr: dr_drill_last_status == 0
+        labels:
+          severity: warning
+          checklist: HA-02
+        annotations:
+          summary: "{% raw %}The last DR drill of {{ $labels.service }} failed{% endraw %}"
+          description: Read the report in /var/lib/compliance-evidence/dr-drill/ on the drill host and the runbook in docs/dr/.
+
+      - alert: DRDrillSlowerThanRTO
+        expr: dr_drill_duration_seconds > dr_drill_rto_seconds
+        labels:
+          severity: warning
+          checklist: HA-02
+        annotations:
+          summary: "{% raw %}The last DR drill of {{ $labels.service }} took longer than its RTO{% endraw %}"
+          description: Restore plus verification exceeded the declared RTO; revisit the RTO or the restore procedure.
+
+  - name: disk-encryption
+    rules:
+      - alert: DataMountNotEncrypted
+        # roles/disk_encryption (baseline): 1 when the mount is on dm-crypt or declared provider-encrypted.
+        expr: disk_encryption_mount_protected == 0
+        for: 1h
+        labels:
+          severity: warning
+          checklist: SEC-04
+        annotations:
+          summary: "{% raw %}{{ $labels.mountpoint }} on {{ $labels.instance }} is not encrypted at rest{% endraw %}"
+          description: >-
+            The path is neither on a dm-crypt (LUKS) device nor declared provider-encrypted
+            (disk_encryption_provider). See docs/disk-encryption.md.

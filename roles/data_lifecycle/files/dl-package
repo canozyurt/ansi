@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Package an export for hand-over (DAT-02): encrypt it to the recipient's certificate and write a manifest.
+
+    dl-package --in STAGING --out-dir DIR --id ID --recipient CERT.pem --meta META.json
+
+Writes DIR/ID.tar.gz.cms (a gzip tar of STAGING inside CMS EnvelopedData, AES-256, DER; only the
+holder of the certificate's private key can open it) and DIR/ID.manifest.json (every file with size
+and SHA-256 before encryption, the archive's SHA-256, the recipient and how to decrypt). The
+plaintext tar is written to DIR only for the time of the encryption, with mode 0600 inside a 0700 directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tarfile
+
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cert_info(cert: str) -> dict:
+    out = subprocess.run(
+        ["openssl", "x509", "-in", cert, "-noout", "-subject", "-enddate", "-fingerprint", "-sha256", "-nameopt", "RFC2253"],
+        check=True, capture_output=True, text=True).stdout
+    info = {}
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        key = key.strip().lower()
+        if key == "subject":
+            info["subject"] = value.strip()
+        elif key == "notafter":
+            info["not_after"] = value.strip()
+        elif "fingerprint" in key:
+            info["sha256_fingerprint"] = value.strip()
+    return info
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--in", dest="src", required=True)
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--recipient", required=True)
+    p.add_argument("--meta", required=True)
+    args = p.parse_args()
+    os.umask(0o077)
+    os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
+    with open(args.meta) as f:
+        meta = json.load(f)
+
+    files = []
+    for root, dirs, names in os.walk(args.src):
+        dirs.sort()
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            files.append({"path": os.path.relpath(full, args.src), "size": os.path.getsize(full),
+                          "sha256": sha256_file(full)})
+
+    plain = os.path.join(args.out_dir, args.id + ".tar.gz")
+    encrypted = plain + ".cms"
+    try:
+        with tarfile.open(plain, "w:gz") as tar:
+            tar.add(args.src, arcname=args.id)
+        subprocess.run(["openssl", "cms", "-encrypt", "-binary", "-stream", "-aes256", "-outform", "DER",
+                        "-in", plain, "-out", encrypted, args.recipient], check=True)
+    finally:
+        if os.path.exists(plain):
+            os.remove(plain)
+
+    manifest = {
+        "kind": "data-export",
+        "checklist": ["DAT-02"],
+        "id": args.id,
+        "created_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **meta,
+        "files": files,
+        "file_count": len(files),
+        "total_bytes": sum(f["size"] for f in files),
+        "archive": {
+            "name": os.path.basename(encrypted),
+            "size": os.path.getsize(encrypted),
+            "sha256": sha256_file(encrypted),
+            "format": "gzip tar inside CMS EnvelopedData (AES-256-CBC), DER",
+        },
+        "recipient": cert_info(args.recipient),
+        "decrypt": (f"openssl cms -decrypt -binary -inform DER -in {os.path.basename(encrypted)} "
+                    "-recip recipient.crt -inkey recipient.key | tar -xz"),
+    }
+    with open(os.path.join(args.out_dir, args.id + ".manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2, sort_keys=False)
+        f.write("\n")
+    print(json.dumps({"archive": encrypted, "manifest": os.path.join(args.out_dir, args.id + ".manifest.json"),
+                      "files": len(files), "sha256": manifest["archive"]["sha256"]}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

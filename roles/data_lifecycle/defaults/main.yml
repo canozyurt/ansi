@@ -1,0 +1,177 @@
+---
+# Data export and secure deletion per data service (DAT-02, ISO 27017 CLD.8.1.5), run by
+# playbooks/data_export.yml and playbooks/data_delete.yml. One scope per run:
+#
+#   service    instance (inventory entry)   scope
+#   postgres   postgres_clusters[].name      a database
+#   valkey     valkey_clusters[].name        a key pattern (glob, e.g. "orders:*")
+#   rabbitmq   rabbitmq_clusters[].name      a vhost
+#   garage     garage_clusters[].name        a bucket
+#   forgejo    (none)                        an organisation or user, or owner/repository
+#
+# Each service declares data_lifecycle_<service>:
+#   instances:  list of entries (the instance is chosen with -e data_instance=<name>)
+#   group:      inventory group of the nodes
+#   leader:     optional {url, status, ca_path} or {argv, stdout_regex}: the node that must run the
+#               scripts (Patroni leader, active Forgejo node); otherwise the first node of the group
+#   script:     the helper in files/ (dl-<service>)
+#   env:        environment for the helper (container names, ports, credentials)
+#   declared:   true while the scope is still declared in the inventory. Deleting it then would be
+#               undone by the next playbook run, so data_delete.yml refuses.
+#   backups:    where copies of the deleted data remain until they expire:
+#               [{system, name, retention_days}] (used for the backup-expiry date on the certificate)
+
+data_lifecycle_services: [postgres, valkey, rabbitmq, garage, forgejo]
+
+# Plaintext exports are staged on the encrypted volume (SEC-04), root only, and removed after
+# packaging. Packaged exports (encrypted) are kept here and copied to the controller.
+data_lifecycle_staging_dir: /var/backups/data-lifecycle-staging
+data_lifecycle_export_dir: /var/backups/data-exports
+# Directory on the controller that receives the encrypted export and its manifest.
+data_lifecycle_local_dir: "{{ playbook_dir }}/../data-exports"
+# Keep the encrypted export on the host after copying it to the controller.
+data_lifecycle_keep_on_host: false
+
+data_lifecycle_evidence_dir: /var/lib/compliance-evidence
+data_lifecycle_backup_rpo_hours: 24
+data_lifecycle_backup_rto_hours: 8
+data_lifecycle_tools_dir: /usr/local/sbin
+
+# Retention of the restic backup servers (roles/backup_server), for the backup-expiry date. A
+# deleted value survives in snapshots until the longest keep rule has let go of the last snapshot
+# that holds it, plus the daily prune.
+data_lifecycle_restic_retention_days: >-
+  {{ [hostvars[(groups['backup'] | default(['none']) | first)].backup_server_keep_daily | default(14) | int,
+      hostvars[(groups['backup'] | default(['none']) | first)].backup_server_keep_weekly | default(8) | int * 7,
+      hostvars[(groups['backup'] | default(['none']) | first)].backup_server_keep_monthly | default(12) | int * 31,
+      hostvars[(groups['backup'] | default(['none']) | first)].backup_server_keep_yearly | default(0) | int * 366] | max + 1 }}
+# Extra days on top (e.g. Object Lock retention on the off-site S3 copy of the backups).
+data_lifecycle_extra_retention_days: 0
+
+data_lifecycle_ca_file: /etc/ssl/certs/ca-certificates.crt
+
+# ------------------------------------------------------------------ PostgreSQL
+data_lifecycle_postgres:
+  instances: "{{ postgres_clusters | default([]) }}"
+  group: "{{ data_lifecycle_instance.group | default('') }}"
+  leader:
+    url: "https://127.0.0.1:{{ data_lifecycle_instance.ports.patroni | default(8008) }}/leader"
+    status: 200
+    ca_path: "{{ postgres_cluster_base_dir | default('/opt/postgres') }}/{{ data_lifecycle_instance.name | default('') }}/tls/ca-bundle.crt"
+  script: dl-postgres
+  method: >-
+    DROP DATABASE WITH (FORCE) on the Patroni leader (replicas apply it through streaming replication),
+    DROP ROLE for the listed roles, CHECKPOINT. Freed pages stay on the LUKS/provider-encrypted volume
+    until overwritten.
+  scope_regex: '^[a-z_][a-z0-9_]*$'
+  env:
+    DL_CT: "{{ data_lifecycle_instance.name | default('') }}-postgres"
+    DL_PORT: "{{ data_lifecycle_instance.ports.postgres | default(5432) }}"
+    DL_ROLES: "{{ (data_delete_roles | default([])) | join(' ') }}"
+  declared: "{{ data_scope in (data_lifecycle_instance.databases | default([]) | map(attribute='name') | list) }}"
+  backups:
+    - system: pgBackRest
+      name: "stanza {{ data_lifecycle_instance.name | default('') }}"
+      # A full backup expires once retention_full newer full backups exist (weekly by default).
+      retention_days: "{{ ((data_lifecycle_instance.backup.retention_full | default(4) | int) + 1) * 7 }}"
+
+# ------------------------------------------------------------------ Valkey
+data_lifecycle_valkey:
+  instances: "{{ valkey_clusters | default([]) }}"
+  group: "{{ data_lifecycle_instance.group | default('') }}"
+  script: dl-valkey
+  method: >-
+    UNLINK of every key matching the pattern on the primary (replicas apply it through replication),
+    then BGREWRITEAOF and BGSAVE on the primary and every replica so the deleted values leave the AOF
+    and RDB files.
+  # A glob without spaces; "*" alone (the whole instance) needs -e data_allow_all=true.
+  scope_regex: '^[^\s]+$'
+  env:
+    DL_CT: "{{ data_lifecycle_instance.name | default('') }}-valkey"
+    DL_SENTINEL_CT: "{{ data_lifecycle_instance.name | default('') }}-sentinel"
+    DL_NAME: "{{ data_lifecycle_instance.name | default('') }}"
+    DL_PORT: "{{ data_lifecycle_instance.ports.valkey | default(6379) }}"
+    DL_SPORT: "{{ data_lifecycle_instance.ports.sentinel | default(26379) }}"
+    REDISCLI_AUTH: "{{ data_lifecycle_instance.admin_password | default('') }}"
+  # Still declared while a user's key patterns cover the scope exactly.
+  declared: >-
+    {{ ('~' ~ data_scope) in (data_lifecycle_instance.users | default([]) | map(attribute='key_patterns', default=[]) | flatten)
+       or (data_scope | regex_replace(':\*$', '')) in (data_lifecycle_instance.users | default([]) | map(attribute='name') | list) }}
+  backups:
+    - system: restic
+      name: "valkey-{{ data_lifecycle_instance.name | default('') }}"
+      retention_days: "{{ data_lifecycle_restic_retention_days }}"
+
+# ------------------------------------------------------------------ RabbitMQ
+data_lifecycle_rabbitmq:
+  instances: "{{ rabbitmq_clusters | default([]) }}"
+  group: "{{ data_lifecycle_instance.group | default('') }}"
+  script: dl-rabbitmq
+  method: >-
+    DELETE /api/vhosts/<vhost>: the vhost with its queues, messages, exchanges, bindings and policies on
+    every cluster member; then the listed users.
+  scope_regex: '^[A-Za-z0-9_.-]+$'
+  env:
+    DL_API: "https://127.0.0.1:{{ data_lifecycle_instance.ports.management | default(15671) }}/api"
+    DL_CA: "{{ rabbitmq_cluster_base_dir | default('/opt/rabbitmq') }}/{{ data_lifecycle_instance.name | default('') }}/tls/ca-bundle.crt"
+    DL_USER: "{{ data_lifecycle_instance.admin_user | default('admin') }}"
+    DL_PASS: "{{ data_lifecycle_instance.admin_password | default('') }}"
+    DL_USERS: "{{ (data_delete_users | default([])) | join(' ') }}"
+  declared: "{{ data_scope in (data_lifecycle_instance.vhosts | default([]) | map(attribute='name') | list) }}"
+  backups:
+    - system: restic
+      name: "rabbitmq-{{ data_lifecycle_instance.name | default('') }} (definitions only)"
+      retention_days: "{{ data_lifecycle_restic_retention_days }}"
+
+# ------------------------------------------------------------------ Garage
+data_lifecycle_garage:
+  instances: "{{ garage_clusters | default([]) }}"
+  group: "{{ data_lifecycle_instance.group | default('') }}"
+  script: dl-garage
+  method: >-
+    Every object deleted through the S3 API, unfinished multipart uploads aborted, the bucket deleted.
+    Garage removes the data blocks on every replica in its garbage collection after the deletion.
+  scope_regex: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  env:
+    DL_CT: "{{ data_lifecycle_instance.name | default('') }}-garage"
+    DL_S3: "https://127.0.0.1:{{ data_lifecycle_instance.ports.s3 | default(3900) }}"
+    DL_CA: "{{ data_lifecycle_ca_file }}"
+    DL_RCLONE_IMAGE: "{{ versions_images.rclone }}"
+    DL_REGION: "{{ data_lifecycle_instance.region | default('garage') }}"
+    DL_RUN_ID: "{{ data_lifecycle_run_id }}"
+  declared: "{{ data_scope in (data_lifecycle_instance.buckets | default([]) | map(attribute='name') | list) }}"
+  backups:
+    # Objects are not in the backups; the metadata snapshots (object index, bucket) are.
+    - system: restic
+      name: "garage-{{ data_lifecycle_instance.name | default('') }} (metadata snapshots)"
+      retention_days: "{{ data_lifecycle_restic_retention_days }}"
+
+# ------------------------------------------------------------------ Forgejo
+data_lifecycle_forgejo:
+  group: forgejo
+  # The node where Forgejo runs (active/passive: the VIP holder).
+  leader:
+    argv: [docker, ps, --quiet, --filter, "name=^{{ forgejo_container_name | default('forgejo') }}$", --filter, status=running]
+    stdout_regex: '\S'
+  script: dl-forgejo
+  method: >-
+    Repositories deleted through the API (git data, wiki, issues, pull requests, releases, attachments,
+    LFS objects), then the organisation, or the user with purge.
+  scope_regex: '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$'
+  env:
+    DL_URL: "{{ forgejo_root_url | default('') }}"
+    # Owner of the managed organisations (enough for repositories and organisations); deleting a user
+    # needs a site-admin token in data_lifecycle_forgejo_token.
+    DL_TOKEN: "{{ data_lifecycle_forgejo_token | default(forgejo_automation_token | default('')) }}"
+    DL_CT: "{{ forgejo_container_name | default('forgejo') }}"
+    DL_CA: "{{ data_lifecycle_ca_file }}"
+    DL_RUN_ID: "{{ data_lifecycle_run_id }}"
+  declared: >-
+    {{ (data_scope.split('/') | first) in (forgejo_orgs | default([]) | map(attribute='name') | list)
+       and ('/' not in data_scope
+            or (data_scope.split('/') | last) in ((forgejo_orgs | default([]) | selectattr('name', 'equalto', data_scope.split('/') | first)
+                                                   | map(attribute='repos', default=[]) | flatten | map(attribute='name', default='') | list))) }}
+  backups:
+    - system: restic
+      name: forgejo (forgejo dump)
+      retention_days: "{{ data_lifecycle_restic_retention_days }}"

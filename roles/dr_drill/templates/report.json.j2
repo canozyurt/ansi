@@ -1,0 +1,27 @@
+{#- DR drill report (HA-02). Written by the node that ran the drill. -#}
+{%- set report = {
+  'kind': 'dr-drill',
+  'checklist': ['HA-02'],
+  'run_id': dr_drill_run_id,
+  'service': dr_drill_service,
+  'instance': dr_drill_instance.name | default(''),
+  'host': inventory_hostname,
+  'runbook': 'docs/dr/' ~ (dr_drill_service | replace('_', '-')) ~ '.md',
+  'backup_server': dr_drill_repo if dr_drill_repo | length > 0 else 'first configured',
+  'restore_method': 'command' if dr_drill_def.command is defined else 'compliant-backup restore',
+  'backups': dr_drill_backup_log,
+  'restored_into': dr_drill_scratch if dr_drill_def.command is not defined else 'tool scratch area',
+  'checks': dr_drill_check_log,
+  'started_at': '%Y-%m-%dT%H:%M:%SZ' | strftime(dr_drill_t0 | int, utc=true),
+  'finished_at': '%Y-%m-%dT%H:%M:%SZ' | strftime(utc=true),
+  'duration_seconds': dr_drill_duration | int,
+  'rto_seconds': (dr_drill_def.rto_hours | float * 3600) | int,
+  'within_rto': dr_drill_duration | int <= (dr_drill_def.rto_hours | float * 3600) | int,
+  'rpo_seconds': (dr_drill_def.rpo_hours | float * 3600) | int,
+  'scratch_removed': not dr_drill_keep_scratch | bool,
+  'errors': dr_drill_errors,
+  'result': 'passed' if dr_drill_errors | length == 0 else 'failed',
+  'operator': lookup('ansible.builtin.env', 'USER') | default('unknown', true),
+  'repository_commit': lookup('ansible.builtin.pipe', 'git -C ' ~ (playbook_dir | quote) ~ ' rev-parse HEAD 2>/dev/null || echo unknown'),
+} -%}
+{{ report | to_nice_json }}

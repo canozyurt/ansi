@@ -1,0 +1,3 @@
+---
+- name: Upgrade to this release
+  ansible.builtin.import_playbook: ../../playbooks/upgrade.yml

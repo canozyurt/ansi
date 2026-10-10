@@ -1,0 +1,43 @@
+---
+# Disaster-recovery drill (HA-02), at least once a year per service (DRDrillOverdue alerts after 13
+# months without a successful drill). For each selected service: restores the latest backup from a
+# backup server into an isolated scratch directory on one of its nodes (never over live data),
+# verifies the restored data with the service's own tools in containers without network, compares
+# the time taken with the RTO and the backup's age with the RPO, removes the scratch copy and writes
+# a JSON report to /var/lib/compliance-evidence/dr-drill/ (kept by the backups) plus metrics.
+# Definitions: dr_drill_<service> in roles/dr_drill/defaults. Runbooks: docs/dr/.
+#
+#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=all -e dr_drill_confirm=yes
+#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=postgres -e dr_drill_instances=pg-main \
+#     -e dr_drill_confirm=yes
+#   # prove the second backup server's copy too
+#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=forgejo -e dr_drill_repo=backup-2 \
+#     -e dr_drill_confirm=yes
+#
+# The drill needs free space on the node for the largest backup and adds read load on the backup
+# server; run it outside peak hours. A full rebuild exercise (docs/dr/README.md) is the yearly
+# tabletop or game day on top of this.
+- name: Check the request
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - dr_drill_confirm | default('') == 'yes'
+          - (dr_drill_services | default('')) | length > 0
+        fail_msg: >-
+          Nothing restored. Choose services with -e dr_drill_services=<name>[,<name>] (or all) and confirm with
+          -e dr_drill_confirm=yes. Each drill restores a full backup into scratch on one node of the service.
+        quiet: true
+      tags: [chk_ha_02]
+
+- name: Run the DR drills
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Drill each selected service
+      ansible.builtin.include_role:
+        name: dr_drill
+      tags: [chk_ha_02]

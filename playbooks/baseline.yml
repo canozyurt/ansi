@@ -7,3 +7,5 @@
     - role: os_hardening
     - role: ssh_hardening
     - role: firewall
+    # Data at rest (SEC-04): data paths on dm-crypt or declared provider encryption.
+    - role: disk_encryption

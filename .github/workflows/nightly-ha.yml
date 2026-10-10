@@ -1,0 +1,45 @@
+---
+# Nightly multi-node tests (HA-01): each scenario deploys a 3-node cluster and runs playbooks/ha_drill.yml
+# in its verify step, which stops one node and proves the service keeps working (and accepting writes)
+# before restoring the node. Too heavy for every pull request, so it runs nightly and on demand.
+name: Nightly HA drills
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ha-drill:
+    name: HA drill ${{ matrix.scenario }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - keycloak-ha
+          - openbao-ha
+          - postgres-ha
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install tools
+        run: |
+          pip install -r requirements-dev.txt
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Deploy 3 nodes, stop one, prove failover (HA-01)
+        run: molecule test -s ${{ matrix.scenario }}
+        env:
+          PY_COLORS: "1"
+          ANSIBLE_FORCE_COLOR: "1"

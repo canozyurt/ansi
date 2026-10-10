@@ -76,8 +76,10 @@ upstream release stable.
      new upstream minors or new features, major for anything that needs manual steps;
    - write the release notes: every version change, and which services need a
      **recreate** update;
-   - in the next pull request, copy the released versions into
-     `versions_upgrade_from`, so the next release is tested against this one.
+   - in the next pull request, run `tools/release.py bump-upgrade-from <tag>` to copy the
+     released versions into `versions_upgrade_from`, so the next release is tested against this one.
+
+   The full procedure, with the commands, is in [releasing.md](releasing.md).
 4. A service that is added to the repo must ship its own upgrade path:
    read its version from `roles/versions`, back up before a version change, refuse
    parallel version changes outside `upgrade.yml`, and add an upgrade Molecule

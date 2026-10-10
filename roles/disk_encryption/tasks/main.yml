@@ -1,0 +1,77 @@
+---
+- name: Check the encryption settings
+  ansible.builtin.assert:
+    that:
+      - encrypted_mounts_required | select('match', '^/') | list | length == encrypted_mounts_required | length
+      - disk_encryption_provider | length == 0 or disk_encryption_provider in disk_encryption_providers_known
+      - disk_encryption_clevis_policy in ['tang', 'tpm2', 'tang+tpm2']
+    fail_msg: >-
+      encrypted_mounts_required must be absolute paths; disk_encryption_provider must be empty or one of
+      {{ disk_encryption_providers_known | join(', ') }}; disk_encryption_clevis_policy is tang, tpm2 or tang+tpm2.
+    quiet: true
+  tags: [chk_sec_04]
+
+- name: Find the block devices under each data path
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      if [ ! -e {{ item | quote }} ]; then echo "absent"; exit 0; fi;
+      src=$(findmnt -n -o SOURCE --target {{ item | quote }} | head -n1 | sed 's/\[.*\]$//');
+      echo "source=$src";
+      lsblk -n -s -o TYPE "$src" 2>/dev/null | tr -d ' ' | sort -u | tr '\n' ' ' || true
+    executable: /bin/bash
+  loop: "{{ encrypted_mounts_required }}"
+  register: disk_encryption_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [chk_sec_04]
+
+- name: Work out which paths are protected
+  ansible.builtin.set_fact:
+    disk_encryption_state: "{{ query('ansible.builtin.template', 'state.json.j2') | first | from_json }}"
+  tags: [chk_sec_04]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ disk_encryption_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Publish the encryption state as metrics
+  ansible.builtin.template:
+    src: disk_encryption.prom.j2
+    dest: "{{ disk_encryption_textfile_dir }}/disk-encryption.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_sec_04]
+
+- name: Require encrypted data paths
+  ansible.builtin.assert:
+    that: disk_encryption_unprotected | length == 0
+    fail_msg: >-
+      SEC-04: {{ disk_encryption_unprotected | map(attribute='path') | join(', ') }} on {{ inventory_hostname }}
+      {{ 'is' if disk_encryption_unprotected | length == 1 else 'are' }} not on a dm-crypt (LUKS) device
+      ({{ disk_encryption_unprotected | map(attribute='source') | join(', ') }}) and no disk_encryption_provider is declared.
+      Move the data to an encrypted volume (docs/disk-encryption.md) or declare the provider encryption.
+    quiet: true
+  vars:
+    disk_encryption_unprotected: "{{ disk_encryption_state | rejectattr('protected') | list }}"
+  when: disk_encryption_enforce | bool
+  tags: [chk_sec_04]
+
+- name: Warn about unencrypted data paths
+  ansible.builtin.debug:
+    msg: >-
+      WARNING (SEC-04): {{ disk_encryption_state | rejectattr('protected') | map(attribute='path') | join(', ') }}
+      not on dm-crypt and no provider encryption declared. The DataMountNotEncrypted alert fires until this is fixed.
+  when:
+    - not disk_encryption_enforce | bool
+    - disk_encryption_state | rejectattr('protected') | list | length > 0
+
+- name: Bind LUKS volumes to clevis for unattended unlock
+  ansible.builtin.include_tasks: clevis.yml
+  when: disk_encryption_clevis_devices | length > 0

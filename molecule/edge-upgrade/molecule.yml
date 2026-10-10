@@ -1,0 +1,130 @@
+---
+# Upgrade path of the edge proxy and WAF (CHG-07): prepare installs what the previous release deployed
+# (versions_upgrade_from: haproxy, coraza_spoa), converge runs playbooks/upgrade.yml to move it to
+# this release, verify runs the edge checks again and checks the pinned versions. CI skips the
+# scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: edge-1
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [edge, container_hosts]
+    docker_networks:
+      - name: edge-molecule
+        ipam_config:
+          - subnet: 172.31.250.0/24
+            gateway: 172.31.250.1
+    networks:
+      - name: edge-molecule
+        ipv4_address: 172.31.250.11
+  - name: edge-2
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /var/lib/docker
+    command: ""
+    groups: [edge, container_hosts]
+    networks:
+      - name: edge-molecule
+        ipv4_address: 172.31.250.12
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    host_vars:
+      edge-1:
+        edge_backend_address: 172.31.250.11
+      edge-2:
+        edge_backend_address: 172.31.250.12
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        # Only edge-2 counts as an admin network, so edge-1 tests the refusal and edge-2 the access.
+        edge_admin_cidrs: [172.31.250.12/32]
+        edge_metrics_allowed_cidrs: [172.31.250.0/24]
+        edge_bind_addresses: ["0.0.0.0"]
+        edge_memory_limit: 256m
+        # The test container's own file limit is lower than the production default.
+        edge_ulimit_nofile: 0
+        edge_maxconn: 2000
+        edge_waf_memory_limit: 512m
+        # Behind the test proxy GHCR blobs are not reachable: build the agent from the Go module
+        # proxy instead. Without a proxy (CI) the upstream image is pulled.
+        edge_waf_build: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') | length > 0 }}"
+        edge_waf_build_args:
+          HTTPS_PROXY: "{{ lookup('ansible.builtin.env', 'MOLECULE_HTTPS_PROXY') }}"
+        edge_waf_build_ca_file: >-
+          {{ '/usr/local/share/ca-certificates/molecule-proxy.crt'
+             if lookup('ansible.builtin.env', 'MOLECULE_PROXY_CA') | length > 0 else '' }}
+        edge_backend_verify: required
+        edge_backend_ca_file: /etc/molecule-ca/ca.crt
+        edge_extra_services:
+          - name: app
+            hostnames: [app.test.internal, www.app.test.internal]
+            backend_group: edge
+            backend_port: 8443
+            backend_tls: true
+            health_path: /health
+            public: true
+            waf_exclusions:
+              - SecRule ARGS:allowed "@streq yes" "id:100200,phase:1,pass,nolog,ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:q"
+          - name: admin
+            hostnames: [admin.test.internal]
+            backend_group: edge
+            backend_port: 8080
+            backend_tls: false
+            health_path: /health
+            public: false
+          - name: limited
+            hostnames: [limited.test.internal]
+            backend_group: edge
+            backend_port: 8080
+            backend_tls: false
+            health_path: /health
+            public: true
+            rate_limit: 5
+        keepalived_vips: [172.31.250.100/24]
+        keepalived_interface: eth0
+        keepalived_preempt_delay: 5
+        firewall_rules_edge:
+          - { name: edge-http, port: 80, sources: [any] }
+          - { name: edge-https, port: 443, sources: [any] }
+          - { name: edge-metrics, port: 8405, sources: "{{ edge_metrics_allowed_cidrs }}" }
+        firewall_rules_keepalived:
+          - { name: edge-vrrp, proto: vrrp, sources: [172.31.250.0/24] }
+        firewall_rules_test_backend:
+          - { name: whoami-http, port: 8080, sources: [172.31.250.0/24] }
+          - { name: whoami-https, port: 8443, sources: [172.31.250.0/24] }
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+        container_runtime_daemon_extra:
+          # Nested overlay filesystems are not always possible; vfs works everywhere.
+          storage-driver: vfs
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

@@ -1,0 +1,38 @@
+---
+# HA failover drill (HA-01). For each selected service: checks every node is healthy, stops one node
+# (the leader, primary or VIP holder where the service has one), proves from a surviving node that the
+# service still answers through its VIP or load-balanced endpoint and still accepts writes, restores
+# the node and waits until it is healthy again. A JSON report per drill goes to
+# /var/lib/compliance-evidence/ha-drill/ on the probing node (kept by the backups) and the result is
+# exported as metrics (HADrillFailed alert). Definitions: ha_drill_<service> in roles/ha_drill/defaults.
+#
+#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=keycloak -e ha_drill_confirm=yes
+#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=postgres -e ha_drill_instances=pg-main \
+#     -e ha_drill_node=data-2.example.internal -e ha_drill_confirm=yes
+#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=all -e ha_drill_confirm=yes
+#
+# Run it in a maintenance window: clients connected to the stopped node see a failover.
+- name: Check the request
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - ha_drill_confirm | default('') == 'yes'
+          - (ha_drill_services | default('')) | length > 0
+        fail_msg: >-
+          Nothing stopped. Choose services with -e ha_drill_services=<name>[,<name>] (or all) and confirm with
+          -e ha_drill_confirm=yes. Each drill stops one node of the service.
+        quiet: true
+      tags: [chk_ha_01]
+
+- name: Run the HA drills
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Drill each selected service
+      ansible.builtin.include_role:
+        name: ha_drill
+      tags: [chk_ha_01]

@@ -1,0 +1,80 @@
+---
+# Unattended unlock (docs/disk-encryption.md): adds a clevis key slot (Tang servers and/or TPM2) to
+# existing LUKS2 volumes. Never formats or re-encrypts anything; the existing passphrase stays valid
+# as the recovery key (keep it in Vault/OpenBao and offline).
+- name: Check the clevis settings
+  ansible.builtin.assert:
+    that:
+      - disk_encryption_luks_passphrase | length > 0
+      - "'tang' not in disk_encryption_clevis_policy or disk_encryption_clevis_tang_servers | length > 0"
+      - disk_encryption_clevis_tang_servers | selectattr('thp', 'undefined') | list | length == 0
+      - disk_encryption_clevis_tang_threshold | int >= 1
+      - "'tang' not in disk_encryption_clevis_policy or disk_encryption_clevis_tang_threshold | int <= disk_encryption_clevis_tang_servers | length"
+    fail_msg: >-
+      Binding LUKS volumes needs the existing passphrase (disk_encryption_luks_passphrase from Vault/OpenBao)
+      and, for Tang, servers with pinned thumbprints (thp) and a threshold no larger than the server count.
+    quiet: true
+  no_log: true
+  tags: [chk_sec_04]
+
+- name: Install clevis
+  ansible.builtin.apt:
+    name: >-
+      {{ ['clevis', 'clevis-luks', 'clevis-initramfs', 'clevis-systemd', 'cryptsetup-bin']
+         + (['clevis-tpm2'] if 'tpm2' in disk_encryption_clevis_policy else []) }}
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Check that every device is already LUKS (nothing is formatted)
+  ansible.builtin.command:
+    argv: [cryptsetup, isLuks, --type, luks2, "{{ item.device }}"]
+  loop: "{{ disk_encryption_clevis_devices }}"
+  loop_control:
+    label: "{{ item.device }}"
+  changed_when: false
+  tags: [chk_sec_04]
+
+- name: Read the current clevis bindings
+  ansible.builtin.command:
+    argv: [clevis, luks, list, -d, "{{ item.device }}"]
+  loop: "{{ disk_encryption_clevis_devices }}"
+  loop_control:
+    label: "{{ item.device }}"
+  register: disk_encryption_clevis_bound
+  changed_when: false
+  failed_when: false
+
+- name: Bind each device to the policy
+  ansible.builtin.command:
+    argv: [clevis, luks, bind, -y, -k, "-", -d, "{{ item.item.device }}", sss, "{{ disk_encryption_clevis_config | to_json }}"]
+    stdin: "{{ disk_encryption_luks_passphrase }}"
+    stdin_add_newline: false
+  loop: "{{ disk_encryption_clevis_bound.results }}"
+  loop_control:
+    label: "{{ item.item.device }}"
+  # Bind when a Tang server or the TPM2 required by the policy is missing from the device's bindings.
+  when: >-
+    ('tang' in disk_encryption_clevis_policy
+     and disk_encryption_clevis_tang_servers | map(attribute='url') | reject('in', item.stdout | default('')) | list | length > 0)
+    or ('tpm2' in disk_encryption_clevis_policy and 'tpm2' not in item.stdout | default(''))
+  vars:
+    disk_encryption_tang_pin:
+      t: "{{ disk_encryption_clevis_tang_threshold | int }}"
+      pins:
+        tang: "{{ disk_encryption_clevis_tang_servers | map('dict2items') | map('selectattr', 'key', 'in', ['url', 'thp']) | map('items2dict') | list }}"
+    disk_encryption_tpm2_pin:
+      pcr_ids: "{{ disk_encryption_clevis_tpm2_pcrs }}"
+    disk_encryption_clevis_config: >-
+      {{ disk_encryption_tang_pin if disk_encryption_clevis_policy == 'tang'
+         else {'t': 1, 'pins': {'tpm2': disk_encryption_tpm2_pin}} if disk_encryption_clevis_policy == 'tpm2'
+         else {'t': 2, 'pins': {'sss': disk_encryption_tang_pin, 'tpm2': disk_encryption_tpm2_pin}} }}
+  register: disk_encryption_clevis_bind
+  changed_when: true
+  no_log: true
+  tags: [chk_sec_04]
+
+- name: Rebuild the initramfs so the root volume unlocks at boot
+  ansible.builtin.command: update-initramfs -u -k all
+  when: disk_encryption_clevis_bind is changed  # noqa: no-handler
+  changed_when: true

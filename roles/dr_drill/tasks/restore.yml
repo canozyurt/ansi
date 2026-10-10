@@ -1,0 +1,94 @@
+---
+# Restore one backup declaration (dr_drill_backup) into the scratch directory and check it: the
+# newest snapshot's age against the RPO, every declared path present, the declaration's own
+# verify_command. Failures are recorded and the drill goes on, so the report lists them all.
+- name: Read the backup declaration ({{ dr_drill_backup }})
+  ansible.builtin.slurp:
+    src: "/etc/compliant-infra/backup.d/{{ dr_drill_backup }}.json"
+  register: dr_drill_decl_raw
+
+- name: Note the declared paths
+  ansible.builtin.set_fact:
+    dr_drill_decl: "{{ dr_drill_decl_raw.content | b64decode | from_json }}"
+    dr_drill_paths: "{{ dr_drill_paths + (dr_drill_decl_raw.content | b64decode | from_json).paths | default([]) }}"
+    dr_drill_snapshot_time: ""
+    dr_drill_snapshot_id: ""
+    dr_drill_backup_age: -1
+
+- name: Restore and check {{ dr_drill_backup }}
+  block:
+    - name: List the snapshots
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/compliant-backup', 'snapshots', '--name', dr_drill_backup, '--json']
+             + (['--repo', dr_drill_repo] if dr_drill_repo | length > 0 else []) }}
+      register: dr_drill_snapshots
+      changed_when: false
+
+    - name: Find the newest snapshot
+      ansible.builtin.set_fact:
+        dr_drill_snapshot_time: "{{ (dr_drill_snapshots.stdout | from_json | sort(attribute='time') | last).time }}"
+        dr_drill_snapshot_id: "{{ (dr_drill_snapshots.stdout | from_json | sort(attribute='time') | last).short_id | default('') }}"
+
+    - name: Convert the snapshot time
+      ansible.builtin.command:
+        argv: [date, -u, -d, "{{ dr_drill_snapshot_time }}", +%s]
+      register: dr_drill_snapshot_epoch
+      changed_when: false
+
+    - name: Note the backup's age
+      ansible.builtin.set_fact:
+        dr_drill_backup_age: "{{ now().timestamp() | int - dr_drill_snapshot_epoch.stdout | int }}"
+
+    - name: Restore the newest snapshot into scratch
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/compliant-backup', 'restore', '--name', dr_drill_backup, '--snapshot', 'latest',
+              '--target', dr_drill_scratch]
+             + (['--repo', dr_drill_repo] if dr_drill_repo | length > 0 else []) }}
+      changed_when: true
+      tags: [chk_ha_02]
+
+    - name: Check that every declared path came back
+      ansible.builtin.stat:
+        path: "{{ dr_drill_scratch }}{{ item }}"
+      loop: "{{ dr_drill_decl.paths | default([]) }}"
+      register: dr_drill_restored
+
+    - name: Fail on missing paths
+      ansible.builtin.assert:
+        that: dr_drill_restored.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: "missing after restore: {{ dr_drill_restored.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}"
+        quiet: true
+      tags: [chk_ha_02]
+
+    - name: Run the declaration's verify_command
+      ansible.builtin.command:
+        argv: [sh, -c, "{{ dr_drill_decl.verify_command }}"]
+        chdir: "{{ dr_drill_scratch }}"
+      environment:
+        RESTORE_DIR: "{{ dr_drill_scratch }}"
+        BACKUP_NAME: "{{ dr_drill_backup }}"
+      changed_when: false
+      when: (dr_drill_decl.verify_command | default('')) | length > 0
+      tags: [chk_ha_02]
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        dr_drill_errors: "{{ dr_drill_errors + [dr_drill_backup ~ ': ' ~ (ansible_failed_task.name | default('restore'))] }}"
+  always:
+    - name: Log the restore
+      ansible.builtin.set_fact:
+        dr_drill_backup_log: >-
+          {{ dr_drill_backup_log + [{'name': dr_drill_backup, 'snapshot': dr_drill_snapshot_id,
+             'snapshot_time': dr_drill_snapshot_time, 'age_seconds': dr_drill_backup_age | int,
+             'within_rpo': 0 <= dr_drill_backup_age | int <= (dr_drill_def.rpo_hours | float * 3600) | int,
+             'paths': dr_drill_decl.paths | default([]),
+             'verify_command': (dr_drill_decl.verify_command | default('')) | length > 0}] }}
+
+- name: Record a backup older than the RPO
+  ansible.builtin.set_fact:
+    dr_drill_errors: >-
+      {{ dr_drill_errors + [dr_drill_backup ~ ': newest snapshot is ' ~ (dr_drill_backup_age | int // 3600)
+         ~ ' h old, RPO ' ~ dr_drill_def.rpo_hours ~ ' h'] }}
+  when: dr_drill_backup_age | int > (dr_drill_def.rpo_hours | float * 3600) | int

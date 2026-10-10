@@ -289,6 +289,15 @@ tools:
         connection (source, bytes; TCP mode, no per-request log) to journald and the SIEM, and bucket and key
         changes are made only from the playbook (git history).
 
+  - name: rclone
+    versions: [images/rclone]
+    roles: [data_lifecycle]
+    license: MIT
+    osi_approved: true
+    sso: {status: "n.a.", note: "CLI run for one export or deletion, with a temporary per-run Garage key."}
+    audit_log: {status: "n.a.", note: "Each run writes an export manifest or a deletion certificate as evidence."}
+    ha: {status: "n.a.", note: "One-off job started by a playbook."}
+
   # Distribution packages that are tools in their own right (Debian/Ubuntu archive or vendor repositories).
   - name: Docker Engine
     packages: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin, docker-buildx-plugin]

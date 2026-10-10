@@ -1,0 +1,13 @@
+---
+- name: Fail the PostgreSQL leader and prove writes reach the new leader
+  ansible.builtin.import_playbook: ../../playbooks/ha_drill.yml
+  vars:
+    ha_drill_services: postgres
+    ha_drill_confirm: "yes"
+    ha_drill_run_id: molecule
+
+- name: Check the drill evidence
+  ansible.builtin.import_playbook: ../shared/verify_ha_drill.yml
+  vars:
+    verify_drill_label: postgres/pg-ha
+    verify_drill_stopped: ""

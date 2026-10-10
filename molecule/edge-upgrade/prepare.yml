@@ -1,0 +1,14 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: ['haproxy', 'coraza_spoa']
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../edge/converge.yml
+  vars:
+    edge_haproxy_image: "{{ versions_upgrade_from.haproxy }}"
+    edge_waf_image: "{{ versions_upgrade_from.coraza_spoa }}"

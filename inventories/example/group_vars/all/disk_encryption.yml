@@ -1,0 +1,5 @@
+---
+# Data at rest (SEC-04, roles/disk_encryption in the baseline). Production refuses hosts whose data
+# paths are not on dm-crypt (LUKS) unless the provider encryption is declared for the host:
+#   disk_encryption_provider: aws-ebs    # host_vars or a group, with the provider's settings as evidence
+disk_encryption_enforce: true

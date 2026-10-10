@@ -1,0 +1,80 @@
+---
+# One probe while the node is down. Each probe is retried until it passes, so the time it took is the
+# failover time; it fails after ha_drill_probe_retries attempts.
+- name: "Probe over HTTP: {{ ha_drill_probe.name }}"
+  ansible.builtin.uri:
+    url: "{{ ha_drill_probe.url }}"
+    method: "{{ ha_drill_probe.method | default('GET') }}"
+    headers: "{{ ha_drill_probe.headers | default(omit) }}"
+    body: "{{ ha_drill_probe.body | default(omit) }}"
+    body_format: "{{ ha_drill_probe.body_format | default(omit) }}"
+    status_code: "{{ ha_drill_probe.status | default([200]) }}"
+    url_username: "{{ ha_drill_probe.url_username | default(omit) }}"
+    url_password: "{{ ha_drill_probe.url_password | default(omit) }}"
+    force_basic_auth: "{{ ha_drill_probe.url_username is defined }}"
+    client_cert: "{{ ha_drill_probe.client_cert | default(omit) }}"
+    client_key: "{{ ha_drill_probe.client_key | default(omit) }}"
+    validate_certs: "{{ ha_drill_probe.validate_certs | default(ha_drill_validate_certs) }}"
+    ca_path: "{{ (ha_drill_probe.ca_path | default('', true)) or (ha_drill_ca_file | default('', true)) or omit }}"
+    timeout: 10
+  register: ha_drill_probe_http
+  until: >-
+    ha_drill_probe_http.status | default(0) in ha_drill_probe.status | default([200])
+    and (ha_drill_probe.json_key is not defined
+         or (ha_drill_probe_http.json | default({}))[ha_drill_probe.json_key] | default(none) == ha_drill_probe.json_equals)
+    and (ha_drill_probe.json_min_items is not defined
+         or ((ha_drill_json_items | selectattr(ha_drill_probe.json_select_attr, 'equalto', ha_drill_probe.json_select_value) | list)
+             if ha_drill_probe.json_select_attr is defined else ha_drill_json_items) | length >= ha_drill_probe.json_min_items | int)
+  vars:
+    ha_drill_json_items: >-
+      {{ ((ha_drill_probe_http.json | default({}))[ha_drill_probe.json_list] | default([]))
+         if ha_drill_probe.json_list is defined else (ha_drill_probe_http.json | default([])) }}
+  retries: "{{ ha_drill_probe.retries | default(ha_drill_probe_retries) }}"
+  delay: "{{ ha_drill_probe.delay | default(ha_drill_probe_delay) }}"
+  changed_when: ha_drill_probe.write | default(false) | bool
+  delegate_to: "{{ 'localhost' if ha_drill_probe.from | default('') == 'controller' else inventory_hostname }}"
+  no_log: "{{ ha_drill_probe.no_log | default(false) }}"
+  when: ha_drill_probe.url is defined
+  tags: [chk_ha_01]
+
+- name: "Probe with a command: {{ ha_drill_probe.name }}"
+  ansible.builtin.command:
+    argv: "{{ ha_drill_probe.argv }}"
+  environment: "{{ ha_drill_probe.env | default({}) }}"
+  register: ha_drill_probe_cmd
+  until: >-
+    ha_drill_probe_cmd.rc | default(1) == 0
+    and (ha_drill_probe.stdout_regex is not defined
+         or ha_drill_probe_cmd.stdout | default('') is search(ha_drill_probe.stdout_regex, multiline=true))
+  retries: "{{ ha_drill_probe.retries | default(ha_drill_probe_retries) }}"
+  delay: "{{ ha_drill_probe.delay | default(ha_drill_probe_delay) }}"
+  changed_when: ha_drill_probe.write | default(false) | bool
+  no_log: "{{ ha_drill_probe.no_log | default(false) }}"
+  when: ha_drill_probe.argv is defined
+  tags: [chk_ha_01]
+
+- name: "Probe a TCP port: {{ ha_drill_probe.name }}"
+  ansible.builtin.wait_for:
+    host: "{{ ha_drill_probe.host | default('127.0.0.1') }}"
+    port: "{{ ha_drill_probe.tcp | int }}"
+    search_regex: "{{ ha_drill_probe.search_regex | default(omit) }}"
+    timeout: "{{ (ha_drill_probe.retries | default(ha_drill_probe_retries) | int) * (ha_drill_probe.delay | default(ha_drill_probe_delay) | int) }}"
+  register: ha_drill_probe_tcp
+  when: ha_drill_probe.tcp is defined
+  tags: [chk_ha_01]
+
+- name: "Probe with the service's health tasks: {{ ha_drill_probe.name }}"
+  ansible.builtin.include_tasks: health.yml
+  when: ha_drill_probe.health | default(false) | bool
+
+- name: Log the probe
+  ansible.builtin.set_fact:
+    ha_drill_probe_log: >-
+      {{ ha_drill_probe_log + [{
+           'name': ha_drill_probe.name,
+           'node': inventory_hostname,
+           'write': ha_drill_probe.write | default(false) | bool,
+           'passed': true,
+           'attempts': ([ha_drill_probe_http, ha_drill_probe_cmd] | selectattr('attempts', 'defined')
+                        | map(attribute='attempts') | list + [1]) | first,
+           'seconds_after_stop': (now().timestamp() | int) - (ha_drill_t_stop | int)}] }}

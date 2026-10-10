@@ -1,0 +1,82 @@
+---
+# Evidence (HA-02, EVD-02): one JSON report per drill, the drill's metrics and the time of the last
+# successful drill (kept across runs, so a failed drill does not reset DRDrillOverdue).
+- name: Note the drill file names
+  ansible.builtin.set_fact:
+    dr_drill_slug: "{{ dr_drill_item.label | regex_replace('[^A-Za-z0-9_.-]', '-') }}"
+
+- name: Create the evidence and state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ dr_drill_evidence_dir }}"
+    - "{{ dr_drill_state_dir }}"
+
+- name: Read the time of the last successful drill
+  ansible.builtin.slurp:
+    src: "{{ dr_drill_state_dir }}/{{ dr_drill_slug }}.last-success"
+  register: dr_drill_last_success_raw
+  failed_when: false
+
+- name: Note the time of the last successful drill
+  ansible.builtin.set_fact:
+    dr_drill_last_success: >-
+      {{ dr_drill_t0 | int if dr_drill_errors | length == 0
+         else ((dr_drill_last_success_raw.content | default('MA==')) | b64decode | trim | int) }}
+
+- name: Store the time of the last successful drill
+  ansible.builtin.copy:
+    content: "{{ dr_drill_last_success }}\n"
+    dest: "{{ dr_drill_state_dir }}/{{ dr_drill_slug }}.last-success"
+    owner: root
+    group: root
+    mode: "0640"
+  when: dr_drill_errors | length == 0
+
+- name: Write the drill report
+  ansible.builtin.template:
+    src: report.json.j2
+    dest: "{{ dr_drill_evidence_dir }}/{{ dr_drill_run_id }}-{{ dr_drill_slug }}.json"
+    owner: root
+    group: root
+    mode: "0640"
+  register: dr_drill_report
+  tags: [chk_ha_02]
+
+- name: Copy the report to the controller
+  ansible.builtin.fetch:
+    src: "{{ dr_drill_report.dest }}"
+    dest: "{{ dr_drill_local_report_dir }}/"
+    flat: true
+  when: dr_drill_local_report_dir | length > 0
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ dr_drill_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Publish the drill result as metrics
+  ansible.builtin.template:
+    src: dr_drill.prom.j2
+    dest: "{{ dr_drill_textfile_dir }}/dr-drill-{{ dr_drill_slug }}.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_ha_02]
+
+- name: Keep the reports in the backups
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: dr-drill-evidence
+    backup_register_paths: ["{{ dr_drill_evidence_dir }}", "{{ dr_drill_state_dir }}"]
+    backup_register_rpo_hours: "{{ dr_drill_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ dr_drill_backup_rto_hours }}"
+  tags: [chk_ha_02]

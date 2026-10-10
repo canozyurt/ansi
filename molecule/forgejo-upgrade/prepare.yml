@@ -1,0 +1,13 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: ['forgejo']
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../forgejo/converge.yml
+  vars:
+    forgejo_image: "{{ versions_upgrade_from.forgejo }}"

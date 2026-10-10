@@ -1,0 +1,207 @@
+---
+# Disaster-recovery drills (HA-02), run by playbooks/dr_drill.yml at least once a year per service.
+# A drill restores the latest backup of a service into an isolated scratch directory on one of the
+# service's nodes (never over live data), verifies the restored data with the service's own tools
+# in a container without network, times it against the RTO, checks the backup's age against the
+# RPO, writes a JSON report to /var/lib/compliance-evidence/dr-drill/ and exports metrics
+# (DRDrillOverdue fires when a service has had no successful drill for 13 months). The runbooks that
+# rebuild a whole service are in docs/dr/; the drill proves their first step: that the data comes back.
+#
+# Each service declares its drill in dr_drill_<service> (override any key in the inventory):
+#
+#   group:      inventory group of the service's nodes
+#   instances:  optional list (product playbooks): one drill per entry, available as dr_drill_instance
+#   backups:    names of the backup declarations (roles/backup_register) restored with
+#               compliant-backup into the scratch directory; the declaration must exist on the node
+#   command:    instead of backups: a command (argv) that restores into its own scratch area and
+#               verifies (PostgreSQL: postgres-backup restore-test, a full pgBackRest restore)
+#   verify:     checks on the restored data, each {name, argv, env}. Variables available:
+#               dr_drill_scratch (restore target), dr_drill_paths (the declared paths, absolute; the
+#               restored copy of a path p is dr_drill_scratch ~ p), dr_drill_instance, dr_drill_run_id.
+#               Every check also gets RESTORE_DIR (= dr_drill_scratch) in its environment.
+#               The declaration's own verify_command always runs too.
+#   rpo_hours, rto_hours:  objectives the drill is measured against
+#
+# Variables of the play: dr_drill_services (comma list or "all"), dr_drill_instances (filter),
+# dr_drill_host (run every selected drill on this node), dr_drill_repo (backup server to restore
+# from; default: the first one; run once per server to prove each copy).
+
+dr_drill_all_services:
+  - openbao
+  - postgres
+  - valkey
+  - rabbitmq
+  - garage
+  - forgejo
+  - grc
+  - registry
+  - siem
+
+# Restored data is as sensitive as the live data: the scratch area must be on an encrypted volume
+# (SEC-04; /var/backups is in encrypted_mounts_required) and is removed after every drill.
+dr_drill_scratch_base: /var/backups/dr-drill-scratch
+dr_drill_keep_scratch: false
+
+dr_drill_evidence_dir: /var/lib/compliance-evidence/dr-drill
+dr_drill_state_dir: /var/lib/dr-drill
+dr_drill_textfile_dir: /var/lib/node_exporter/textfile_collector
+dr_drill_backup_rpo_hours: 24
+dr_drill_backup_rto_hours: 8
+# Also copy each report to this directory on the controller (e.g. the CI workspace); empty: off.
+dr_drill_local_report_dir: ""
+dr_drill_repo: ""
+
+# Container options for verification containers: no network, no capabilities, read-only image.
+dr_drill_ct_opts:
+  - --rm
+  - --network=none
+  - --cap-drop=ALL
+  - --security-opt=no-new-privileges:true
+  - --read-only
+  - --tmpfs=/tmp:rw,size=256m
+  - --memory=1g
+  - --pids-limit=512
+
+# ------------------------------------------------------------------ secrets
+dr_drill_openbao:
+  group: openbao
+  backups: [openbao]
+  rpo_hours: "{{ openbao_backup_rpo_hours | default(24) }}"
+  rto_hours: "{{ openbao_backup_rto_hours | default(4) }}"
+  verify:
+    # A Raft snapshot is a gzip tar with meta.json, state.bin and SHA256SUMS over both. Restoring it
+    # into a cluster needs that cluster's unseal keys (docs/dr/openbao.md); the drill proves the
+    # newest snapshot is complete and intact.
+    - name: The newest Raft snapshot is complete and its checksums match
+      argv:
+        - sh
+        - -c
+        - >-
+          set -eu;
+          snap=$(ls -1t "$RESTORE_DIR"{{ dr_drill_paths[0] | default('/nonexistent') | quote }}/openbao-*.snap | head -n1);
+          test -s "$snap";
+          d=$(mktemp -d "$RESTORE_DIR/openbao-check.XXXXXX");
+          tar -xzf "$snap" -C "$d";
+          test -s "$d/state.bin"; test -s "$d/meta.json";
+          cd "$d"; sha256sum -c SHA256SUMS;
+          echo "verified $snap"
+
+# ------------------------------------------------------------------ data services
+dr_drill_postgres:
+  instances: "{{ postgres_clusters | default([]) }}"
+  group: "{{ dr_drill_instance.group | default('') }}"
+  # Full pgBackRest restore of the latest backup plus WAL into a scratch container without network
+  # (for posix repositories), start, consistency checks and the cluster's verify_sql, from every
+  # repository. The tool runs on the cluster's first node only.
+  command:
+    - /usr/local/sbin/postgres-backup
+    - --config
+    - "/etc/compliant-infra/postgres/{{ dr_drill_instance.name | default('') }}/backup.json"
+    - restore-test
+  rpo_hours: "{{ dr_drill_instance.backup.rpo_hours | default(24) }}"
+  rto_hours: "{{ dr_drill_instance.backup.rto_hours | default(4) }}"
+  verify: []
+
+dr_drill_valkey:
+  instances: "{{ valkey_clusters | default([]) }}"
+  group: "{{ dr_drill_instance.group | default('') }}"
+  backups: ["valkey-{{ dr_drill_instance.name | default('') }}"]
+  rpo_hours: "{{ dr_drill_instance.backup.rpo_hours | default(24) }}"
+  rto_hours: "{{ dr_drill_instance.backup.rto_hours | default(4) }}"
+  verify:
+    - name: The restored RDB snapshot passes valkey-check-rdb
+      argv: >-
+        {{ ['docker', 'run'] + dr_drill_ct_opts
+           + ['--volume=' ~ dr_drill_scratch ~ (dr_drill_paths[0] | default('/nonexistent')) ~ ':/data:ro',
+              '--entrypoint=valkey-check-rdb', versions_images.valkey, '/data/dump.rdb'] }}
+
+dr_drill_rabbitmq:
+  instances: "{{ rabbitmq_clusters | default([]) }}"
+  group: "{{ dr_drill_instance.group | default('') }}"
+  backups: ["rabbitmq-{{ dr_drill_instance.name | default('') }}"]
+  rpo_hours: "{{ dr_drill_instance.backup.rpo_hours | default(24) }}"
+  rto_hours: "{{ dr_drill_instance.backup.rto_hours | default(4) }}"
+  verify:
+    # Imports the definitions into a throwaway single-node broker without network and lists what came back.
+    - name: The definitions import into a scratch broker
+      argv:
+        - /usr/local/sbin/dr-drill-rabbitmq
+        - "{{ dr_drill_scratch }}{{ dr_drill_paths[0] | default('/nonexistent') }}/definitions.json"
+        - "{{ versions_images.rabbitmq }}"
+        - "dr-drill-{{ dr_drill_run_id }}-{{ dr_drill_instance.name | default('') }}"
+
+dr_drill_garage:
+  instances: "{{ garage_clusters | default([]) }}"
+  group: "{{ dr_drill_instance.group | default('') }}"
+  # Metadata snapshots only; object blocks are replicated on 3 nodes (docs/dr/garage.md).
+  backups: ["garage-{{ dr_drill_instance.name | default('') }}"]
+  rpo_hours: "{{ dr_drill_instance.backup.rpo_hours | default(24) }}"
+  rto_hours: "{{ dr_drill_instance.backup.rto_hours | default(4) }}"
+  verify:
+    - name: The newest metadata snapshot is present and not empty
+      argv:
+        - sh
+        - -c
+        - >-
+          set -eu;
+          d="$RESTORE_DIR"{{ dr_drill_paths[0] | default('/nonexistent') | quote }};
+          newest=$(ls -1t "$d" | head -n1); test -n "$newest";
+          size=$(du -sb "$d/$newest" | cut -f1); test "$size" -gt 0;
+          echo "newest snapshot $newest ($size bytes)"
+
+# ------------------------------------------------------------------ platform services
+dr_drill_forgejo:
+  group: forgejo
+  backups: [forgejo]
+  rpo_hours: "{{ forgejo_backup_rpo_hours | default(24) }}"
+  rto_hours: "{{ forgejo_backup_rto_hours | default(4) }}"
+  verify:
+    - name: The dump holds the database, and every repository in it passes git fsck
+      argv:
+        - sh
+        - -c
+        - >-
+          set -eu;
+          dump="$RESTORE_DIR"{{ (forgejo_dump_dir | default('/var/backups/forgejo')) | quote }}/forgejo-dump.tar.gz;
+          d=$(mktemp -d "$RESTORE_DIR/forgejo-check.XXXXXX");
+          tar -xzf "$dump" -C "$d";
+          test -s "$d/forgejo-db.sql";
+          docker run {{ dr_drill_ct_opts | map('quote') | join(' ') }} --user=0:0 --volume="$d:/dump:ro"
+          --entrypoint=sh {{ versions_images.forgejo | quote }} -c '
+          n=0; for r in $(find /dump/repos -type d -name "*.git" -prune 2>/dev/null); do
+          git -c safe.directory="*" --git-dir="$r" fsck --connectivity-only --no-progress || exit 1; n=$((n+1)); done;
+          echo "git fsck passed for $n repositories"'
+
+dr_drill_grc:
+  group: grc
+  # The declaration's verify_command lists the database dump with pg_restore.
+  backups: [grc]
+  rpo_hours: "{{ grc_backup_rpo_hours | default(24) }}"
+  rto_hours: "{{ grc_backup_rto_hours | default(8) }}"
+  verify: []
+
+dr_drill_registry:
+  group: registry
+  # The declaration's verify_command (registry-verify-restore) checks the OCI layout and blobs.
+  backups: [registry]
+  rpo_hours: "{{ registry_backup_rpo_hours | default(24) }}"
+  rto_hours: "{{ registry_backup_rto_hours | default(8) }}"
+  verify: []
+
+dr_drill_siem:
+  group: siem
+  # Configuration, agent keys and the SIEM CA; events come back from the indexer snapshots
+  # (docs/dr/siem.md).
+  backups: [wazuh-manager, wazuh-indexer]
+  rpo_hours: 24
+  rto_hours: 8
+  verify:
+    - name: The agent keys and the manager configuration are in the restore
+      argv:
+        - sh
+        - -c
+        - >-
+          set -eu;
+          test -n "$(find "$RESTORE_DIR" -path '*/ossec/etc/ossec.conf' -size +0 | head -n1)";
+          test -n "$(find "$RESTORE_DIR" -path '*/ossec/etc/client.keys' | head -n1)";
+          echo "manager configuration and client.keys present"

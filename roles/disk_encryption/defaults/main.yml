@@ -1,0 +1,52 @@
+---
+# Data at rest (SEC-04), part of the host baseline. This role never creates, formats or opens
+# encrypted volumes: disk encryption is set up when the host is built (docs/disk-encryption.md). It
+# checks that every data path below sits on a dm-crypt (LUKS) device, or that the host declares that
+# its provider encrypts the volumes, exports the result as metrics (DataMountNotEncrypted alert) and
+# fails the run when disk_encryption_enforce is true.
+
+# Paths that hold service data, container images and volumes, and local backups. Paths that do not
+# exist on a host are skipped. Add service data directories that live elsewhere.
+encrypted_mounts_required:  # noqa: var-naming[no-role-prefix] (name fixed by the SEC-04 checklist item)
+  - /var/lib/docker
+  - /opt
+  - /srv
+  - /var/backups
+
+# The provider encrypts every volume of this host (the host cannot see it), e.g. aws-ebs, gcp, azure,
+# hetzner-luks, openstack-luks, vmware-vm-encryption. Empty: dm-crypt is required. Declaring a
+# provider is an attestation: keep the provider's documentation or settings export as evidence.
+disk_encryption_provider: ""
+disk_encryption_providers_known:
+  - aws-ebs
+  - gcp
+  - azure
+  - hetzner-luks
+  - openstack-luks
+  - ovh
+  - scaleway
+  - vmware-vm-encryption
+  - proxmox-luks
+  - other-attested
+
+# true: fail the run when a required path is not protected (set it in production inventories).
+disk_encryption_enforce: false
+
+disk_encryption_textfile_dir: /var/lib/node_exporter/textfile_collector
+
+# Optional: unattended unlock at boot by binding existing LUKS volumes to Tang servers and/or the
+# TPM2 with clevis (docs/disk-encryption.md). Each device must already be LUKS2; the role only adds a
+# clevis key slot, using an existing passphrase from Vault/OpenBao (disk_encryption_luks_passphrase).
+#   disk_encryption_clevis_devices:
+#     - { device: /dev/disk/by-uuid/<uuid> }
+disk_encryption_clevis_devices: []
+# Tang servers (url and the thumbprint of their signing key: "tang-show-keys" on the server).
+disk_encryption_clevis_tang_servers: []
+#   - { url: "http://tang-1.example.internal", thp: "<thumbprint>" }
+# Also require (sss) or allow the TPM2. Policy: tang (any one Tang server), tpm2, or tang+tpm2.
+disk_encryption_clevis_policy: tang
+# How many Tang servers must answer (Shamir threshold over the Tang pins).
+disk_encryption_clevis_tang_threshold: 1
+# PCRs the TPM2 binding is sealed to (secure boot state).
+disk_encryption_clevis_tpm2_pcrs: "7"
+disk_encryption_luks_passphrase: ""
