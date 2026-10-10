@@ -126,6 +126,11 @@ registry_audit_log_keep_days: 7
 # --------------------------------------------------------------------------- backup (BCK-01, BCK-04)
 registry_backup_rpo_hours: 24
 registry_backup_rto_hours: 8
+# Upgrades (CHG-07): a version change runs only through playbooks/upgrade.yml, one node at a time,
+# after a copy of the indexes and metadata (local storage) and, with the backup client, a full backup.
+registry_upgrade_allow_parallel: false
+registry_upgrade_backup_dir: /var/backups/registry
+registry_upgrade_backup_keep: 5
 
 # --------------------------------------------------------------------------- local image build
 # Build the image on the host from the pinned release binary (checksum verified) instead of pulling

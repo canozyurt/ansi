@@ -1,0 +1,29 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: [valkey, redis_exporter]
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../valkey/converge.yml
+  vars:
+    valkey_cluster_image: "{{ versions_upgrade_from.valkey }}"
+    valkey_cluster_exporter_image: "{{ versions_upgrade_from.redis_exporter }}"
+
+- name: Write data that must survive the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Store a marker key as the admin user
+      community.docker.docker_container_exec:
+        container: cache-lab-valkey
+        argv: [valkey-cli, --tls, --cacert, /tls/ca-bundle.crt, -h, 127.0.0.1, --no-auth-warning,
+               -p, "6379", --user, admin, SET, "upgrade:marker", written-before-upgrade]
+        env: { REDISCLI_AUTH: test-only-valkey-admin-pw }
+      register: prepare_marker
+      changed_when: true
+      failed_when: prepare_marker.rc != 0 or 'OK' not in prepare_marker.stdout

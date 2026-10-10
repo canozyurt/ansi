@@ -123,6 +123,9 @@
   no_log: true
   tags: [chk_sec_02]
 
+- name: Refuse parallel version changes; copy off-site first (CHG-07)
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
 - name: Run rest-server (append-only, private repositories, TLS)
   community.docker.docker_container:
     name: "{{ backup_server_container_name }}"

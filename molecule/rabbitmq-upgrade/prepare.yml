@@ -1,0 +1,31 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: [rabbitmq]
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../rabbitmq/converge.yml
+  vars:
+    rabbitmq_cluster_image: "{{ versions_upgrade_from.rabbitmq }}"
+
+- name: Declare a queue that must survive the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Declare a durable queue in the orders vhost
+      ansible.builtin.uri:
+        url: https://127.0.0.1:15671/api/queues/orders/upgrade-marker
+        method: PUT
+        body_format: json
+        body: { durable: true }
+        url_username: admin
+        url_password: test-only-rabbitmq-admin-pw
+        force_basic_auth: true
+        ca_path: /opt/rabbitmq/mq-lab/tls/ca-bundle.crt
+        status_code: [201, 204]
+      changed_when: true

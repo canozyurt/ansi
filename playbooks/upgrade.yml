@@ -70,8 +70,28 @@
   roles:
     - role: keycloak
 
-- name: Upgrade node_exporter in batches
+- name: Find the hosts that run node_exporter and the SIEM agent
   hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Look for the node_exporter configuration and the agent's control script
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/opt/node_exporter/web.yml, /var/ossec/bin/wazuh-control]
+      register: upgrade_installed
+
+    - name: Upgrade only what this host runs (a release upgrades, it does not install)
+      ansible.builtin.group_by:
+        key: "{{ item.0 }}"
+      loop: "{{ ['upgrade_node_exporter', 'upgrade_wazuh_agent'] | zip(upgrade_installed.results) | selectattr('1.stat.exists') | list }}"
+      loop_control:
+        label: "{{ item.0 }}"
+      changed_when: false
+      tags: [chk_chg_07]
+
+- name: Upgrade node_exporter in batches
+  hosts: upgrade_node_exporter
   become: true
   serial: "20%"
   roles:
@@ -87,6 +107,8 @@
     - role: alertmanager
     - role: prometheus
     - role: grafana
+    - role: oauth2_proxy
+      when: oauth2_proxy_instances | default([]) | length > 0
   post_tasks:
     - name: Wait until Alertmanager, Prometheus and Grafana on this node are healthy before the next one
       ansible.builtin.include_role:
@@ -239,6 +261,26 @@
         label: "{{ garage_cluster.name }}"
       tags: [chk_chg_07]
 
+- name: Check every backup server is healthy before upgrading
+  hosts: backup
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Every rest-server answers (the others keep a full copy while one is upgraded)
+      ansible.builtin.include_role:
+        name: backup_server
+        tasks_from: health
+      when: not (upgrade_skip_preflight | default(false) | bool)
+      tags: [chk_chg_07]
+
+- name: Upgrade the backup servers one at a time (off-site copy first when configured)
+  hosts: backup
+  become: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: backup_server
+
 - name: Check the SIEM is healthy before upgrading
   hosts: siem
   become: true
@@ -250,6 +292,12 @@
         tasks_from: health
       when: not (upgrade_skip_preflight | default(false) | bool)
       tags: [chk_chg_07]
+
+    - name: Snapshot the indices to S3 before the first node changes version (BCK-01)
+      ansible.builtin.include_role:
+        name: wazuh_indexer
+        tasks_from: upgrade_backup
+      tags: [chk_chg_07, chk_bck_01]
 
 - name: Upgrade the SIEM indexer one node at a time
   hosts: siem
@@ -276,7 +324,7 @@
     - role: wazuh_dashboard
 
 - name: Upgrade the SIEM agents in batches (after the managers)
-  hosts: all
+  hosts: upgrade_wazuh_agent
   become: true
   serial: "20%"
   roles:

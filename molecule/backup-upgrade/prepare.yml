@@ -1,0 +1,23 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: [rest_server]
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../backup/converge.yml
+  vars:
+    backup_server_image: "{{ versions_upgrade_from.rest_server }}"
+
+- name: Back up to the previous release
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Take a backup of the sample declaration
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/compliant-backup, backup, --name, sample]
+      changed_when: true

@@ -225,6 +225,9 @@
   tags: [chk_sec_02]
 
 # ------------------------------------------------------------------ container
+- name: Back up and refuse parallel version changes (CHG-07)
+  ansible.builtin.import_tasks: upgrade_prepare.yml
+
 - name: Run the registry container
   community.docker.docker_container:
     name: "{{ registry_container_name }}"

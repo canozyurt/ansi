@@ -1,0 +1,75 @@
+---
+# Upgrade path of the status page and the GRC tool (CHG-07): prepare deploys molecule/governance with the
+# previous release (versions_upgrade_from: gatus, haproxy for the GRC TLS terminator, ciso_assistant_*),
+# converge runs playbooks/upgrade.yml (status page one node at a time; GRC with a database dump first),
+# verify runs the governance checks again and checks the new images. The lab does not deploy the CISO
+# Assistant containers (grc_app_deploy: false, see molecule/governance), so the GRC dump-before-migrate
+# path is not exercised here.
+# CI skips the scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: governance-ubuntu2404
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [status_page, grc, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        oidc_clients_enabled: false
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          security: [security-admin]
+          auditors: [auditor]
+        # The same catalog the edge proxy uses: "app" is public, "internal" is not.
+        edge_extra_services:
+          - { name: app, hostnames: [app.test.internal], backend_group: edge, backend_port: 8443, health_path: /health, public: true }
+          - { name: internal, hostnames: [internal.test.internal], backend_group: edge, backend_port: 8443, public: false }
+        status_page_allow_single_node: true
+        status_page_hostname: https://status.test.internal
+        status_page_interval: 10s
+        status_page_extra_endpoints:
+          - { name: test-backend, url: "https://127.0.0.1:9443/health", group: Test }
+        grc_hostname: https://grc.test.internal
+        grc_app_deploy: false
+        grc_db_host: 127.0.0.1
+        grc_db_password: test-only-db-password
+        grc_db_sslmode: disable
+        grc_secret_key: test-only-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
+        grc_admin_email: break-glass@test.internal
+        grc_admin_password: test-only-admin-password
+        # Only this host's own address may read /metrics/ (the verify checks both sides).
+        grc_metrics_allowed_cidrs: ["{{ ansible_facts['default_ipv4']['address'] }}/32"]
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves space over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

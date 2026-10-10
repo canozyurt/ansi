@@ -100,6 +100,10 @@ wazuh_indexer_snapshot_min_count: 7
 
 # Upgrades (docs/upgrades.md): a version change runs only through playbooks/upgrade.yml, one node at a time.
 wazuh_indexer_upgrade_allow_parallel: false
+# Before the first node changes version, upgrade.yml snapshots every index to the S3 repository and
+# waits for it (CHG-07). false only as a documented exception (no S3 repository; replicas only).
+wazuh_indexer_upgrade_snapshot_required: true
+wazuh_indexer_upgrade_snapshot_timeout: 3600
 
 # Open files per container (OpenSearch requires 65535+ in a multi-node cluster).
 wazuh_indexer_nofile: 65536

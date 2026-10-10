@@ -20,6 +20,8 @@ backup_server_user: rest-server
 backup_server_uid: 10800
 backup_server_memory_limit: 1g
 backup_server_extra_args: []
+# Upgrades (CHG-07): a version change runs only through playbooks/upgrade.yml, one server at a time.
+backup_server_upgrade_allow_parallel: false
 
 # TLS (SEC-03): organisation files, else the internal PKI, else self-signed (labs).
 backup_server_tls_cert_file: ""

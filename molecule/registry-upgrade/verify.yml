@@ -1,0 +1,35 @@
+---
+- name: Verify the upgraded registry still meets its checklist items
+  ansible.builtin.import_playbook: ../registry/verify.yml
+
+- name: Verify the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    bundle: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/versions/defaults/main.yml') | from_yaml }}"
+  tasks:
+    - name: Inspect the upgraded container
+      community.docker.docker_container_info:
+        name: registry
+      register: verify_upgraded
+      tags: [chk_chg_07]
+
+    - name: The registry runs the version pinned by this release
+      ansible.builtin.assert:
+        that:
+          - verify_upgraded.container.Config.Image == bundle.versions_images.zot
+          - verify_upgraded.container.State.Running
+      tags: [chk_chg_07]
+
+    - name: Find the pre-upgrade archive
+      ansible.builtin.find:
+        paths: /var/backups/registry
+        patterns: registry-*.tar.gz
+      register: verify_registry_backup
+      tags: [chk_chg_07, chk_bck_01]
+
+    - name: The indexes and metadata were archived before the version change
+      ansible.builtin.assert:
+        that: verify_registry_backup.matched == 1
+      tags: [chk_chg_07, chk_bck_01]

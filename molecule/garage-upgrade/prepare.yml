@@ -1,0 +1,36 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: [garage, haproxy]
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../garage/converge.yml
+  vars:
+    garage_cluster_image: "{{ versions_upgrade_from.garage }}"
+    garage_cluster_proxy_image: "{{ versions_upgrade_from.haproxy }}"
+
+- name: Store an object that must survive the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Copy the S3 probe
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../garage/files/s3_probe.py"
+        dest: /usr/local/bin/s3_probe.py
+        mode: "0755"
+
+    - name: Put the object with the application key
+      ansible.builtin.command:
+        argv: [/usr/local/bin/s3_probe.py, PUT, https://127.0.0.1:3900/orders-files/upgrade-marker.txt, garage,
+               /opt/garage/s3-lab/tls/tls.crt, written-before-upgrade]
+      environment:
+        AWS_ACCESS_KEY_ID: GK3bcabd5f1d6668823225ba40
+        AWS_SECRET_ACCESS_KEY: e6dcf76321bc8f746c960f556d695cc092876274a43767f65aac250e5e1362a8
+      register: prepare_put
+      changed_when: true
+      failed_when: prepare_put.stdout is not match('^200')

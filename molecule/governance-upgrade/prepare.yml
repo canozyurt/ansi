@@ -1,0 +1,16 @@
+---
+- name: Prepare the test host
+  ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Check that the previous release is known
+  ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
+  vars:
+    check_upgrade_from_keys: [gatus, haproxy, ciso_assistant_backend, ciso_assistant_frontend]
+
+- name: Install the previous release
+  ansible.builtin.import_playbook: ../governance/converge.yml
+  vars:
+    status_page_image: "{{ versions_upgrade_from.gatus }}"
+    grc_proxy_image: "{{ versions_upgrade_from.haproxy }}"
+    grc_backend_image: "{{ versions_upgrade_from.ciso_assistant_backend }}"
+    grc_frontend_image: "{{ versions_upgrade_from.ciso_assistant_frontend }}"

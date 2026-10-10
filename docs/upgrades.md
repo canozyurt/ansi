@@ -21,7 +21,8 @@ they move to a new tag and run one playbook.
 3. The playbook:
    - checks that every node is healthy before it changes anything;
    - backs up each service's data before a version change (Keycloak: a
-     `pg_dump` in `/var/backups/keycloak`, the newest 5 kept);
+     `pg_dump` in `/var/backups/keycloak`, the newest 5 kept; the table in
+     [releasing.md](releasing.md#upgrade-coverage) lists the backup of every service);
    - upgrades one node at a time and waits for it to be healthy;
    - stops at the first node that fails, leaving the rest on the old version.
 4. Keep the run log as change evidence (`ansible.log`, or the CI job log).

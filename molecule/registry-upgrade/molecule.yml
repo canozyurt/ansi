@@ -1,0 +1,86 @@
+---
+# Upgrade path of the registry (CHG-07): prepare deploys molecule/registry with the previous release
+# (versions_upgrade_from.zot, the upstream image: the lab's local build only knows this release's binary)
+# and pushes nothing, converge runs playbooks/upgrade.yml (index and metadata archive first, one node at
+# a time), verify runs the registry checks again and checks the new image and the pre-upgrade archive.
+# CI skips the scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: registry-ubuntu2404
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [registry, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        rbac_model_group_assignments:
+          infra-team: [platform-admin]
+          developers: [developer]
+          auditors: [auditor]
+        oidc_clients_enabled: false
+        registry_allow_single_node: true
+        registry_hostname: https://registry.test.internal
+        registry_tls_alt_names: [registry.test.internal, 127.0.0.1]
+        registry_oidc_enabled: false
+        registry_admin_password: test-only-admin-password
+        registry_metrics_user: prometheus
+        registry_metrics_password: test-only-metrics-password
+        registry_robots:
+          - name: ci-apps
+            password: test-only-ci-apps-password-0001
+            repositories: ["apps/**"]
+            actions: [read, create, update]
+          - name: puller
+            password: test-only-puller-password-00001
+            repositories: ["**"]
+            actions: [read]
+        registry_signature_check_robot: puller
+        registry_signature_policy: enforce
+        # Test-only public key (generated for this scenario; the private key is not kept).
+        registry_trust_cosign_keys:
+          release: |
+            -----BEGIN PUBLIC KEY-----
+            MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzotxTprQkOLbOuujWQT05bzyuWG1
+            Uuht/a+SZCz48tuSw25OX+QjtWbuHHEFpK2H4//6BjI7N8IMWPhKqzseLg==
+            -----END PUBLIC KEY-----
+        registry_memory_limit: 1g
+        # Upstream images for both releases (ghcr.io must be reachable).
+        registry_build: false
+        registry_build_proxy: ${MOLECULE_HTTPS_PROXY}
+        # The CVE database download goes through the test proxy (it may be blocked there).
+        registry_env:
+          HTTPS_PROXY: ${MOLECULE_HTTPS_PROXY}
+          NO_PROXY: 127.0.0.1,localhost,registry.test.internal
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves space over vfs.
+          storage-driver: overlay2
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

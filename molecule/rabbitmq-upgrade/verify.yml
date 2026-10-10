@@ -1,0 +1,55 @@
+---
+- name: Verify the upgraded service still meets its checklist items
+  ansible.builtin.import_playbook: ../rabbitmq/verify.yml
+
+- name: Verify the upgrade
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    bundle: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/versions/defaults/main.yml') | from_yaml }}"
+  tasks:
+    - name: Inspect the upgraded container
+      community.docker.docker_container_info:
+        name: mq-lab-rabbitmq
+      register: verify_upgraded
+      tags: [chk_chg_07]
+
+    - name: RabbitMQ runs the version pinned by this release
+      ansible.builtin.assert:
+        that:
+          - verify_upgraded.container.Config.Image == bundle.versions_images.rabbitmq
+          - verify_upgraded.container.State.Running
+      tags: [chk_chg_07]
+
+    - name: Read the queue declared before the upgrade
+      ansible.builtin.uri:
+        url: https://127.0.0.1:15671/api/queues/orders/upgrade-marker
+        url_username: admin
+        url_password: test-only-rabbitmq-admin-pw
+        force_basic_auth: true
+        ca_path: /opt/rabbitmq/mq-lab/tls/ca-bundle.crt
+      register: verify_queue
+      tags: [chk_chg_07]
+
+    - name: The queue survived the upgrade as a durable quorum queue
+      ansible.builtin.assert:
+        that:
+          - verify_queue.json.durable
+          - verify_queue.json.type == 'quorum'
+      tags: [chk_chg_07]
+
+    - name: Read the pre-upgrade definitions export
+      ansible.builtin.slurp:
+        src: /opt/rabbitmq/mq-lab/backup/definitions.json
+      register: verify_definitions
+      tags: [chk_chg_07, chk_bck_01]
+
+    - name: The export was taken before the version change and holds the users and the queue
+      ansible.builtin.assert:
+        that:
+          - (verify_definitions.content | b64decode | from_json).users | length > 0
+          - >-
+            (verify_definitions.content | b64decode | from_json).queues
+            | selectattr('name', 'equalto', 'upgrade-marker') | list | length == 1
+      tags: [chk_chg_07, chk_bck_01]

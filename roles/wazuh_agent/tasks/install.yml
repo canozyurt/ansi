@@ -57,6 +57,8 @@
         name: "wazuh-agent={{ wazuh_agent_version }}"
         update_cache: "{{ wazuh_agent_repo is changed or wazuh_agent_key is changed }}"
         allow_downgrade: false
+        # The package is held (below); a release that pins a newer agent moves the hold with it.
+        allow_change_held_packages: true
         state: present
       notify: Restart wazuh-agent
 

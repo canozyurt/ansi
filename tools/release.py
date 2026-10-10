@@ -16,15 +16,21 @@ Commands:
         One line per *-upgrade scenario: ready or waiting for a release.
     tools/release.py notes VERSION [--since TAG]
         Release notes (Markdown) for VERSION: every version change since the previous tag, the
-        upgrade scenarios that test it, and the release checklist.
+        upgrade scenarios that test it, and the release checklist. With no earlier tag this is the
+        first release (v0.1.0): every component is new and nothing upgrades from an earlier release.
+    tools/release.py cut VERSION [--notes-out FILE] [--allow-dirty]
+        Pre-flight for tagging VERSION: a clean tree, a version newer than the last tag (the first
+        release must be v0.1.0), HEAD not tagged yet, the document and upgrade-coverage checks. Writes
+        the notes and prints the signed-tag and follow-up commands. It never creates or pushes a tag.
     tools/release.py bump-upgrade-from TAG [--dry-run]
         After tagging TAG: copy the versions TAG deployed into versions_upgrade_from and
         versions_postgres_upgrade_from, so the next release is tested against TAG.
     tools/release.py check
         Per-release document checks: every service with a backup or HA drill has a DR runbook
         listed in docs/dr/README.md (HA-02), docs/shared-responsibility.md covers every ISO 27017
-        CLD control and every checklist item that maps to one (DAT-03), and every *-upgrade
-        scenario runs in CI (CHG-07).
+        CLD control and every checklist item that maps to one (DAT-03), every *-upgrade
+        scenario runs in CI, and every role that deploys a pinned service has a play in
+        playbooks/upgrade.yml and an upgrade scenario, or is listed as exempt with a reason (CHG-07).
 
 Options: --root DIR checks another tree (self-tests).
 """
@@ -44,6 +50,53 @@ SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 KEYS_RE = re.compile(r"check_upgrade_from_keys:\s*\[([^\]]*)\]")
 VARS_RE = re.compile(r"check_upgrade_from_vars:\s*\[([^\]]*)\]")
 REF_RE = re.compile(r"versions_upgrade_from\.([a-z0-9_]+)")
+
+FIRST_RELEASE = "v0.1.0"
+
+# CHG-07: every role that deploys a pinned, long-running service is upgraded by playbooks/upgrade.yml
+# (one node at a time, backup first) and has a Molecule scenario that installs the previous release
+# and runs that playbook. None means the role has a play but no scenario of its own; the reason says why.
+UPGRADE_COVERAGE: dict[str, str | None] = {
+    "openbao": "openbao-upgrade",
+    "keycloak": "keycloak-upgrade",
+    "postgres_cluster": "postgres-upgrade",
+    "valkey_cluster": "valkey-upgrade",
+    "rabbitmq_cluster": "rabbitmq-upgrade",
+    "garage_cluster": "garage-upgrade",
+    "wazuh_indexer": "siem-upgrade",
+    "wazuh_manager": "siem-upgrade",
+    "wazuh_dashboard": "siem-upgrade",
+    "wazuh_agent": "siem-upgrade",
+    "registry": "registry-upgrade",
+    "backup_server": "backup-upgrade",
+    "forgejo": "forgejo-upgrade",
+    "forgejo_runner": "forgejo-upgrade",
+    "edge": "edge-upgrade",
+    "status_page": "governance-upgrade",
+    "grc": "governance-upgrade",
+    "prometheus": "monitoring-upgrade",
+    "alertmanager": "monitoring-upgrade",
+    "grafana": "monitoring-upgrade",
+    "blackbox_exporter": "monitoring-upgrade",
+    "node_exporter": "monitoring-upgrade",
+    # Stateless SSO sidecar, upgraded in the monitoring play; the monitoring lab has no Keycloak.
+    "oauth2_proxy": None,
+}
+
+# Roles that read roles/versions but run no long-lived service, so there is nothing to upgrade in
+# place: the next site.yml run (or the next scheduled run) uses the new pin.
+UPGRADE_EXEMPT: dict[str, str] = {
+    "backup": "restic client binary; the repositories are served by backup_server",
+    "cis_audit": "scheduled scan job",
+    "docker_bench": "scheduled scan job",
+    "tls_scan": "scheduled scan job",
+    "trivy_scan": "scheduled scan job",
+    "data_lifecycle": "on-demand export and deletion playbooks",
+    "dr_drill": "on-demand restore drill into scratch space",
+    "openbao_secrets": "secret rotation and checks against OpenBao; no service of its own",
+    "image_verify": "signature check run by the container roles before they create a container",
+}
+VERSION_REF_RE = re.compile(r"\bversions_(images|packages|tools|postgres)\b")
 
 # ISO/IEC 27017:2015 cloud-specific controls (the CLD extended control set).
 CLD_CONTROLS = [
@@ -156,7 +209,15 @@ def cmd_notes(root: Path, args) -> int:
     old = flatten(versions_at(root, since)) if since else {}
     new = flatten(versions_at(root, None))
     out = [f"# Release {args.version}", ""]
-    out.append(f"Previous release: {since}." if since else "First release.")
+    if since:
+        out.append(f"Previous release: {since}.")
+    else:
+        out += [
+            "First release of this repository. Every component below is new, and there is no earlier",
+            "release to upgrade from: install with playbooks/site.yml. The upgrade scenarios marked",
+            "\"ready\" below were tested from the predecessor versions pinned in versions_upgrade_from,",
+            "which are upstream releases, not releases of this repository.",
+        ]
     out += ["", "## Version changes", "", "| Component | Before | After |", "| --- | --- | --- |"]
     changed = 0
     for key in sorted(set(old) | set(new)):
@@ -168,7 +229,13 @@ def cmd_notes(root: Path, args) -> int:
     out += ["", "## Upgrade paths tested in CI", ""]
     for scenario in upgrade_scenarios(root):
         missing = missing_for(root, scenario) or []
-        out.append(f"- {scenario}: {'from ' + (since or 'the previous release') if not missing else 'not yet (new service)'}")
+        if missing:
+            state = "not yet (no earlier release of the service)"
+        elif since:
+            state = f"from {since}"
+        else:
+            state = "ready, from the upstream predecessor versions in versions_upgrade_from"
+        out.append(f"- {scenario}: {state}")
     out += [
         "",
         "## Services that need a recreate update",
@@ -263,7 +330,95 @@ def check_docs(root: Path) -> list[str]:
     for scenario in upgrade_scenarios(root):
         if not re.search(rf"^\s*-\s*{re.escape(scenario)}\s*$", ci, re.M):
             errors.append(f".github/workflows/ci.yml does not run molecule/{scenario}")
+    errors += check_upgrade_coverage(root)
     return errors
+
+
+def roles_with_pins(root: Path) -> list[str]:
+    """Roles whose defaults, vars or tasks read a pinned version from roles/versions."""
+    found = []
+    for role in sorted(p for p in (root / "roles").glob("*") if p.is_dir() and p.name != "versions"):
+        files = [f for sub in ("defaults", "vars", "tasks") for f in (role / sub).glob("*.yml")]
+        if any(VERSION_REF_RE.search(f.read_text()) for f in files):
+            found.append(role.name)
+    return found
+
+
+def check_upgrade_coverage(root: Path) -> list[str]:
+    errors: list[str] = []
+    upgrade_path = root / "playbooks" / "upgrade.yml"
+    upgrade = upgrade_path.read_text() if upgrade_path.is_file() else ""
+    if not upgrade:
+        return ["playbooks/upgrade.yml is missing"]
+    scenarios = set(upgrade_scenarios(root))
+    for role in roles_with_pins(root):
+        if role in UPGRADE_EXEMPT:
+            continue
+        if role not in UPGRADE_COVERAGE:
+            errors.append(f"roles/{role} reads roles/versions but has no upgrade coverage: add a play to "
+                          "playbooks/upgrade.yml and an upgrade scenario (tools/release.py UPGRADE_COVERAGE), "
+                          "or list it in UPGRADE_EXEMPT with a reason")
+            continue
+        if not re.search(rf"(role|name):\s*{re.escape(role)}\s*$", upgrade, re.M):
+            errors.append(f"playbooks/upgrade.yml does not upgrade roles/{role}")
+        scenario = UPGRADE_COVERAGE[role]
+        if scenario is None:
+            continue
+        if scenario not in scenarios:
+            errors.append(f"molecule/{scenario} (upgrade scenario of roles/{role}) is missing")
+            continue
+        converge = root / "molecule" / scenario / "converge.yml"
+        if not converge.is_file() or "playbooks/upgrade.yml" not in converge.read_text():
+            errors.append(f"molecule/{scenario}/converge.yml does not run playbooks/upgrade.yml")
+    return errors
+
+
+def version_key(tag: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in SEMVER_RE.match(tag).groups())
+
+
+def cmd_cut(root: Path, args) -> int:
+    """Pre-flight and notes for a release; prints the tag commands, never runs them."""
+    problems: list[str] = []
+    if not SEMVER_RE.match(args.version):
+        print(f"{args.version} is not vMAJOR.MINOR.PATCH", file=sys.stderr)
+        return 2
+    known = tags(root)
+    previous = known[-1] if known else None
+    if previous is None and args.version != FIRST_RELEASE:
+        problems.append(f"there is no release tag yet; the first release is {FIRST_RELEASE}")
+    if previous is not None and version_key(args.version) <= version_key(previous):
+        problems.append(f"{args.version} is not newer than the last release {previous}")
+    if args.version in known:
+        problems.append(f"tag {args.version} already exists")
+    head_tags = [t for t in git(root, "tag", "--points-at", "HEAD").split() if SEMVER_RE.match(t)]
+    if head_tags:
+        problems.append(f"HEAD is already released as {', '.join(head_tags)}")
+    if not args.allow_dirty and git(root, "status", "--porcelain").strip():
+        problems.append("the working tree has uncommitted changes")
+    problems += check_docs(root)
+    for problem in problems:
+        print(f"ERROR {problem}")
+    if problems:
+        print(f"{args.version}: not ready to tag ({len(problems)} problem(s))")
+        return 1
+    notes_out = Path(args.notes_out or f"release-notes-{args.version}.md")
+    notes_args = argparse.Namespace(version=args.version, since=previous)
+    from contextlib import redirect_stdout
+    from io import StringIO
+    buf = StringIO()
+    with redirect_stdout(buf):
+        cmd_notes(root, notes_args)
+    notes_out.write_text(buf.getvalue())
+    head = git(root, "rev-parse", "--short", "HEAD").strip()
+    print(f"{args.version}: ready to tag {head} ({'first release' if previous is None else 'after ' + previous}).")
+    print(f"Notes written to {notes_out}; complete the recreate section, then run:")
+    print(f"  git tag -s {args.version} -F {notes_out} {head}")
+    print(f"  git push origin {args.version}")
+    print("Then, in the next pull request:")
+    print(f"  python3 tools/release.py bump-upgrade-from {args.version}")
+    print("This command did not create a tag.")
+    return 0
 
 
 def cmd_check(root: Path, _args) -> int:
@@ -288,6 +443,10 @@ def main() -> int:
     p.add_argument("tag")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--from-file", help=argparse.SUPPRESS)  # self-tests: a versions file instead of the tag
+    p = sub.add_parser("cut")
+    p.add_argument("version")
+    p.add_argument("--notes-out")
+    p.add_argument("--allow-dirty", action="store_true")
     sub.add_parser("check")
     args = parser.parse_args()
     handler = {
@@ -296,6 +455,7 @@ def main() -> int:
         "notes": cmd_notes,
         "bump-upgrade-from": cmd_bump_upgrade_from,
         "check": cmd_check,
+        "cut": cmd_cut,
     }[args.command]
     return handler(args.root, args)
 

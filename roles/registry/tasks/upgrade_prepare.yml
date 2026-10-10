@@ -1,0 +1,80 @@
+---
+# A version change runs only through playbooks/upgrade.yml (serial: 1), after a backup (CHG-07, BCK-01).
+# Blobs are content-addressed and never rewritten, so the local copy holds what a new version may
+# migrate: the repository indexes, the OCI layouts and the metadata database. With the backup client
+# installed, the full declaration also goes to the backup servers.
+- name: Read the running registry container
+  community.docker.docker_container_info:
+    name: "{{ registry_container_name }}"
+  register: registry_current
+
+- name: Note whether this node changes version
+  ansible.builtin.set_fact:
+    registry_needs_upgrade: >-
+      {{ registry_current.exists and registry_current.container.Config.Image != registry_effective_image }}
+
+- name: Change versions only one node at a time
+  ansible.builtin.assert:
+    that: >-
+      not registry_needs_upgrade
+      or ansible_play_batch | length == 1
+      or registry_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ registry_current.container.Config.Image | default('') }} but this release
+      pins {{ registry_effective_image }}. Run playbooks/upgrade.yml, which backs up first and upgrades one
+      node at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Back up the registry before a version change
+  when:
+    - registry_needs_upgrade | bool
+    - registry_storage == 'local'
+  tags: [chk_chg_07, chk_bck_01]
+  block:
+    - name: Create the pre-upgrade backup directory
+      ansible.builtin.file:
+        path: "{{ registry_upgrade_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Archive the repository indexes and metadata (without blobs)
+      community.general.archive:
+        path: "{{ registry_data_dir }}/data"
+        dest: "{{ registry_upgrade_backup_dir }}/registry-{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}.tar.gz"
+        exclusion_patterns: ["*/blobs/*", "*/_trivy/*", "*/_tmp/*", "*/.uploads/*"]
+        format: gz
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Find the pre-upgrade archives
+      ansible.builtin.find:
+        paths: "{{ registry_upgrade_backup_dir }}"
+        patterns: registry-*.tar.gz
+      register: registry_upgrade_archives
+
+    - name: Keep the newest pre-upgrade archives
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: >-
+        {{ (registry_upgrade_archives.files | sort(attribute='mtime', reverse=true))[registry_upgrade_backup_keep | int :] }}
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Check for the backup client and the registry declaration
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /usr/local/sbin/compliant-backup
+        - /etc/compliant-infra/backup.d/registry.json
+      register: registry_backup_client
+
+    - name: Send a full backup to the backup servers
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/compliant-backup, backup, --name, registry]
+      when: registry_backup_client.results | map(attribute='stat.exists') | min
+      changed_when: true

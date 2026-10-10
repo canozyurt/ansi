@@ -1,0 +1,55 @@
+---
+# A version change runs only through playbooks/upgrade.yml (serial: 1), CHG-07. rest-server serves the
+# repositories as plain files and does not migrate them, and every client keeps an independent copy on
+# every other backup server, so upgrading one server at a time always leaves a full copy online. With
+# the off-site S3 copy configured, this server's repositories are copied there first (BCK-01).
+- name: Read the running rest-server container
+  community.docker.docker_container_info:
+    name: "{{ backup_server_container_name }}"
+  register: backup_server_current
+
+- name: Note whether this server changes version
+  ansible.builtin.set_fact:
+    backup_server_needs_upgrade: >-
+      {{ backup_server_current.exists and backup_server_current.container.Config.Image != backup_server_image }}
+
+- name: Change versions only one server at a time
+  ansible.builtin.assert:
+    that: >-
+      not backup_server_needs_upgrade
+      or ansible_play_batch | length == 1
+      or backup_server_upgrade_allow_parallel | bool
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ backup_server_current.container.Config.Image | default('') }} but this
+      release pins {{ backup_server_image }}. Run playbooks/upgrade.yml, which upgrades one server at a time.
+    quiet: true
+  tags: [chk_chg_07]
+
+- name: Check for the off-site copy unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/compliant-backup-s3.service
+  register: backup_server_s3_unit
+  when:
+    - backup_server_needs_upgrade | bool
+    - backup_server_s3_enabled | bool
+
+- name: Copy the repositories off-site before the version change
+  ansible.builtin.systemd_service:
+    name: compliant-backup-s3.service
+    state: started
+  when:
+    - backup_server_needs_upgrade | bool
+    - backup_server_s3_enabled | bool
+    - backup_server_s3_unit.stat.exists | default(false)
+  tags: [chk_chg_07, chk_bck_01]
+
+- name: Record the pre-upgrade state of the repositories
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      find {{ backup_server_repo_dir | quote }} -type f -printf '%s %p\n' | sort -k2
+      > {{ (backup_server_state_dir ~ '/pre-upgrade-files.txt') | quote }}
+    executable: /bin/bash
+  when: backup_server_needs_upgrade | bool
+  changed_when: true
+  tags: [chk_chg_07]

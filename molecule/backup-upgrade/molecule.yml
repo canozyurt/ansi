@@ -1,0 +1,52 @@
+---
+# Upgrade path of the backup server (CHG-07): prepare deploys molecule/backup (rest-server and the
+# client) with the previous release (versions_upgrade_from.rest_server) and takes a backup, converge runs
+# playbooks/upgrade.yml (one server at a time; the off-site copy first when S3 is configured), verify runs
+# the backup checks again against the upgraded server and checks the new image, that the pre-upgrade
+# snapshot is still listed and the recorded pre-upgrade file list.
+# CI skips the scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: backup-ubuntu2404
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [backup, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        backup_password_seed: test-only-backup-seed-0123456789abcdef0123
+        backup_server_allow_single_node: true
+        backup_allow_single_server: true
+        backup_server_memory_limit: 256m
+        # Nested overlay filesystems are not always possible; vfs works everywhere.
+        container_runtime_daemon_extra:
+          storage-driver: vfs
+          # The test container's own file limit is lower than the production default.
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

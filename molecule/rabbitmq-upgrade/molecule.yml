@@ -1,0 +1,69 @@
+---
+# Upgrade path of the RabbitMQ product playbook (CHG-07): prepare deploys molecule/rabbitmq with the
+# previous release (versions_upgrade_from.rabbitmq) and declares a durable quorum queue, converge runs
+# playbooks/upgrade.yml (definitions export first, then one node at a time), verify runs the rabbitmq
+# checks again and checks the new image, the queue and the pre-upgrade definitions export.
+# No idempotence step: the pre-upgrade export runs on every upgrade.yml run by design.
+# CI skips the scenario (with a notice) while versions_upgrade_from has no entry for it (tools/release.py).
+driver:
+  name: docker
+platforms:
+  - name: rabbitmq-ubuntu2404
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Anonymous volume: removed with the container, so every run starts clean.
+      - /var/lib/docker
+    command: ""
+    groups: [rabbitmq, rabbitmq_lab, container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    group_vars:
+      all:
+        firewall_mgmt_cidrs: [10.10.0.0/24]
+        monitoring_scrape_password: test-only-scrape-password
+        oidc_clients_enabled: false
+        keycloak_hostname: https://sso.example.internal
+        rabbitmq_cluster_allow_single_node: true
+        # The test container's own open-file limit is lower than the production default.
+        rabbitmq_cluster_nofile: 0
+        rabbitmq_clusters:
+          - name: mq-lab
+            group: rabbitmq_lab
+            erlang_cookie: TestOnlyErlangCookie0123456789abcdef
+            admin_password: test-only-rabbitmq-admin-pw
+            disk_free_limit: 50MB
+            resources: { memory: 512m }
+            developer_vhosts: [orders]
+            vhosts:
+              - name: orders
+                users:
+                  - { name: orders-api, password: test-only-rabbitmq-orders-pw }
+              - name: invoices
+                users:
+                  - { name: invoices-worker, password: test-only-rabbitmq-invoices-pw, configure: "^$$", write: "^$$", read: "^invoices\\." }
+        # Docker Hub rate-limits anonymous pulls; its Google mirror serves the same images.
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          # /var/lib/docker is a volume (not overlayfs), so overlay2 works and saves space over vfs.
+          storage-driver: overlay2
+          default-ulimits: {}
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

@@ -201,21 +201,28 @@ jobs:
           - edge
           - edge-upgrade
           - backup
+          - backup-upgrade
           - openbao
           - openbao-upgrade
           - access
           - security_scanning
           - governance
+          - governance-upgrade
           - forgejo
           - forgejo-upgrade
           - postgres
           - postgres-upgrade
           - siem
+          - siem-upgrade
           - registry
+          - registry-upgrade
           - mail_relay
           - valkey
+          - valkey-upgrade
           - rabbitmq
+          - rabbitmq-upgrade
           - garage
+          - garage-upgrade
     steps:
       - uses: actions/checkout@v4
 

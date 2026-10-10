@@ -1,0 +1,53 @@
+---
+# Called once by playbooks/upgrade.yml before the first indexer node changes version (CHG-07, BCK-01):
+# a snapshot of every index to the S3 repository, waited for. Without S3 snapshots the upgrade stops
+# unless wazuh_indexer_upgrade_snapshot_required is false (a documented exception: the shards are
+# then only protected by their replicas on the other nodes).
+- name: Read the running indexer container
+  community.docker.docker_container_info:
+    name: "{{ wazuh_indexer_container_name }}"
+  register: wazuh_indexer_pre_upgrade
+
+- name: Note whether this node will change version
+  ansible.builtin.set_fact:
+    wazuh_indexer_upgrade_pending: >-
+      {{ wazuh_indexer_pre_upgrade.exists and wazuh_indexer_pre_upgrade.container.Config.Image != wazuh_indexer_image }}
+
+- name: Snapshot the indices before the first node changes version
+  run_once: true
+  when: ansible_play_hosts | map('extract', hostvars, 'wazuh_indexer_upgrade_pending') | select | list | length > 0
+  tags: [chk_chg_07, chk_bck_01]
+  block:
+    - name: Require a snapshot repository
+      ansible.builtin.assert:
+        that: wazuh_indexer_s3_bucket | length > 0 or not (wazuh_indexer_upgrade_snapshot_required | bool)
+        fail_msg: >-
+          The indexer changes version but has no S3 snapshot repository (wazuh_s3_bucket), so the upgrade has
+          no backup of the indices. Configure snapshots, or set wazuh_indexer_upgrade_snapshot_required: false
+          as a documented exception (the replicas on the other nodes are then the only copy).
+        quiet: true
+
+    - name: Take the pre-upgrade snapshot and wait for it
+      ansible.builtin.uri:
+        url: >-
+          {{ wazuh_indexer_api }}/_snapshot/{{ wazuh_indexer_s3_repository }}/pre-upgrade-{{
+          now(utc=true, fmt='%Y%m%dt%H%M%Sz') }}?wait_for_completion=true
+        method: PUT
+        client_cert: "{{ wazuh_indexer_data_dir }}/certs/admin.pem"
+        client_key: "{{ wazuh_indexer_data_dir }}/certs/admin-key.pem"
+        ca_path: "{{ wazuh_indexer_data_dir }}/certs/ca.pem"
+        body_format: json
+        body:
+          indices: "*"
+          include_global_state: true
+        timeout: "{{ wazuh_indexer_upgrade_snapshot_timeout }}"
+      register: wazuh_indexer_upgrade_snapshot
+      when: wazuh_indexer_s3_bucket | length > 0
+      changed_when: true
+
+    - name: The snapshot succeeded
+      ansible.builtin.assert:
+        that: wazuh_indexer_upgrade_snapshot.json.snapshot.state == 'SUCCESS'
+        fail_msg: "The pre-upgrade snapshot ended in {{ wazuh_indexer_upgrade_snapshot.json.snapshot.state | default('an error') }}."
+        quiet: true
+      when: wazuh_indexer_s3_bucket | length > 0
