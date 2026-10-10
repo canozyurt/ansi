@@ -1,0 +1,69 @@
+---
+# Weekly CIS Level 1 benchmark scan (HRD-01) with OpenSCAP on every host. Results (XCCDF, ARF and
+# the HTML report) are kept as evidence under /var/lib/compliance-evidence/cis/, a summary line goes
+# to journald (identifier cis-audit, shipped by the SIEM agent), and pass/fail counts, the score and
+# rule regressions go to the node_exporter textfile collector for the alerts in
+# inventories/example/group_vars/monitoring/audits.yml.
+#
+# Content: the distribution's scap-security-guide packages where they ship a data stream for this
+# release, otherwise the pinned upstream release from roles/versions (versions_tools.scap_security_guide).
+#   auto    = distribution data stream if present, else the pinned release
+#   distro  = distribution data stream only (fail when missing)
+#   release = pinned upstream release only
+cis_audit_content: auto
+
+# Profiles to try, in order; the first one the data stream contains is used and reported in the
+# cis_audit_info metric. SSG ships CIS profiles for Ubuntu only; Debian 12 falls back to the
+# closest generic profile (see docs/cis-exceptions.md: Wazuh SCA runs the CIS Debian policy).
+cis_audit_profiles:
+  - xccdf_org.ssgproject.content_profile_cis_level1_server
+  - xccdf_org.ssgproject.content_profile_cis
+  - xccdf_org.ssgproject.content_profile_anssi_np_nt28_minimal
+  - xccdf_org.ssgproject.content_profile_anssi_bp28_minimal
+  - xccdf_org.ssgproject.content_profile_standard
+
+# Deliberate deviations (docs/cis-exceptions.md). Failed rules listed here count as "excepted",
+# not "fail", in the metrics and the score; the evidence still shows the raw result.
+cis_audit_exceptions_default:
+  - xccdf_org.ssgproject.content_rule_partition_for_tmp
+  - xccdf_org.ssgproject.content_rule_partition_for_var
+  - xccdf_org.ssgproject.content_rule_partition_for_var_tmp
+  - xccdf_org.ssgproject.content_rule_partition_for_var_log
+  - xccdf_org.ssgproject.content_rule_partition_for_var_log_audit
+  - xccdf_org.ssgproject.content_rule_partition_for_home
+  - xccdf_org.ssgproject.content_rule_grub2_password
+  - xccdf_org.ssgproject.content_rule_package_aide_installed
+  - xccdf_org.ssgproject.content_rule_aide_build_database
+  - xccdf_org.ssgproject.content_rule_aide_periodic_checking_systemd_timer
+  - xccdf_org.ssgproject.content_rule_package_ufw_installed
+  - xccdf_org.ssgproject.content_rule_service_ufw_enabled
+  - xccdf_org.ssgproject.content_rule_sudo_require_authentication
+  - xccdf_org.ssgproject.content_rule_package_rsyslog_installed
+  - xccdf_org.ssgproject.content_rule_service_rsyslog_enabled
+# Container hosts and VPN gateways forward packets by design.
+cis_audit_exceptions_forwarding:
+  - xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_ip_forward
+  - xccdf_org.ssgproject.content_rule_sysctl_net_ipv6_conf_all_forwarding
+cis_audit_exceptions_extra: []
+cis_audit_exceptions: >-
+  {{ cis_audit_exceptions_default + cis_audit_exceptions_extra
+     + (cis_audit_exceptions_forwarding if os_hardening_ip_forward | default(false) | bool else []) }}
+
+cis_audit_evidence_dir: /var/lib/compliance-evidence/cis
+# Local copies; the evidence store (roles/evidence_store) keeps them 12 months (EVD-02).
+cis_audit_retention_days: 120
+cis_audit_state_file: /var/lib/cis-audit/last-results.json
+cis_audit_content_dir: /usr/local/share/scap-security-guide
+cis_audit_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+
+cis_audit_schedule: Sun *-*-* 02:00:00
+cis_audit_randomized_delay: 4h
+cis_audit_nice: 10
+
+# Register the reports with the backup role (append-only copies).
+cis_audit_backup: true
+cis_audit_backup_rpo_hours: 168
+cis_audit_backup_rto_hours: 24
+
+# Run one scan at the end of the play (CI and first deployment).
+cis_audit_run_now: false

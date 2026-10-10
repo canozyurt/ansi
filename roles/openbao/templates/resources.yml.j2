@@ -46,6 +46,19 @@
                'secret_id_ttl': secs(openbao_pki_approle_secret_id_ttl) | int,
                'secret_id_bound_cidrs': openbao_pki_approle_secret_id_cidrs} | to_json }}
 
+{% if openbao_ci_deploy_ssh_role in openbao_ssh_extra_roles %}
+# AppRole for the deploy pipeline (CHG-02): CI SSH certificate and the vault password only
+- path: auth/approle/role/{{ openbao_ci_deploy_approle }}
+  body: {{ {'token_policies': ['ci-deploy'], 'token_ttl': openbao_ci_deploy_token_ttl,
+            'token_max_ttl': openbao_ci_deploy_token_ttl, 'secret_id_ttl': openbao_ci_deploy_secret_id_ttl,
+            'secret_id_num_uses': 0, 'secret_id_bound_cidrs': openbao_ci_deploy_secret_id_cidrs,
+            'token_bound_cidrs': openbao_ci_deploy_secret_id_cidrs} | to_json }}
+  compare: {{ {'token_policies': ['ci-deploy'], 'token_ttl': secs(openbao_ci_deploy_token_ttl) | int,
+               'token_max_ttl': secs(openbao_ci_deploy_token_ttl) | int,
+               'secret_id_ttl': secs(openbao_ci_deploy_secret_id_ttl) | int,
+               'secret_id_bound_cidrs': openbao_ci_deploy_secret_id_cidrs} | to_json }}
+
+{% endif %}
 # Token role for the backup's snapshot tokens (BCK-01)
 - path: auth/token/roles/raft-snapshot
   body: {{ {'allowed_policies': ['raft-snapshot'], 'orphan': true, 'renewable': true,
@@ -65,6 +78,18 @@
                'allowed_users': principals | join(','), 'default_user': principals | first | default(''),
                'allowed_extensions': 'permit-pty', 'default_extensions': {'permit-pty': ''},
                'ttl': secs(openbao_ssh_cert_ttl) | int, 'max_ttl': secs(openbao_ssh_cert_ttl) | int} | to_json }}
+{% endfor %}
+{% for role, spec in openbao_ssh_extra_roles.items() %}
+{%   set ext = spec.extensions | default([]) %}
+- path: {{ openbao_ssh_mount }}/roles/{{ role }}
+  body: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+            'allowed_users': spec.principals | join(','), 'default_user': spec.principals | first,
+            'allowed_extensions': ext | join(','), 'default_extensions': dict(ext | zip_longest([], fillvalue='')),
+            'ttl': spec.ttl | default('1h'), 'max_ttl': spec.ttl | default('1h')} | to_json }}
+  compare: {{ {'key_type': 'ca', 'allow_user_certificates': true, 'allow_host_certificates': false,
+               'allowed_users': spec.principals | join(','), 'default_user': spec.principals | first,
+               'allowed_extensions': ext | join(','), 'default_extensions': dict(ext | zip_longest([], fillvalue='')),
+               'ttl': secs(spec.ttl | default('1h')) | int, 'max_ttl': secs(spec.ttl | default('1h')) | int} | to_json }}
 {% endfor %}
 
 # Transit keys with automatic rotation (SEC-06)

@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly CIS Docker Benchmark check (HRD-03)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/docker-bench
+SyslogIdentifier=docker-bench
+# docker-bench-security reads the daemon configuration, audit rules and file permissions as root.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1h
+NoNewPrivileges=true
+PrivateTmp=true

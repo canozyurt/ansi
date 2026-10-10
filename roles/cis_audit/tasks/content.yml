@@ -1,0 +1,90 @@
+---
+- name: Read the package candidates of this release
+  ansible.builtin.command: apt-cache policy {{ cis_audit_platform.scanner_packages | join(' ') }}
+  register: cis_audit_apt_policy
+  changed_when: false
+  check_mode: false
+  vars:
+    cis_audit_platform: "{{ cis_audit_platforms[cis_audit_platform_key] }}"
+
+- name: Pick the scanner package the release ships
+  ansible.builtin.set_fact:
+    cis_audit_scanner_package: >-
+      {{ cis_audit_platforms[cis_audit_platform_key].scanner_packages
+         | select('in', cis_audit_apt_policy.stdout | regex_findall('(?m)^(\S+):\n\s+Installed: .*\n\s+Candidate: (?!\(none\))'))
+         | first | default(cis_audit_platforms[cis_audit_platform_key].scanner_packages | last) }}
+
+- name: Install OpenSCAP and the distribution's SCAP content
+  ansible.builtin.apt:
+    name: "{{ [cis_audit_scanner_package, 'unzip', 'python3'] + cis_audit_platforms[cis_audit_platform_key].ssg_packages }}"
+    state: present
+  tags: [chk_hrd_01]
+
+- name: Look for the distribution's data stream for this release
+  ansible.builtin.stat:
+    path: "{{ cis_audit_distro_content_dir }}/{{ cis_audit_platforms[cis_audit_platform_key].datastream }}"
+  register: cis_audit_distro_ds
+
+- name: Use the distribution's data stream
+  ansible.builtin.set_fact:
+    cis_audit_datastream: "{{ cis_audit_distro_ds.stat.path }}"
+    cis_audit_content_source: "distro"
+  when:
+    - cis_audit_content in ['auto', 'distro']
+    - cis_audit_distro_ds.stat.exists
+  tags: [chk_hrd_01]
+
+- name: Use the pinned upstream release
+  when: cis_audit_datastream is not defined
+  tags: [chk_hrd_01, chk_chg_05]
+  block:
+    - name: Refuse unverified content
+      ansible.builtin.assert:
+        that:
+          - cis_audit_content != 'distro'
+          - ((versions_tools.scap_security_guide | default({})).sha256 | default('')) is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          No data stream {{ cis_audit_platforms[cis_audit_platform_key].datastream }} in the distribution's
+          packages, and no pinned upstream release: add versions_tools.scap_security_guide to roles/versions
+          (version, url and the SHA-256 of the release zip; see the comment there) so the pinned release can be used.
+        quiet: true
+
+    - name: Create the content directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /var/cache/compliant-infra-downloads
+        - "{{ cis_audit_content_dir }}"
+
+    - name: Download scap-security-guide {{ versions_tools.scap_security_guide.version }}
+      ansible.builtin.get_url:
+        url: "{{ versions_tools.scap_security_guide.url }}"
+        dest: /var/cache/compliant-infra-downloads/scap-security-guide-{{ versions_tools.scap_security_guide.version }}.zip
+        checksum: "sha256:{{ versions_tools.scap_security_guide.sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack the data streams
+      ansible.builtin.unarchive:
+        src: /var/cache/compliant-infra-downloads/scap-security-guide-{{ versions_tools.scap_security_guide.version }}.zip
+        dest: "{{ cis_audit_content_dir }}"
+        remote_src: true
+        creates: "{{ cis_audit_content_dir }}/scap-security-guide-{{ versions_tools.scap_security_guide.version }}"
+
+    - name: Use the release's data stream
+      ansible.builtin.set_fact:
+        cis_audit_datastream: >-
+          {{ cis_audit_content_dir }}/scap-security-guide-{{ versions_tools.scap_security_guide.version }}/{{
+             cis_audit_platforms[cis_audit_platform_key].datastream }}
+        cis_audit_content_source: "release-{{ versions_tools.scap_security_guide.version }}"
+
+    - name: Check the release has content for this release
+      ansible.builtin.stat:
+        path: "{{ cis_audit_datastream }}"
+      register: cis_audit_release_ds
+      failed_when: not cis_audit_release_ds.stat.exists

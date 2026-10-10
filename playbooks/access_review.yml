@@ -1,0 +1,48 @@
+---
+# Run the quarterly access review now (IAM-05) on every host and collect one bundle on the
+# controller: access-review/<quarter>/<host>/... next to the playbook run (or -e access_review_bundle_dir=...).
+# The timers of roles/access_review run the same job every quarter; this is for an auditor's request
+# or the first review after deployment.
+- name: Run the access review and collect the evidence
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    access_review_bundle_dir: "{{ playbook_dir }}/../access-review"
+  tasks:
+    - name: Run the access review (the oneshot service reads the Keycloak secret from its 0600 env file)
+      ansible.builtin.systemd_service:
+        name: access-review.service
+        state: started
+      changed_when: true
+      tags: [chk_iam_05]
+
+    - name: Find this run's report
+      ansible.builtin.find:
+        paths: /var/lib/compliance-evidence/access-review
+        patterns: access-review.json
+        recurse: true
+      register: access_review_reports
+      tags: [chk_iam_05]
+
+    - name: Collect the newest report on the controller
+      ansible.builtin.fetch:
+        src: "{{ (access_review_reports.files | sort(attribute='mtime') | last).path | dirname }}/{{ item }}"
+        dest: "{{ access_review_bundle_dir }}/{{ access_review_newest | dirname | dirname | basename }}/{{ inventory_hostname }}/"
+        flat: true
+        fail_on_missing: false
+      vars:
+        access_review_newest: "{{ (access_review_reports.files | sort(attribute='mtime') | last).path }}"
+      loop:
+        - access-review.json
+        - local-accounts.csv
+        - keycloak-users.csv
+        - keycloak-admins.csv
+        - keycloak-disabled.csv
+        - keycloak-stale.csv
+        - keycloak-service-accounts.csv
+        - keycloak-groups.csv
+        - keycloak-role-assignments.csv
+        - vpn-peers.csv
+      when: access_review_reports.files | length > 0
+      tags: [chk_iam_05]

@@ -1,0 +1,49 @@
+---
+# Weekly audits on one host (MOLECULE_DISTRO: debian12, ubuntu2204, ubuntu2404): the host baseline,
+# then the OpenSCAP CIS scan (HRD-01) and, with Docker inside the test container, the CIS Docker
+# Benchmark check (HRD-03). Run by .github/workflows/audits.yml, which keeps the evidence as a build
+# artifact. Not run yet (not tested).
+#
+# Ubuntu 24.04 needs the pinned scap-security-guide release and every platform needs the pinned
+# docker-bench-security release (versions_tools in roles/versions); until their SHA-256 sums are
+# recorded the roles stop with a message saying so. MOLECULE_DOCKER_BENCH=false skips HRD-03.
+driver:
+  name: docker
+platforms:
+  - name: audits-${MOLECULE_DISTRO:-ubuntu2404}
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /var/lib/docker
+    command: ""
+    groups: [container_hosts]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/roles
+  playbooks:
+    prepare: ../default/prepare.yml
+  inventory:
+    group_vars:
+      all:
+        container_runtime_registry_mirrors: [https://mirror.gcr.io]
+        container_runtime_daemon_extra:
+          storage-driver: overlay2
+          default-ulimits: {}
+        # No backup servers in this scenario.
+        cis_audit_backup: false
+        docker_bench_backup: false
+verifier:
+  name: ansible
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

@@ -1,0 +1,41 @@
+{#- One entry per endpoint: name (label), host, port, optional starttls. Duplicates are dropped. -#}
+{%- set ns = namespace(targets=[], seen=[]) -%}
+{%- set existing = groups | dict2items | selectattr('value') | map(attribute='key') | list -%}
+{%- for job in tls_scan_catalog -%}
+{%-   if job.scheme | default('http') == 'https' and job.group in existing and job.name not in tls_scan_exclude_jobs -%}
+{%-     for host in groups[job.group] -%}
+{%-       set address = hostvars[host].monitoring_address | default(host) -%}
+{%-       set key = address ~ ':' ~ job.port -%}
+{%-       if key not in ns.seen -%}
+{%-         set ns.seen = ns.seen + [key] -%}
+{%-         set ns.targets = ns.targets + [{'name': job.name ~ '/' ~ key, 'host': address, 'port': job.port | int}] -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-   endif -%}
+{%- endfor -%}
+{%- if tls_scan_include_edge | bool -%}
+{%-   for service in tls_scan_edge_services if service.name not in tls_scan_exclude_services -%}
+{%-     for hostname in service.hostnames | default([]) -%}
+{%-       set key = hostname ~ ':' ~ tls_scan_edge_port -%}
+{%-       if key not in ns.seen -%}
+{%-         set ns.seen = ns.seen + [key] -%}
+{%-         set ns.targets = ns.targets + [{'name': 'edge-' ~ service.name ~ '/' ~ key, 'host': hostname, 'port': tls_scan_edge_port | int}] -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-   endfor -%}
+{%- endif -%}
+{%- for extra in tls_scan_extra_targets -%}
+{%-   if extra is string -%}
+{%-     set host, port = extra.rsplit(':', 1) -%}
+{%-     set entry = {'name': 'extra/' ~ extra, 'host': host, 'port': port | int} -%}
+{%-   else -%}
+{%-     set entry = {'name': extra.name | default('extra/' ~ extra.host ~ ':' ~ extra.port), 'host': extra.host,
+                     'port': extra.port | int, 'starttls': extra.starttls | default('')} -%}
+{%-   endif -%}
+{%-   set key = entry.host ~ ':' ~ entry.port -%}
+{%-   if key not in ns.seen -%}
+{%-     set ns.seen = ns.seen + [key] -%}
+{%-     set ns.targets = ns.targets + [entry] -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ ns.targets | to_json }}

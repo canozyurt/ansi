@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Upload this host's compliance evidence to the evidence store (EVD-02), installed by roles/evidence_store.
+
+Backs up the evidence paths (default /var/lib/compliance-evidence) with restic to the evidence
+repository on every backup server: `--host <inventory name> --tag evidence`. rest-server runs
+append-only, so this host can add snapshots but cannot change or delete any. Retention and the
+retention check run on the backup servers. Writes evidence_upload_* textfile metrics.
+
+Secrets are read from 0600 environment files and passed to restic in its environment only.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG = "/etc/compliant-infra/evidence/config.json"
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def read_env_file(path):
+    env = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                env[key.strip()] = value
+    return env
+
+
+def restic(cfg, env_file, args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RESTIC_")}
+    env.update(read_env_file(env_file))
+    env["RESTIC_CACHE_DIR"] = cfg["cache_dir"]
+    return subprocess.run([cfg["restic"]] + args, env=env, text=True, capture_output=True, check=False)
+
+
+def write_metrics(cfg, state):
+    lines = []
+    for name, field, help_text in (
+        ("evidence_upload_last_success_timestamp_seconds", "last_success", "Unix time of the last successful evidence upload."),
+        ("evidence_upload_last_run_timestamp_seconds", "last_run", "Unix time of the last evidence upload attempt."),
+        ("evidence_upload_last_status", "last_ok", "1 if the last evidence upload succeeded."),
+    ):
+        lines += [f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
+        for repo, entry in sorted(state.items()):
+            lines.append(f'{name}{{repo="{repo}"}} {int(entry.get(field, 0))}')
+    os.makedirs(cfg["textfile_dir"], mode=0o755, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=cfg["textfile_dir"], prefix=".evidence_upload.prom.", delete=False) as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(fh.name, 0o644)
+    os.replace(fh.name, os.path.join(cfg["textfile_dir"], "evidence_upload.prom"))
+
+
+def main():
+    os.umask(0o077)
+    with open(CONFIG, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    try:
+        with open(cfg["state_file"], encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = {}
+    state = {repo: state.get(repo, {}) for repo in cfg["repos"]}
+    paths = [p for p in cfg["paths"] if os.path.exists(p)]
+    failed = False
+    for repo in cfg["repos"]:
+        env_file = os.path.join(cfg["repo_dir"], f"{repo}.env")
+        entry = state[repo]
+        entry["last_run"] = int(time.time())
+        if not paths:
+            log("ERROR none of the evidence paths exists")
+            ok = False
+        else:
+            result = restic(cfg, env_file, ["backup", "--host", cfg["host"], "--tag", "evidence", "--retry-lock", "30m",
+                                            "--", *paths])
+            # 3 = some files could not be read: the snapshot exists but is incomplete.
+            ok = result.returncode == 0
+            if not ok:
+                log(f"ERROR evidence upload to {repo} failed ({result.returncode}): {result.stderr.strip()[-500:]}")
+        entry["last_ok"] = ok
+        if ok:
+            entry["last_success"] = int(time.time())
+            log(f"evidence uploaded to {repo}: {', '.join(paths)}")
+        failed = failed or not ok
+    os.makedirs(os.path.dirname(cfg["state_file"]), mode=0o700, exist_ok=True)
+    with open(cfg["state_file"], "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+    write_metrics(cfg, state)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

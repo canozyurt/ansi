@@ -1,0 +1,30 @@
+---
+# Evidence store client (EVD-02). Every host appends its compliance evidence (scan reports, access
+# reviews, retention checks: everything under /var/lib/compliance-evidence) weekly to the dedicated
+# evidence repository on every backup server (roles/backup_server, backup_server_evidence_*).
+# rest-server runs append-only, so a host can add evidence but never change or delete it; the
+# servers keep every snapshot for 13 months and check the retention weekly.
+evidence_store_paths: [/var/lib/compliance-evidence]
+evidence_store_extra_paths: []
+
+# Same servers, CA handling and seed as roles/backup.
+evidence_store_servers: "{{ groups['backup'] | default([]) }}"
+evidence_store_skip_self: true
+evidence_store_port: "{{ backup_rest_port | default(8000) }}"
+evidence_store_user: "{{ backup_server_evidence_user | default('evidence') }}"
+evidence_store_password_seed: "{{ backup_password_seed | default('') }}"
+evidence_store_rest_password: "{{ (evidence_store_password_seed ~ ':rest:evidence') | hash('sha256') }}"
+evidence_store_repo_password: "{{ (evidence_store_password_seed ~ ':repo:evidence') | hash('sha256') }}"
+evidence_store_cacert_file: "{{ backup_cacert_file | default('') }}"
+# Without the internal PKI, roles/backup has already copied each server's certificate here.
+evidence_store_server_ca_dir: "{{ backup_config_dir | default('/etc/compliant-infra/backup') }}/ca"
+evidence_store_use_server_certs: "{{ (pki_openbao_addr | default('')) | length == 0 and evidence_store_cacert_file | length == 0 }}"
+
+evidence_store_restic_bin: "{{ backup_restic_bin | default('/usr/local/bin/restic') }}"
+evidence_store_config_dir: /etc/compliant-infra/evidence
+evidence_store_state_file: /var/lib/compliant-evidence/state.json
+evidence_store_cache_dir: /var/cache/restic-evidence
+evidence_store_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+
+evidence_store_schedule: Sun *-*-* 09:00:00
+evidence_store_randomized_delay: 3h

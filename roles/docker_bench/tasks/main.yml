@@ -1,0 +1,135 @@
+---
+- name: Check the docker-bench settings
+  ansible.builtin.assert:
+    that:
+      - docker_bench_local_src | length > 0 or docker_bench_sha256 is match('^[0-9a-f]{64}$')
+      - docker_bench_retention_days | int >= 90
+      - docker_bench_exceptions | rejectattr('reason', 'defined') | list | length == 0
+    fail_msg: >-
+      Pin docker-bench-security in roles/versions (versions_tools.docker_bench_security with the SHA-256 of
+      the release archive; see the comment there), or set docker_bench_local_src to a reviewed copy; every exception needs a reason;
+      reports are kept at least 90 days.
+    quiet: true
+  tags: [chk_hrd_03, chk_chg_05]
+
+- name: Create the docker-bench directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/docker-bench, mode: "0750" }
+    - { path: /var/cache/compliant-infra-downloads, mode: "0700" }
+    - { path: "{{ docker_bench_install_dir }}-{{ docker_bench_version }}", mode: "0755" }
+    - { path: /var/lib/compliance-evidence, mode: "0750" }
+    - { path: "{{ docker_bench_evidence_dir }}", mode: "0750" }
+    - { path: "{{ docker_bench_state_file | dirname }}", mode: "0750" }
+    - { path: "{{ docker_bench_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_hrd_03]
+
+- name: Download docker-bench-security {{ docker_bench_version }}
+  ansible.builtin.get_url:
+    url: "{{ docker_bench_url }}"
+    dest: /var/cache/compliant-infra-downloads/docker-bench-security-{{ docker_bench_version }}.tar.gz
+    checksum: "sha256:{{ docker_bench_sha256 }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: docker_bench_local_src | length == 0
+  tags: [chk_hrd_03, chk_chg_05]
+
+- name: Unpack docker-bench-security
+  ansible.builtin.unarchive:
+    src: /var/cache/compliant-infra-downloads/docker-bench-security-{{ docker_bench_version }}.tar.gz
+    dest: "{{ docker_bench_install_dir }}-{{ docker_bench_version }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    creates: "{{ docker_bench_install_dir }}-{{ docker_bench_version }}/docker-bench-security.sh"
+  when: docker_bench_local_src | length == 0
+  tags: [chk_hrd_03]
+
+- name: Copy docker-bench-security from the controller
+  ansible.builtin.copy:
+    src: "{{ docker_bench_local_src | regex_replace('/?$', '/') }}"
+    dest: "{{ docker_bench_install_dir }}-{{ docker_bench_version }}/"
+    owner: root
+    group: root
+    mode: preserve
+  when: docker_bench_local_src | length > 0
+  tags: [chk_hrd_03]
+
+- name: Point docker-bench-security at the pinned version
+  ansible.builtin.file:
+    src: "{{ docker_bench_install_dir }}-{{ docker_bench_version }}"
+    dest: "{{ docker_bench_install_dir }}"
+    state: link
+    owner: root
+    group: root
+
+- name: Write the docker-bench settings
+  ansible.builtin.copy:
+    content: "{{ docker_bench_config | to_nice_json }}\n"
+    dest: /etc/docker-bench/config.json
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    docker_bench_config:
+      install_dir: "{{ docker_bench_install_dir }}"
+      version: "{{ docker_bench_version }}"
+      exceptions: "{{ docker_bench_exceptions | map(attribute='id') | map('string') | list }}"
+      evidence_dir: "{{ docker_bench_evidence_dir }}"
+      retention_days: "{{ docker_bench_retention_days | int }}"
+      state_file: "{{ docker_bench_state_file }}"
+      textfile_dir: "{{ docker_bench_textfile_dir }}"
+  tags: [chk_hrd_03]
+
+- name: Install the wrapper
+  ansible.builtin.copy:
+    src: docker-bench
+    dest: /usr/local/sbin/docker-bench
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_hrd_03]
+
+- name: Install the service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [docker-bench.service, docker-bench.timer]
+  tags: [chk_hrd_03]
+
+- name: Enable the weekly check
+  ansible.builtin.systemd_service:
+    name: docker-bench.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_hrd_03]
+
+- name: Register the reports with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: docker-bench
+    backup_register_paths: ["{{ docker_bench_evidence_dir }}", "{{ docker_bench_state_file | dirname }}"]
+    backup_register_rpo_hours: "{{ docker_bench_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ docker_bench_backup_rto_hours }}"
+  when: docker_bench_backup | bool
+  tags: [chk_hrd_03, chk_evd_02]
+
+- name: Run a check now
+  ansible.builtin.systemd_service:
+    name: docker-bench.service
+    state: started
+  when: docker_bench_run_now | bool
+  changed_when: true
+  tags: [chk_hrd_03]

@@ -45,6 +45,22 @@ backup_server_keep_within: ""         # e.g. 7d keeps every snapshot of the last
 backup_server_prune_on_calendar: "*-*-* 05:15:00"
 backup_server_retry_lock: 30m
 
+# Evidence store (EVD-02): one dedicated repository, /<backup_server_evidence_user>/ on every server,
+# that every host (roles/evidence_store) and the CI pipelines append compliance evidence to. Clients
+# share one append-only login and cannot delete; retention below runs here only (the prune timer),
+# so these servers hold the only credentials that can delete evidence.
+backup_server_evidence_enabled: true
+backup_server_evidence_user: evidence
+backup_server_evidence_rest_password: "{{ (backup_server_password_seed ~ ':rest:evidence') | hash('sha256') }}"
+backup_server_evidence_repo_password: "{{ (backup_server_password_seed ~ ':repo:evidence') | hash('sha256') }}"
+# Keep every evidence snapshot for this long (restic duration); at least 12 months (EVD-02).
+backup_server_evidence_keep_within: 13m
+# Retention check: the oldest kept evidence must be this old once the store is, every calendar month
+# of that period must hold a snapshot, and uploads may be this many days late (weekly uploads).
+backup_server_evidence_retention_days: 365
+backup_server_evidence_slack_days: 8
+backup_server_evidence_check_on_calendar: "Mon *-*-* 07:30:00"
+
 # Optional off-site copy to any S3-compatible bucket. Set the inventory variables backup_s3_endpoint,
 # backup_s3_bucket, backup_s3_access_key and backup_s3_secret_key (Vault). Use a bucket with
 # versioning and Object Lock where the provider supports it (see roles/backup_server/README.md).

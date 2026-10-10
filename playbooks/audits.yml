@@ -1,0 +1,35 @@
+---
+# Scheduled compliance audits (docs/audits.md). Each job writes evidence under
+# /var/lib/compliance-evidence/<kind>/, logs a summary to journald (shipped to the SIEM) and
+# publishes textfile metrics; alert rules: inventories/example/group_vars/monitoring/audits.yml.
+# Runs after backup.yml: the evidence store client reuses the restic binary of roles/backup.
+- name: Weekly CIS Level 1 scan with OpenSCAP (HRD-01)
+  hosts: all
+  become: true
+  roles:
+    - role: cis_audit
+
+- name: Weekly CIS Docker Benchmark check (HRD-03)
+  hosts: container_hosts
+  become: true
+  roles:
+    - role: docker_bench
+
+- name: Weekly TLS scan of every endpoint (SEC-03)
+  hosts: monitoring
+  become: true
+  roles:
+    - role: tls_scan
+
+- name: Quarterly access review (IAM-05)
+  hosts: all
+  become: true
+  roles:
+    - role: access_review
+
+- name: Weekly upload of the evidence to the append-only evidence store (EVD-02)
+  hosts: all
+  become: true
+  roles:
+    - role: evidence_store
+      when: groups['backup'] | default([]) | length > 0

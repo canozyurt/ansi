@@ -1,0 +1,40 @@
+---
+# Runs on every host for that host only (a one-shot job, not a clustered service), so the HA
+# node-count assert of service roles does not apply.
+- name: Check the CIS audit settings
+  ansible.builtin.assert:
+    that:
+      - cis_audit_platform_key in cis_audit_platforms
+      - cis_audit_content in ['auto', 'distro', 'release']
+      - cis_audit_profiles | length > 0
+      - cis_audit_retention_days | int >= 90
+    fail_msg: >-
+      Unsupported release {{ cis_audit_platform_key }} (supported: {{ cis_audit_platforms.keys() | join(', ') }}),
+      or invalid settings: cis_audit_content is auto, distro or release; reports are kept at least 90 days.
+    quiet: true
+  tags: [chk_hrd_01]
+
+- name: Install the scanner and select the benchmark content
+  ansible.builtin.import_tasks: content.yml
+
+- name: Deploy the weekly scan
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Register the reports with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: cis-audit
+    backup_register_paths: ["{{ cis_audit_evidence_dir }}", "{{ cis_audit_state_file | dirname }}"]
+    backup_register_rpo_hours: "{{ cis_audit_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ cis_audit_backup_rto_hours }}"
+  when: cis_audit_backup | bool
+  tags: [chk_hrd_01, chk_evd_02]
+
+- name: Run a scan now
+  ansible.builtin.systemd_service:
+    name: cis-audit.service
+    state: started
+  when: cis_audit_run_now | bool
+  changed_when: true
+  tags: [chk_hrd_01]

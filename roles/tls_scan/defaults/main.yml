@@ -1,0 +1,37 @@
+---
+# Weekly TLS scan of every endpoint (SEC-03) with testssl.sh (GPLv2), run as a one-shot container
+# from the monitoring hosts. Targets are built from the Prometheus scrape catalog
+# (prometheus_scrape_catalog plus every prometheus_scrape_extra_* variable: https entries, one
+# target per host of the entry's group), the edge services (edge_services: every hostname on 443)
+# and tls_scan_extra_targets. JSON reports are evidence under /var/lib/compliance-evidence/tls/;
+# offered protocols, weak and obsolete cipher categories and certificate problems per target go to
+# the textfile collector, and anything below TLS 1.2 or any weak cipher alerts.
+tls_scan_image: "{{ versions_images.testssl }}"
+
+# Extra endpoints: "host:port" or { name, host, port, starttls } (starttls: smtp, postgres, ...).
+tls_scan_extra_targets: []
+# Leave out catalog jobs or edge services by name.
+tls_scan_exclude_jobs: []
+tls_scan_exclude_services: []
+tls_scan_include_edge: true
+tls_scan_edge_port: 443
+
+# Each monitoring host scans every target (its own view of the network); alerts aggregate by target.
+tls_scan_evidence_dir: /var/lib/compliance-evidence/tls
+tls_scan_retention_days: 120
+tls_scan_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+tls_scan_schedule: Sat *-*-* 03:00:00
+tls_scan_randomized_delay: 2h
+# Per target.
+tls_scan_timeout_seconds: 600
+tls_scan_memory_limit: 512m
+tls_scan_pids_limit: 256
+# Vulnerability checks (Heartbleed, ROBOT, ...) take much longer; protocols, ciphers and
+# certificates are what SEC-03 needs.
+tls_scan_vulnerabilities: false
+
+tls_scan_backup: true
+tls_scan_backup_rpo_hours: 168
+tls_scan_backup_rto_hours: 24
+
+tls_scan_run_now: false

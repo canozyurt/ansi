@@ -16,3 +16,25 @@ admin_login_accounts:
 admin_login_group: ssh-users
 # Remove accounts this role created earlier that are no longer listed.
 admin_login_removed_accounts: []
+
+# ---------------------------------------------------------------- CI-only deploys (CHG-02)
+# With ci_only_deploys (inventory-wide, default true in the example inventory) and a trusted SSH CA:
+# - the deploy account (ci_deploy_user) loses its authorized_keys and accepts only certificates with
+#   the CI principal, optionally only from the runner addresses (from= in its principals file);
+# - sudo for the deploy account is allowed only in a session that logged in with such a certificate
+#   (pam_exec check on the SSH_USER_AUTH information sshd exposes); denials log "ansible-run-denied";
+# - human principals become read-only: every account above keeps its login but loses sudo;
+# - a break-glass account with full sudo accepts the break-glass principal (short-lived certificate
+#   from the OpenBao SSH CA, signed only under the admin policy); every login is logged with
+#   priority alert, raises SIEM rule 100120 and the BreakGlassLogin Prometheus alert.
+admin_login_ci_only_deploys: "{{ ci_only_deploys | default(false) }}"
+admin_login_ci_deploy_user: "{{ ci_deploy_user | default('deploy') }}"
+admin_login_ci_principal: ci-deploy
+# Addresses the CI runners connect from; empty = any address the firewall lets through.
+admin_login_ci_source_cidrs: "{{ access_automation_cidrs | default([]) }}"
+admin_login_break_glass_account:
+  name: break-glass
+  principals: [break-glass]
+  groups: [adm, systemd-journal]
+  sudo: true
+admin_login_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"

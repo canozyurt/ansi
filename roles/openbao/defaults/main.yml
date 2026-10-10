@@ -101,6 +101,20 @@ openbao_ssh_role_principals:
   platform-admin: [platform-admin]
   operator: [operator]
 openbao_ssh_cert_ttl: 8h
+# Extra signing roles that are not default roles (CHG-02), e.g. the CI's deploy certificate and the
+# break-glass certificate: { <role>: { principals: [...], ttl: 1h, extensions: [permit-pty] } }. Only policies that grant
+# <mount>/sign/<role> can use them (admin; the CI deploy AppRole, see docs/audits.md).
+openbao_ssh_extra_roles: {}
+# AppRole for the deploy pipeline (CHG-02): signs the CI's SSH certificate under the signing role
+# below (principal ci-deploy, see roles/admin_login) and reads the Ansible vault password, nothing
+# else. Created when that signing role is declared in openbao_ssh_extra_roles. Bind the secret_id to
+# the runner addresses; the pipeline gets its secret_id from a Forgejo/GitHub Actions secret.
+openbao_ci_deploy_approle: ci-deploy
+openbao_ci_deploy_ssh_role: ci-deploy
+openbao_ci_deploy_kv_paths: [secret/data/ci/ansible-vault]
+openbao_ci_deploy_token_ttl: 15m
+openbao_ci_deploy_secret_id_ttl: 2160h   # rotate every quarter (IAM-08)
+openbao_ci_deploy_secret_id_cidrs: "{{ access_automation_cidrs | default([]) }}"
 
 # Transit (SEC-06): application encryption keys, rotated automatically.
 openbao_transit_keys:
