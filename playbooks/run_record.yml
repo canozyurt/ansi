@@ -1,0 +1,78 @@
+---
+# Logs the run record of the previous ansible-playbook run on every host it touched (CHG-02) and, for
+# a check-mode run of site.yml, publishes the drift metric on each host (CHG-03). Started by
+# tools/ansible-run with -e run_record_file=<record>; not part of site.yml.
+#
+# The drift metric goes through node_exporter's textfile collector: Prometheus already scrapes every
+# host over TLS with authentication, the instance label comes for free, and a stale timestamp shows
+# a host the drift run did not reach. A pushgateway would be one more service to secure and keep
+# highly available, and it keeps the last pushed value forever.
+- name: Record the run on every host it touched
+  hosts: all
+  gather_facts: false
+  become: true
+  vars:
+    run_record_file: ""
+    run_record: "{{ lookup('ansible.builtin.file', run_record_file) | from_json }}"
+    run_record_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/node_exporter/textfile_collector') }}"
+    run_record_host_stats: "{{ run_record.hosts[inventory_hostname] | default({}) }}"
+  tasks:
+    - name: Check a run record was given
+      ansible.builtin.assert:
+        that: run_record_file | length > 0
+        fail_msg: Run this through tools/ansible-run (it passes -e run_record_file=...).
+        quiet: true
+      run_once: true
+      delegate_to: localhost
+      become: false
+      tags: [always]
+
+    - name: Log the run record to journald (identifier ansible-run, shipped to the SIEM)
+      ansible.builtin.command:
+        argv:
+          - logger
+          - --size
+          - "65536"
+          - -p
+          - auth.notice
+          - -t
+          - ansible-run
+          - --
+          - >-
+            {{ run_record | dict2items | rejectattr('key', 'equalto', 'hosts') | items2dict
+               | combine({'host': inventory_hostname, 'host_result': run_record_host_stats}) | to_json(sort_keys=true) }}
+      check_mode: false
+      changed_when: false
+      when: inventory_hostname in run_record.hosts
+      tags: [always, chk_chg_02]
+
+    - name: Publish the drift found by a check-mode run of site.yml (CHG-03)
+      ansible.builtin.copy:
+        content: |
+          # HELP ansible_drift_changed_tasks Tasks the last check-mode run of site.yml would change on this host (drift).
+          # TYPE ansible_drift_changed_tasks gauge
+          ansible_drift_changed_tasks {{ run_record_host_stats.changed | default(0) | int }}
+          # HELP ansible_drift_failed_tasks Tasks that failed in the last check-mode run of site.yml on this host.
+          # TYPE ansible_drift_failed_tasks gauge
+          ansible_drift_failed_tasks {{ run_record_host_stats.failures | default(0) | int }}
+          # HELP ansible_drift_last_check_timestamp_seconds End of the last check-mode run of site.yml that reached this host.
+          # TYPE ansible_drift_last_check_timestamp_seconds gauge
+          ansible_drift_last_check_timestamp_seconds {{ ((run_record.when.end | to_datetime('%Y-%m-%dT%H:%M:%SZ'))
+                                                          - ('1970-01-01T00:00:00Z' | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int }}
+          # HELP ansible_drift_info Commit and limit of the last check-mode run of site.yml.
+          # TYPE ansible_drift_info gauge
+          ansible_drift_info{commit="{{ run_record.what.commit | regex_replace('[^0-9a-f]', '') }}",limit="{{
+                             run_record.what.limit | regex_replace('["\\\\]', '') }}"} 1
+        dest: "{{ run_record_textfile_dir }}/ansible_drift.prom"
+        owner: root
+        group: root
+        mode: "0644"
+      check_mode: false
+      when:
+        - inventory_hostname in run_record.hosts
+        - run_record.what.check_mode | bool
+        - run_record.what.playbook | basename == 'site.yml'
+        # A full run: ansible-playbook records tags ['all'] when none are given.
+        - run_record.what.tags | difference(['all']) | length == 0
+        - run_record.what.skip_tags | default([]) | length == 0
+      tags: [always, chk_chg_03]

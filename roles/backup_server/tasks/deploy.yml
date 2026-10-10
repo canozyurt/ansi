@@ -68,6 +68,16 @@
   loop: "{{ backup_server_clients }}"
   no_log: true
 
+- name: Add the evidence store login (EVD-02)
+  ansible.builtin.set_fact:
+    backup_server_accounts: >-
+      {{ backup_server_accounts + [{'user': backup_server_evidence_user,
+                                    'rest_password': backup_server_evidence_rest_password,
+                                    'repo_password': backup_server_evidence_repo_password}] }}
+  when: backup_server_evidence_enabled | bool
+  no_log: true
+  tags: [chk_evd_02]
+
 - name: Add a REST login per client host (bcrypt, 0600)
   community.general.htpasswd:
     path: "{{ backup_server_data_dir }}/auth/htpasswd"

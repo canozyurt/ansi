@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Monthly export of incident issues to the evidence store (INC-01)
+
+[Timer]
+OnCalendar={{ forgejo_incident_export_schedule }}
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+---
+zones:
+  mgmt: { cidrs: "{{ [network_zones.mgmt] }}" }
+  app: { cidrs: "{{ [network_zones.app] }}" }
+  data: { cidrs: "{{ [network_zones.data] }}" }
+  access: { cidrs: "{{ [access_vpn_cidr] + access_bastion_cidrs }}" }
+  internet: { cidrs: [any] }
+classes: { admin: a, database: d, service: s, cluster: c, metrics: m, public: p }
+flows:
+  - { service: ssh, port: 22, from: access, to: [mgmt, app, data] }
+  - { service: postgres, port: 5432, from: [app, access], to: data }
+  - { service: valkey, port: 6379, from: mgmt, to: data }

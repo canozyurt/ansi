@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly CIS Docker Benchmark check (HRD-03)
+
+[Timer]
+OnCalendar={{ docker_bench_schedule }}
+RandomizedDelaySec={{ docker_bench_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

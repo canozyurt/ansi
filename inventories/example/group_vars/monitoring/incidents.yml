@@ -1,0 +1,59 @@
+---
+# Incident record retention (INC-01). Metrics come from forgejo-incident-export (roles/forgejo) through
+# node_exporter's textfile collector on the Forgejo nodes; only the active node exports.
+prometheus_rules_incidents:
+  - name: incident-records  # INC-01
+    rules:
+      - alert: IncidentExportStale
+        expr: (time() - max(forgejo_incident_export_last_success_timestamp_seconds)) > 35 * 86400
+        for: 1h
+        labels:
+          severity: warning
+          checklist: INC-01
+        annotations:
+          summary: Incident records have not been exported to the evidence store for more than 35 days
+          description: >-
+            Check forgejo-incident-export.service on the active Forgejo node (journal identifier
+            forgejo-incident-export) and the automation token.
+
+      - alert: IncidentExportNeverRun
+        expr: absent(forgejo_incident_export_last_success_timestamp_seconds)
+        for: 32d
+        labels:
+          severity: warning
+          checklist: INC-01
+        annotations:
+          summary: No incident export has ever reported (forgejo-incident-export timer on the Forgejo nodes)
+
+      - alert: IncidentRecordDeletedInRetention
+        expr: max(forgejo_incident_records_missing) > 0
+        labels:
+          severity: critical
+          checklist: INC-01
+        annotations:
+          summary: "{% raw %}{{ $value }} incident issue(s) were deleted inside the 12-month retention period{% endraw %}"
+          description: >-
+            The previous export in /var/lib/compliance-evidence/incidents and the backup still hold the records
+            (journal: forgejo-incident-export). Restore them to the tracker and treat the deletion as a security event.
+
+      - alert: IncidentRetentionReviewDue
+        expr: (time() - max(forgejo_incident_retention_review_timestamp_seconds)) > 365 * 86400
+        for: 1d
+        labels:
+          severity: info
+          checklist: INC-01
+        annotations:
+          summary: The yearly review of incident record retention is due
+          description: >-
+            Review that every incident of the last 12 months is in the tracker and the evidence exports
+            (docs/incident-response.md, "Evidence retention"), attach the result to the GRC tool, then run
+            "touch /var/lib/compliance-evidence/incidents/retention-review.done" on the active Forgejo node.
+
+      - alert: IncidentPostmortemOverdue
+        expr: max(forgejo_incident_postmortem_needed_open) > 0
+        for: 7d
+        labels:
+          severity: warning
+          checklist: INC-01
+        annotations:
+          summary: "{% raw %}{{ $value }} incident(s) still labelled postmortem-needed after 7 days{% endraw %}"

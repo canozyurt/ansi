@@ -50,8 +50,10 @@
     - compliant-backup-prune.timer
     - compliant-backup-s3.service
     - compliant-backup-s3.timer
+    - compliant-evidence-check.service
+    - compliant-evidence-check.timer
   register: backup_server_units
-  tags: [chk_bck_02, chk_bck_01]
+  tags: [chk_bck_02, chk_bck_01, chk_evd_02]
 
 - name: Reload systemd
   ansible.builtin.systemd_service:
@@ -64,6 +66,20 @@
     enabled: true
     state: started
   tags: [chk_bck_02]
+
+- name: Create the evidence repository (EVD-02)
+  ansible.builtin.command: /usr/local/sbin/compliant-backup-server init-evidence
+  register: backup_server_evidence_init
+  changed_when: "'Initialised' in backup_server_evidence_init.stdout"
+  when: backup_server_evidence_enabled | bool
+  tags: [chk_evd_02]
+
+- name: Enable or disable the weekly evidence retention check
+  ansible.builtin.systemd_service:
+    name: compliant-evidence-check.timer
+    enabled: "{{ backup_server_evidence_enabled | bool }}"
+    state: "{{ 'started' if backup_server_evidence_enabled | bool else 'stopped' }}"
+  tags: [chk_evd_02]
 
 - name: Enable or disable the nightly S3 copy
   ansible.builtin.systemd_service:

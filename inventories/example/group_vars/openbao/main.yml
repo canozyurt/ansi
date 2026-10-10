@@ -9,11 +9,12 @@ openbao_admin_token: "{{ vault_openbao_admin_token | default('') }}"
 
 # Networks that reach OpenBao: every zone requests certificates and secrets (NET-01, NET-03).
 openbao_client_cidrs: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}", "{{ network_zones.data }}"]
-# Prometheus servers; replace with the monitoring hosts' addresses when the monitoring group exists.
-openbao_monitoring_cidrs: ["{{ network_zones.mgmt }}"]
+# Prometheus servers (the monitoring hosts).
+openbao_monitoring_cidrs: "{{ monitoring_source_cidrs }}"
 
 firewall_rules_openbao:
-  - { name: openbao-api, port: 8200, sources: "{{ openbao_client_cidrs }}" }
+  # Every zone requests certificates and secrets here; administration needs a token with an admin policy.
+  - { name: openbao-api, port: 8200, class: service, sources: "{{ openbao_client_cidrs }}" }
   # Raft and request forwarding between OpenBao nodes (all in the mgmt zone); narrow to their /32s if you can.
-  - { name: openbao-cluster, port: 8201, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: openbao-metrics, port: 8202, sources: "{{ openbao_monitoring_cidrs }}" }
+  - { name: openbao-cluster, port: 8201, class: cluster, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: openbao-metrics, port: 8202, class: metrics, sources: "{{ openbao_monitoring_cidrs }}" }

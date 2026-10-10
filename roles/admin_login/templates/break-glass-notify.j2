@@ -1,0 +1,25 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# pam_exec, sshd session stack (CHG-02): every break-glass login is logged at alert priority
+# (shipped to the SIEM: rule 100120) and recorded as a textfile metric (BreakGlassLogin alert).
+set -u
+[ "${PAM_USER:-}" = "{{ admin_login_break_glass_account.name }}" ] || exit 0
+[ "${PAM_TYPE:-}" = "open_session" ] || exit 0
+logger -p auth.alert -t break-glass "break-glass login: user=${PAM_USER} from=${PAM_RHOST:-local} tty=${PAM_TTY:-none}"
+dir="{{ admin_login_textfile_dir }}"
+state=/var/lib/break-glass-logins
+mkdir -p "$dir"
+count=$(( $(cat "$state" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$state"
+tmp=$(mktemp "$dir/.break_glass.prom.XXXXXX")
+cat > "$tmp" <<METRICS
+# HELP break_glass_last_login_timestamp_seconds Time of the last break-glass login on this host.
+# TYPE break_glass_last_login_timestamp_seconds gauge
+break_glass_last_login_timestamp_seconds $(date +%s)
+# HELP break_glass_logins_total Break-glass logins on this host.
+# TYPE break_glass_logins_total counter
+break_glass_logins_total $count
+METRICS
+chmod 0644 "$tmp"
+mv "$tmp" "$dir/break_glass.prom"
+exit 0

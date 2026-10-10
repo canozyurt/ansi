@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Weekly CIS benchmark scan (HRD-01), installed by roles/cis_audit.
+
+Runs `oscap xccdf eval` with the first profile from the settings that the data stream contains,
+keeps the XCCDF results, the ARF and the HTML report under the evidence directory, prints a
+summary (journald, identifier cis-audit) and writes node_exporter textfile metrics: rule results
+per outcome, the score (pass / (pass + fail), documented exceptions left out), the previous score,
+and the number of rules that passed in the previous run and fail now (regressions).
+
+Settings: /etc/cis-audit/config.json. For tests, `cis-audit --parse RESULTS.xml` prints the summary
+of an existing XCCDF results file without running the scanner.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+
+CONFIG = "/etc/cis-audit/config.json"
+OUTCOMES = ["pass", "fail", "error", "unknown", "notapplicable", "notchecked", "notselected",
+            "informational", "fixed", "excepted"]
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def label(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def profiles_in(datastream):
+    out = subprocess.run(["oscap", "info", "--profiles", datastream], capture_output=True, text=True, check=True).stdout
+    return [line.split(":", 1)[0].strip() for line in out.splitlines() if line.strip()]
+
+
+def parse_results(path, exceptions):
+    """Rule results from an XCCDF 1.2 (or 1.1) results file: {rule id: outcome}, oscap's score."""
+    tree = ET.parse(path)
+    results, score = {}, None
+    for elem in tree.iter():
+        tag = elem.tag.rsplit("}", 1)[-1]
+        if tag == "rule-result":
+            outcome = None
+            for child in elem:
+                if child.tag.rsplit("}", 1)[-1] == "result":
+                    outcome = (child.text or "").strip()
+            rule = elem.get("idref")
+            if rule and outcome:
+                if outcome == "fail" and rule in exceptions:
+                    outcome = "excepted"
+                results[rule] = outcome
+        elif tag == "score" and score is None and elem.text:
+            try:
+                score = float(elem.text)
+            except ValueError:
+                pass
+    return results, score
+
+
+def summarize(results, previous):
+    counts = {o: 0 for o in OUTCOMES}
+    for outcome in results.values():
+        counts[outcome] = counts.get(outcome, 0) + 1
+    checked = counts["pass"] + counts["fail"]
+    score = round(100.0 * counts["pass"] / checked, 2) if checked else 0.0
+    regressed = sorted(r for r, o in results.items() if o == "fail" and previous.get(r) == "pass")
+    failed = sorted(r for r, o in results.items() if o == "fail")
+    return counts, score, regressed, failed
+
+
+def write_metrics(cfg, info, counts, score, previous_score, regressed, ok, start):
+    end = time.time()
+    lines = [
+        "# HELP cis_audit_rules Rules of the last CIS scan by outcome (documented exceptions as excepted).",
+        "# TYPE cis_audit_rules gauge",
+    ]
+    for outcome in OUTCOMES:
+        lines.append(f'cis_audit_rules{{result="{outcome}"}} {counts.get(outcome, 0)}')
+    lines += [
+        "# HELP cis_audit_score_percent Passed rules as a share of passed and failed rules (exceptions left out).",
+        "# TYPE cis_audit_score_percent gauge",
+        f"cis_audit_score_percent {score}",
+        "# HELP cis_audit_previous_score_percent Score of the scan before the last one (equal on the first scan).",
+        "# TYPE cis_audit_previous_score_percent gauge",
+        f"cis_audit_previous_score_percent {previous_score}",
+        "# HELP cis_audit_regressions Rules that passed in the previous scan and fail in the last one.",
+        "# TYPE cis_audit_regressions gauge",
+        f"cis_audit_regressions {len(regressed)}",
+        "# HELP cis_audit_success 1 when the last scan ran and its results could be read.",
+        "# TYPE cis_audit_success gauge",
+        f"cis_audit_success {int(ok)}",
+        "# HELP cis_audit_last_run_timestamp_seconds End of the last CIS scan.",
+        "# TYPE cis_audit_last_run_timestamp_seconds gauge",
+        f"cis_audit_last_run_timestamp_seconds {int(end)}",
+        "# HELP cis_audit_duration_seconds Duration of the last CIS scan.",
+        "# TYPE cis_audit_duration_seconds gauge",
+        f"cis_audit_duration_seconds {int(end - start)}",
+        "# HELP cis_audit_info Profile and content of the last CIS scan.",
+        "# TYPE cis_audit_info gauge",
+        f'cis_audit_info{{profile="{label(info.get("profile", ""))}",content="{label(info.get("content", ""))}"}} 1',
+    ]
+    out_dir = cfg["textfile_dir"]
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=out_dir, prefix=".cis_audit.prom.", delete=False) as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(fh.name, 0o644)
+    os.replace(fh.name, os.path.join(out_dir, "cis_audit.prom"))
+
+
+def prune(evidence_dir, retention_days):
+    cutoff = time.time() - retention_days * 86400
+    for entry in os.scandir(evidence_dir):
+        if entry.is_dir(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+            shutil.rmtree(entry.path)
+            log(f"removed evidence older than {retention_days} days: {entry.name}")
+
+
+def load_state(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(path, state):
+    os.makedirs(os.path.dirname(path), mode=0o750, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=os.path.dirname(path), delete=False) as fh:
+        json.dump(state, fh, indent=1, sort_keys=True)
+    os.replace(fh.name, path)
+
+
+def run(cfg):
+    start = time.time()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    state = load_state(cfg["state_file"])
+    previous = state.get("results", {})
+    info = {"content": cfg.get("content", ""), "datastream": cfg["datastream"]}
+    counts, score, regressed = {}, 0.0, []
+    previous_score = state.get("score", 0.0)
+    try:
+        available = profiles_in(cfg["datastream"])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        log(f"cannot read the data stream {cfg['datastream']}: {exc}")
+        write_metrics(cfg, info, counts, 0.0, previous_score, [], False, start)
+        return 1
+    profile = next((p for p in cfg["profiles"] if p in available), None)
+    if profile is None:
+        log(f"none of the configured profiles is in {cfg['datastream']}; available: {', '.join(available)}")
+        write_metrics(cfg, info, counts, 0.0, previous_score, [], False, start)
+        return 1
+    info["profile"] = profile
+
+    run_dir = os.path.join(cfg["evidence_dir"], stamp)
+    os.makedirs(run_dir, mode=0o750, exist_ok=True)
+    results_xml = os.path.join(run_dir, "results.xml")
+    cmd = ["oscap", "xccdf", "eval", "--profile", profile, "--results", results_xml,
+           "--results-arf", os.path.join(run_dir, "arf.xml"), "--report", os.path.join(run_dir, "report.html"),
+           cfg["datastream"]]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # oscap: 0 = everything passed, 2 = at least one rule failed, anything else = error.
+    ok = proc.returncode in (0, 2) and os.path.exists(results_xml)
+    if not ok:
+        log(f"oscap failed with exit code {proc.returncode}: {proc.stderr.strip()[-800:]}")
+        write_metrics(cfg, info, counts, 0.0, previous_score, [], False, start)
+        return 1
+    results, oscap_score = parse_results(results_xml, set(cfg.get("exceptions", [])))
+    counts, score, regressed, failed = summarize(results, previous)
+    if not previous:
+        previous_score = score
+    summary = {
+        "host": os.uname().nodename, "time": stamp, "profile": profile, "datastream": cfg["datastream"],
+        "content": cfg.get("content", ""), "counts": counts, "score_percent": score, "oscap_score": oscap_score,
+        "previous_score_percent": previous_score, "regressions": regressed, "failed": failed,
+        "excepted": sorted(r for r, o in results.items() if o == "excepted"),
+    }
+    with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=1, sort_keys=True)
+    save_state(cfg["state_file"], {"results": results, "score": score, "time": stamp, "profile": profile})
+    write_metrics(cfg, info, counts, score, previous_score, regressed, True, start)
+    prune(cfg["evidence_dir"], int(cfg["retention_days"]))
+    log(f"profile={profile} pass={counts['pass']} fail={counts['fail']} excepted={counts['excepted']} "
+        f"score={score} previous={previous_score} regressions={len(regressed)} evidence={run_dir}")
+    for rule in regressed:
+        log(f"regression: {rule} passed in the previous scan and fails now")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--parse", metavar="RESULTS_XML", help="summarize an existing results file and exit")
+    parser.add_argument("--previous", metavar="STATE_JSON", help="with --parse: earlier state file to compare with")
+    parser.add_argument("--exception", action="append", default=[], help="with --parse: excepted rule id")
+    args = parser.parse_args()
+    if args.parse:
+        previous = load_state(args.previous).get("results", {}) if args.previous else {}
+        results, oscap_score = parse_results(args.parse, set(args.exception))
+        counts, score, regressed, failed = summarize(results, previous)
+        print(json.dumps({"counts": counts, "score_percent": score, "oscap_score": oscap_score,
+                          "regressions": regressed, "failed": failed}, indent=1, sort_keys=True))
+        return 0
+    os.umask(0o027)
+    with open(CONFIG, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    return run(cfg)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -15,6 +15,6 @@ status_page_extra_endpoints: []
 # status_page_alert_email_password: "{{ vault_status_page_smtp_password }}"
 # status_page_alert_email_to: [oncall@example.com]
 
-# The edge proxy (app zone) serves the page; Prometheus (mgmt zone) scrapes /metrics (NET-01, NET-03).
+# The edge proxy (app zone) serves the page; the monitoring hosts scrape /metrics (NET-01, NET-03).
 firewall_rules_status_page:
-  - { name: status-page-https, port: 8444, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }
+  - { name: status-page-https, port: 8444, class: service, sources: "{{ [network_zones.app] + monitoring_source_cidrs }}" }

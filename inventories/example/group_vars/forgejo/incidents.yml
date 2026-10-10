@@ -1,0 +1,7 @@
+---
+# Incident tracker (INC-01, docs/incident-response.md): platform/incidents with the incident, sev1..sev4
+# and postmortem-needed labels, the issue templates from docs/templates and branch protection on main,
+# created by org_setup (playbooks/delivery.yml). Monthly export to /var/lib/compliance-evidence/incidents.
+forgejo_incident_tracker_enabled: true
+forgejo_incident_tracker_org: platform
+forgejo_incident_tracker_repo: incidents

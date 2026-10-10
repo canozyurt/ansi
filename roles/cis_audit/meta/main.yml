@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: cis_audit
+  author: compliant-infra-ansible contributors
+  description: Weekly OpenSCAP CIS Level 1 scan with evidence, textfile metrics and regression alerts
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

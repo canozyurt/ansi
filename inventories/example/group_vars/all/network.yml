@@ -1,0 +1,45 @@
+---
+# Network zones and host addresses (NET-02, NET-03). The zone CIDRs are network_zones in all/main.yml;
+# each host's zone is network_zone, set by the zone groups (group_vars/<mgmt|app|data>/zone.yml, and
+# vpn, bastion and dns, which sit in the mgmt network without being in the mgmt group). Allowed flows
+# between zones are declared in compliance/zone-flows.yml and checked by tools/firewall_audit.py.
+
+# Address of every inventory host. Firewall rules that must name single hosts (instead of a whole
+# zone) are built from these, so keep it in sync with the inventory: tools/firewall_audit.py fails
+# when a host is missing or its address lies outside its zone.
+network_host_addresses:
+  mgmt-1.example.internal: 10.10.0.11
+  mgmt-2.example.internal: 10.10.0.12
+  mgmt-3.example.internal: 10.10.0.13
+  siem-1.example.internal: 10.10.0.41
+  siem-2.example.internal: 10.10.0.42
+  siem-3.example.internal: 10.10.0.43
+  vpn-1.example.internal: 10.10.0.21
+  vpn-2.example.internal: 10.10.0.22
+  bastion-1.example.internal: 10.10.0.31
+  bastion-2.example.internal: 10.10.0.32
+  dns-1.example.internal: 10.10.0.53
+  dns-2.example.internal: 10.10.0.54
+  app-1.example.internal: 10.20.0.11
+  app-2.example.internal: 10.20.0.12
+  app-3.example.internal: 10.20.0.13
+  ci-1.example.internal: 10.20.0.21
+  ci-2.example.internal: 10.20.0.22
+  data-1.example.internal: 10.30.0.11
+  data-2.example.internal: 10.30.0.12
+  data-3.example.internal: 10.30.0.13
+
+# Single-host sources inside the mgmt zone. Admin UIs and data stores never allow the whole mgmt
+# zone (NET-02): only the VPN/bastion ranges (firewall_mgmt_cidrs) and these named hosts.
+# Prometheus, blackbox_exporter and Grafana (scrapes, probes, dashboards, alert delivery).
+network_monitoring_host_cidrs: >-
+  {{ groups['monitoring'] | default([]) | map('extract', network_host_addresses) | product(['/32']) | map('join') | list }}
+# SIEM nodes (indexer, manager cluster).
+network_siem_host_cidrs: >-
+  {{ groups['siem'] | default([]) | map('extract', network_host_addresses) | product(['/32']) | map('join') | list }}
+# Control-plane services that use the data stores: Keycloak, Forgejo and GRC (PostgreSQL, Valkey,
+# S3) and the SIEM (S3 snapshots).
+network_mgmt_datastore_client_cidrs: >-
+  {{ ((groups['keycloak'] | default([])) + (groups['forgejo'] | default([])) + (groups['grc'] | default([]))
+       + (groups['siem'] | default([]))) | unique | map('extract', network_host_addresses) | product(['/32'])
+     | map('join') | list }}

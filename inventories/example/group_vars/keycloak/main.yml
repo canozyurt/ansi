@@ -5,9 +5,11 @@ keycloak_db_host: postgres.data.example.internal
 keycloak_db_password: "{{ vault_keycloak_db_password }}"
 keycloak_admin_password: "{{ vault_keycloak_admin_password }}"
 
-# HTTPS from the edge proxy and internal networks; cluster traffic only between Keycloak nodes (NET-01, NET-03).
+# HTTPS (with the admin console) from the edge proxy (app zone) and the VPN/bastion ranges, not the whole
+# mgmt zone: OIDC clients reach Keycloak through the edge name. Health and metrics from the monitoring
+# hosts; cluster traffic only between Keycloak nodes (NET-01, NET-02, NET-03).
 firewall_rules_keycloak:
-  - { name: keycloak-https, port: 8443, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }
-  - { name: keycloak-management, port: 9000, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: keycloak-cluster, port: 7800, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: keycloak-cluster-fd, port: 57800, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: keycloak-https, port: 8443, class: admin, sources: "{{ [network_zones.app] + firewall_mgmt_cidrs }}" }
+  - { name: keycloak-management, port: 9000, class: metrics, sources: "{{ monitoring_source_cidrs }}" }
+  - { name: keycloak-cluster, port: 7800, class: cluster, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: keycloak-cluster-fd, port: 57800, class: cluster, sources: ["{{ network_zones.mgmt }}"] }

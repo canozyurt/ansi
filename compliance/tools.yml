@@ -196,6 +196,35 @@ tools:
     audit_log: {status: "n.a.", note: "Reports are evidence files."}
     ha: {status: "n.a.", note: "Scheduled job; a missed run alerts."}
 
+  - name: testssl.sh
+    versions: [images/testssl]
+    roles: [tls_scan]
+    license: GPL-2.0-only
+    osi_approved: true
+    sso: {status: "n.a.", note: "CLI scanner run as a one-shot container."}
+    audit_log: {status: "n.a.", note: "JSON reports are evidence files (SEC-03); the run is logged to journald."}
+    ha: {status: "n.a.", note: "Scheduled job on every monitoring host; a missed run alerts (TLSScanNotRun)."}
+
+  - name: OpenSCAP and docker-bench-security
+    packages: [openscap-scanner, libopenscap8, ssg-base, ssg-debian, ssg-debderived]
+    roles: [cis_audit, docker_bench]
+    license: LGPL-2.1-or-later AND BSD-3-Clause AND Apache-2.0
+    osi_approved: true
+    sso: {status: "n.a.", note: "CLI scanners run by systemd timers."}
+    audit_log: {status: "n.a.", note: "Reports (XCCDF/ARF/HTML, JSON) are evidence files (HRD-01, HRD-03)."}
+    ha: {status: "n.a.", note: "Per host; a missed weekly run alerts (CISAuditNotRun, DockerBenchNotRun)."}
+    components:
+      - name: scap-security-guide release (ComplianceAsCode)
+        license: BSD-3-Clause
+        note: >-
+          Upstream data streams for releases whose packages lack them (Ubuntu 24.04). Pin in roles/versions
+          (versions_tools.scap_security_guide) once its SHA-256 is recorded.
+      - name: docker-bench-security
+        license: Apache-2.0
+        note: >-
+          CIS Docker Benchmark checks (shell scripts). Pin in roles/versions (versions_tools.docker_bench_security)
+          once its SHA-256 is recorded.
+
   - name: Wazuh
     versions: [images/wazuh_indexer, images/wazuh_manager, images/wazuh_dashboard, packages/wazuh_agent]
     roles: [wazuh_indexer, wazuh_manager, wazuh_dashboard, wazuh_agent, wazuh_certs]

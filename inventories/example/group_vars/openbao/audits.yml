@@ -1,0 +1,6 @@
+---
+# Signing roles for CHG-02 (roles/admin_login): the CI deploy certificate (1 hour, used through the
+# ci-deploy AppRole only) and the break-glass certificate (admin policy only).
+openbao_ssh_extra_roles:
+  ci-deploy: { principals: [ci-deploy], ttl: 1h, extensions: [] }
+  break-glass: { principals: [break-glass], ttl: 1h, extensions: [permit-pty] }

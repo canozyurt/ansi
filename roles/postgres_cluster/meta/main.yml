@@ -14,3 +14,11 @@ galaxy_info:
       versions: [jammy, noble]
 dependencies:
   - role: versions
+  # Signature check before any container is created (CHG-08).
+  - role: image_verify
+    image_verify_images:
+      - "{{ postgres_cluster_image }}"
+      - "{{ postgres_cluster_image_base }}"
+      - "{{ postgres_cluster_etcd_image }}"
+      - "{{ postgres_cluster_haproxy_image }}"
+      - "{{ postgres_cluster_exporter_image }}"

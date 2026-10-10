@@ -26,4 +26,4 @@ mail_relay_smarthost_password: "{{ vault_mail_relay_smarthost_password }}"
 
 # Submission from the internal networks only (NET-01, NET-03).
 firewall_rules_mail_relay:
-  - { name: mail-relay-submission, port: 587, sources: "{{ mail_relay_allowed_cidrs }}" }
+  - { name: mail-relay-submission, port: 587, class: service, sources: "{{ mail_relay_allowed_cidrs }}" }

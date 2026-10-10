@@ -6,12 +6,13 @@
 monitoring_scrape_user: prometheus
 monitoring_scrape_password: "{{ vault_monitoring_scrape_password }}"
 
-# Networks the Prometheus replicas scrape from.
-monitoring_source_cidrs: ["{{ network_zones.mgmt }}"]
+# Addresses the Prometheus replicas scrape from: the monitoring hosts only, not the whole mgmt zone
+# (NET-02, NET-03; group_vars/all/network.yml).
+monitoring_source_cidrs: "{{ network_monitoring_host_cidrs }}"
 
 # The log shipper unit every host runs; its state feeds the LOG-06 alert.
 monitoring_log_shipper_unit: wazuh-agent.service
 
 # node_exporter is reachable only from the monitoring hosts (NET-01, NET-03).
 firewall_rules_node_exporter:
-  - { name: node-exporter, port: 9100, sources: "{{ monitoring_source_cidrs }}" }
+  - { name: node-exporter, port: 9100, class: metrics, sources: "{{ monitoring_source_cidrs }}" }

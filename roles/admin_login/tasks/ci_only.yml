@@ -1,0 +1,65 @@
+---
+- name: Map only the CI principal to the deploy account
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (admin_login, CHG-02). Only the CI's certificate logs in as {{ admin_login_ci_deploy_user }}.
+      {% if admin_login_ci_source_cidrs | length > 0 %}from="{{ admin_login_ci_source_cidrs | join(',') }}" {% endif %}{{ admin_login_ci_principal }}
+    dest: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}/{{ admin_login_ci_deploy_user }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Look up the deploy account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ admin_login_ci_deploy_user }}"
+    fail_key: false
+  when: admin_login_ci_only_active | bool
+
+- name: Remove the deploy account's static SSH keys (certificates only)
+  ansible.builtin.file:
+    path: "{{ ansible_facts.getent_passwd[admin_login_ci_deploy_user][4] }}/.ssh/authorized_keys"
+    state: absent
+  when:
+    - admin_login_ci_only_active | bool
+    - (ansible_facts.getent_passwd | default({}))[admin_login_ci_deploy_user] | default(none) is not none
+  tags: [chk_chg_02]
+
+- name: Install the sudo session check and the break-glass notifier
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [ci-deploy-session-check, break-glass-notify]
+  when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Find the sudo PAM services
+  ansible.builtin.stat:
+    path: /etc/pam.d/{{ item }}
+  loop: [sudo, sudo-i]
+  register: admin_login_sudo_pam
+
+# pam_exec runs in the account stack, which sudo uses even for NOPASSWD rules.
+- name: Allow sudo for the deploy account only in CI certificate sessions
+  ansible.builtin.lineinfile:
+    path: "{{ item.stat.path }}"
+    line: "account    requisite  pam_exec.so quiet /usr/local/sbin/ci-deploy-session-check"
+    insertbefore: '^@include common-account'
+    state: "{{ 'present' if admin_login_ci_only_active | bool else 'absent' }}"
+  loop: "{{ admin_login_sudo_pam.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [chk_chg_02]
+
+- name: Report every break-glass login
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/sshd
+    line: "session    optional   pam_exec.so quiet /usr/local/sbin/break-glass-notify"
+    insertafter: EOF
+    state: "{{ 'present' if admin_login_ci_only_active | bool else 'absent' }}"
+  tags: [chk_chg_02]

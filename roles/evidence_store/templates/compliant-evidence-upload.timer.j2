@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly compliance evidence upload (EVD-02)
+
+[Timer]
+OnCalendar={{ evidence_store_schedule }}
+RandomizedDelaySec={{ evidence_store_randomized_delay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

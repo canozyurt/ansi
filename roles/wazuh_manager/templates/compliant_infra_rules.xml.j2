@@ -23,4 +23,18 @@
     <description>Break-glass account used.</description>
     <group>break_glass,</group>
   </rule>
+
+  <!-- CHG-02: Ansible run records (tools/ansible-run, logger -t ansible-run) are indexed as change
+       evidence; sudo refused to the deploy account outside a CI certificate session is a page. -->
+  <rule id="100130" level="3">
+    <program_name>ansible-run</program_name>
+    <description>Ansible run record (CHG-02): $(full_log)</description>
+    <group>change_management,</group>
+  </rule>
+
+  <rule id="100131" level="12">
+    <program_name>ansible-run-denied</program_name>
+    <description>Ad-hoc Ansible or sudo attempt with the deploy account outside CI (CHG-02).</description>
+    <group>change_management,policy_violation,</group>
+  </rule>
 </group>

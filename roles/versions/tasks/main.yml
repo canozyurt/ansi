@@ -1,0 +1,27 @@
+---
+# Internal registry mirror (CHG-08). Every service role depends on this role and takes its image from
+# versions_images.<name>, so rewriting the map here moves every role to the mirror without touching
+# the roles. When image_registry_mirror is set (for example registry.example.internal), each image
+# <registry>/<path>:<tag> is pulled as <mirror>/<registry>/<path>:<tag>, the layout the CI mirror job
+# (.github/workflows/images.yml, .forgejo/workflows/images.yml) pushes and signs. The upstream map
+# stays available as versions_images_upstream (recipe hashes, release notes).
+#
+# Docker's registry-mirrors setting (container_runtime_registry_mirrors) is not used for this: it only
+# covers Docker Hub, while this bundle also pulls from ghcr.io, gcr.io, codeberg.org and data.forgejo.org.
+#
+# Turning the mirror on changes every image reference: stateful services treat that as a version
+# change, so roll it out with playbooks/upgrade.yml (one node at a time), like a version bump.
+- name: Pull images through the internal registry mirror (CHG-08)
+  ansible.builtin.set_fact:
+    versions_images_upstream: "{{ versions_images_source }}"
+    versions_images: >-
+      {%- set out = {} -%}
+      {%- for key, ref in versions_images_source.items() -%}
+      {%-   set _ = out.update({key: ref if key in versions_mirror_exclude else versions_mirror_prefix ~ ref}) -%}
+      {%- endfor -%}
+      {{ out }}
+  vars:
+    versions_images_source: "{{ versions_images_upstream | default(versions_images) }}"
+    versions_mirror_prefix: "{{ image_registry_mirror | regex_replace('/+$', '') }}/"
+  when: (image_registry_mirror | default('')) | length > 0
+  tags: [always, chk_chg_08]

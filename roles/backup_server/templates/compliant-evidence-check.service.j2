@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check the evidence store keeps 12 months of evidence with no missing month (EVD-02)
+After=compliant-backup-prune.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/compliant-backup-server evidence-check
+SyslogIdentifier=compliant-evidence-check
+Nice=10
+PrivateTmp=true
+TimeoutStartSec=2h

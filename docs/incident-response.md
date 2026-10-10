@@ -48,7 +48,7 @@ Prometheus rule fires --> Alertmanager --> email / webhook (on-call)
                                    |
                                   yes
                                    |
-   open a Forgejo issue from the "incident" template (label incident + severity/*)
+   open a Forgejo issue from the "incident" template (label incident + sev1..sev4)
                                    |
    IC + comms assigned; status page announcement (SEV1/2, customer-visible)
                                    |
@@ -64,8 +64,9 @@ Prometheus rule fires --> Alertmanager --> email / webhook (on-call)
    this is an incident. Silences in Alertmanager always carry a comment with the issue link or the
    reason.
 3. **Declare.** Open an issue in the organisation's incident repository from
-   `.forgejo/issue_template/incident.md` (copied from [templates/incident.md](templates/incident.md)).
-   Labels: `incident`, `severity/sev1`..`severity/sev4`, and `security` when relevant. The issue is
+   `.forgejo/ISSUE_TEMPLATE/incident.md` (provisioned from [templates/incident.md](templates/incident.md)).
+   Labels: `incident`, `sev1`..`sev4`, `postmortem-needed` for SEV1/SEV2 until the postmortem is
+   merged, and `security` when relevant. The issue is
    the single record: timeline, decisions, links to alerts, dashboards and changes.
 4. **Communicate.** Comms posts a Gatus announcement (`status_page_announcements`, types `outage`,
    `warning`, `information`, then `operational`) and updates it at the cadence above. Every update
@@ -81,8 +82,12 @@ Prometheus rule fires --> Alertmanager --> email / webhook (on-call)
 
 ## Where incidents are tracked
 
-- Forgejo, in one repository per organisation (for example `org/incidents`), private, with the
-  `incident` and `severity/*` labels and the two templates copied to `.forgejo/issue_template/`.
+- Forgejo, in the repository `forgejo_incident_tracker_org`/`forgejo_incident_tracker_repo` (example
+  inventory: `platform/incidents`), private, provisioned by `roles/forgejo` (`tasks_from: org_setup`,
+  `playbooks/delivery.yml`): labels `incident`, `sev1`..`sev4`, `postmortem-needed`, `postmortem` and
+  `security`; the two templates from `docs/templates` in `.forgejo/ISSUE_TEMPLATE/`; branch protection
+  on `main`. Once `main` is protected, a change to `docs/templates` reaches the tracker as a pull request
+  from the branch `incident-templates-sync`.
   Access: operators, security-admin and platform-admin write; auditors read (through the IdP
   groups, IAM-03).
 - Postmortems are a second issue (label `postmortem`) or a Markdown file in the same repository,
@@ -95,6 +100,7 @@ Prometheus rule fires --> Alertmanager --> email / webhook (on-call)
 | Record | Where | Kept |
 | --- | --- | --- |
 | Incident issues, timelines, postmortems | Forgejo (backed up by the Forgejo role) | At least 12 months after closure; never deleted inside that period |
+| Monthly export of every incident issue with its comments | `/var/lib/compliance-evidence/incidents` on the active Forgejo node (`forgejo-incident-export.timer`), in the append-only backup | 400 days locally, backup retention beyond |
 | Alert history | Alertmanager notifications (email/webhook archive), Prometheus 30 days | Notifications 12 months in the mail/chat archive |
 | Logs referenced by the incident | Central logging | 12 months (LOG-02) |
 | Status page announcements | Inventory (`status_page_announcements`, archived entries) in git | Git history |
@@ -102,6 +108,17 @@ Prometheus rule fires --> Alertmanager --> email / webhook (on-call)
 
 Deleting an incident record inside its retention period is not allowed for any role (the same rule
 as for logs and backups in the role model).
+
+Retention checks (INC-01, alerts in `group_vars/monitoring/incidents.yml`):
+
+- `IncidentRecordDeletedInRetention` (critical): an issue found in an earlier export is gone from the
+  tracker although it was closed less than 12 months ago. Restore it from the export or the backup.
+- `IncidentExportStale` / `IncidentExportNeverRun`: the monthly export has not succeeded for 35 days.
+- `IncidentRetentionReviewDue` (yearly reminder): once a year, check that every incident of the last
+  12 months is in the tracker and the exports, attach the result to the GRC tool, then record the
+  review with `touch /var/lib/compliance-evidence/incidents/retention-review.done` on the active
+  Forgejo node.
+- `IncidentPostmortemOverdue`: an issue has carried `postmortem-needed` for more than 7 days.
 
 ## Test it
 

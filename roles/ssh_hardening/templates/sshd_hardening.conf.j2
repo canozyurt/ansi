@@ -44,3 +44,10 @@ MACs {{ ssh_hardening_macs | join(',') }}
 HostKeyAlgorithms {{ ssh_hardening_host_key_algorithms | join(',') }}
 HostKey /etc/ssh/ssh_host_ed25519_key
 HostKey /etc/ssh/ssh_host_rsa_key
+{% if ssh_hardening_ci_only_deploys | bool and ssh_hardening_trusted_user_ca_keys | length > 0 %}
+
+# CHG-02: sessions see the key or certificate they logged in with (SSH_USER_AUTH); sudo for the
+# deploy account checks it carries the CI principal (roles/admin_login). No Match block: this file
+# is included at the top of sshd_config.
+ExposeAuthInfo yes
+{% endif %}

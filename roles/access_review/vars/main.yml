@@ -1,0 +1,2 @@
+---
+access_review_is_report_host: "{{ inventory_hostname == access_review_report_host }}"

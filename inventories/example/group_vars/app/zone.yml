@@ -1,0 +1,3 @@
+---
+# Zone of the hosts in this group (NET-03); see group_vars/all/network.yml and compliance/zone-flows.yml.
+network_zone: app

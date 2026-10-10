@@ -17,11 +17,17 @@ registry_admin_password: "{{ vault_registry_admin_password }}"
 registry_robots:
   # CI pushes application images; developers push to apps/** through SSO and API keys as well.
   - { name: ci-apps, password: "{{ vault_registry_ci_apps_password }}", repositories: ["apps/**"], actions: [read, create, update] }
+  # CI mirrors and signs the pinned upstream images (CHG-08, .github/workflows/images.yml): one namespace per
+  # upstream registry, the layout roles/versions pulls from when image_registry_mirror is set.
+  - name: ci-mirror
+    password: "{{ vault_registry_ci_mirror_password }}"
+    repositories: ["docker.io/**", "ghcr.io/**", "gcr.io/**", "codeberg.org/**", "data.forgejo.org/**"]
+    actions: [read, create, update]
   # Container hosts pull everything.
   - { name: puller, password: "{{ vault_registry_puller_password }}", repositories: ["**"], actions: [read] }
 
-# Signature verification (proposed CHG-08): images are signed in CI with cosign; deployments call
-# registry-check-signature, which fails under "enforce" unless the image has a trusted signature.
+# Signature verification (CHG-08): images are signed in CI with cosign; before creating a container, roles
+# run registry-check-signature (roles/image_verify), which fails under "enforce" unless the signature is trusted.
 registry_signature_policy: enforce
 registry_signature_check_robot: puller
 registry_trust_cosign_keys:
@@ -30,9 +36,9 @@ registry_trust_cosign_keys:
 # The CVE database is downloaded from mirror.gcr.io; set a proxy here if hosts have no direct egress.
 # registry_env: { HTTPS_PROXY: http://proxy.example.internal:3128, NO_PROXY: "127.0.0.1,localhost,.example.internal" }
 
-# HTTPS from the edge proxies (app zone) and the monitoring hosts (NET-01, NET-03).
+# HTTPS from the edge proxies (app zone) and the monitoring hosts, not the whole mgmt zone (NET-01, NET-03).
 firewall_rules_registry:
-  - { name: registry-https, port: 5000, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }
+  - { name: registry-https, port: 5000, class: service, sources: "{{ [network_zones.app] + monitoring_source_cidrs }}" }
 
 # Edge route: add to edge_extra_services in group_vars/edge. Internal only: administrators come in
 # through edge_admin_cidrs; allowed_cidrs adds the container hosts and CI runners.

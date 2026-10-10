@@ -63,6 +63,9 @@ versions_images:
   garage: docker.io/dxflrs/garage:v2.4.1
   # S3 client for Garage bucket export and deletion (roles/data_lifecycle, DAT-02).
   rclone: docker.io/rclone/rclone:1.71.1
+  # Weekly TLS scan of every endpoint (roles/tls_scan, SEC-03). Upstream image of testssl.sh (GPLv2).
+  # Not pulled or checked in this repository yet: confirm the tag and append its @sha256 digest.
+  testssl: ghcr.io/testssl/testssl.sh:3.2.1
 
 # Host packages installed from upstream repositories (pinned, held).
 versions_packages:
@@ -84,6 +87,20 @@ versions_tools:
     sha256:
       amd64: 8751cc0daf739634835a3bd8206e3094c84d552e2c462e4a4baf80f40dd92685
       arm64: 49e1f948af8e5c6ed5c803bad4508cf7af37be6c15b7fb2840109900b916eb48
+
+  # Not pinned yet (tools/pins.py requires a SHA-256, which nobody has recorded from the release pages):
+  # roles/cis_audit (Ubuntu 24.04 only; Debian 12 and Ubuntu 22.04 use the distribution's data stream)
+  # and roles/docker_bench refuse to run until these entries exist with their sha256. To pin, copy
+  # them uncommented with the SHA-256 of the release asset, and list them under the
+  # "OpenSCAP and docker-bench-security" tool in compliance/tools.yml (versions: [tools/...]).
+  #   scap_security_guide:
+  #     version: 0.1.76
+  #     url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
+  #     sha256: <sha256 of the zip>
+  #   docker_bench_security:
+  #     version: 1.6.0
+  #     url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
+  #     sha256: <sha256 of the archive>
 
 # PostgreSQL server image recipe (roles/postgres_cluster): Ubuntu archive packages pinned to exact
 # versions (PostgreSQL 18 is in main, with Canonical security maintenance) and Patroni from PyPI,
@@ -114,3 +131,7 @@ versions_upgrade_from:
 # Empty until the first release that includes the PostgreSQL product playbook; tools/release.py
 # bump-upgrade-from copies versions_postgres here. molecule/postgres-upgrade is skipped while it is empty.
 versions_postgres_upgrade_from: {}
+
+# Images that keep their upstream reference when image_registry_mirror is set (CHG-08, roles/versions
+# tasks): the registry cannot serve its own first pull. Pin them by digest if you can.
+versions_mirror_exclude: [zot, zot_build_base]

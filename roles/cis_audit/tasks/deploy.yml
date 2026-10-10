@@ -1,0 +1,63 @@
+---
+- name: Create the CIS audit directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/cis-audit, mode: "0750" }
+    - { path: /var/lib/compliance-evidence, mode: "0750" }
+    - { path: "{{ cis_audit_evidence_dir }}", mode: "0750" }
+    - { path: "{{ cis_audit_state_file | dirname }}", mode: "0750" }
+    - { path: "{{ cis_audit_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_hrd_01]
+
+- name: Write the scan settings
+  ansible.builtin.copy:
+    content: "{{ cis_audit_config | to_nice_json }}\n"
+    dest: /etc/cis-audit/config.json
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    cis_audit_config:
+      datastream: "{{ cis_audit_datastream }}"
+      content: "{{ cis_audit_content_source }}"
+      profiles: "{{ cis_audit_profiles }}"
+      exceptions: "{{ cis_audit_exceptions | unique | sort }}"
+      evidence_dir: "{{ cis_audit_evidence_dir }}"
+      retention_days: "{{ cis_audit_retention_days | int }}"
+      state_file: "{{ cis_audit_state_file }}"
+      textfile_dir: "{{ cis_audit_textfile_dir }}"
+  tags: [chk_hrd_01]
+
+- name: Install the scan script
+  ansible.builtin.copy:
+    src: cis-audit
+    dest: /usr/local/sbin/cis-audit
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_hrd_01]
+
+- name: Install the scan service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [cis-audit.service, cis-audit.timer]
+  tags: [chk_hrd_01]
+
+- name: Enable the weekly scan
+  ansible.builtin.systemd_service:
+    name: cis-audit.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_hrd_01]

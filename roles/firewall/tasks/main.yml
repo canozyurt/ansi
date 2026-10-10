@@ -22,11 +22,28 @@
       - item.port is defined or item.proto | default('tcp') not in ['tcp', 'udp']
       - item.sources is defined and item.sources | length > 0
       - item.proto | default('tcp') in ['tcp', 'udp', 'vrrp']
+      - item['class'] is not defined or item['class'] in firewall_rule_classes
     fail_msg: "Invalid firewall rule: {{ item }}"
     quiet: true
   loop: "{{ firewall_all_rules }}"
   loop_control:
     label: "{{ item.name | default(item) }}"
+
+# The full check (every source against compliance/zone-flows.yml) is tools/firewall_audit.py in CI;
+# this guard stops the two worst mistakes on any inventory at deploy time.
+- name: Keep admin and database ports closed to "any" and to the whole mgmt zone (NET-02)
+  ansible.builtin.assert:
+    that:
+      - "'any' not in item.sources"
+      - (network_zones | default({})).mgmt is not defined or network_zones.mgmt not in item.sources
+    fail_msg: >-
+      Firewall rule {{ item.name }} is class {{ item['class'] }}: allow firewall_mgmt_cidrs and the specific
+      client hosts or zones it needs, never "any" or the whole mgmt zone.
+    quiet: true
+  loop: "{{ firewall_all_rules | selectattr('class', 'defined') | selectattr('class', 'in', ['admin', 'database']) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [chk_net_02]
 
 - name: Install nftables
   ansible.builtin.apt:

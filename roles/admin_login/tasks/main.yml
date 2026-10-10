@@ -6,7 +6,7 @@
       - item.principals | default([]) | length > 0
     fail_msg: "Invalid admin_login account {{ item }}: needs a name and at least one principal."
     quiet: true
-  loop: "{{ admin_login_accounts }}"
+  loop: "{{ admin_login_effective_accounts }}"
   loop_control:
     label: "{{ item.name | default('?') }}"
 
@@ -24,7 +24,7 @@
     password: "!"
     password_lock: true
     create_home: true
-  loop: "{{ admin_login_accounts }}"
+  loop: "{{ admin_login_effective_accounts }}"
   loop_control:
     label: "{{ item.name }}"
   tags: [chk_iam_06, chk_iam_09]
@@ -48,7 +48,7 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ admin_login_accounts }}"
+  loop: "{{ admin_login_effective_accounts }}"
   loop_control:
     label: "{{ item.name }}"
   tags: [chk_iam_06, chk_iam_09]
@@ -63,7 +63,7 @@
     group: root
     mode: "0440"
     validate: visudo -cf %s
-  loop: "{{ admin_login_accounts | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
+  loop: "{{ admin_login_effective_accounts | selectattr('sudo', 'defined') | selectattr('sudo') | list }}"
   loop_control:
     label: "{{ item.name }}"
   tags: [chk_iam_09]
@@ -73,14 +73,17 @@
     path: /etc/sudoers.d/50-admin-login-{{ item }}
     state: absent
   loop: >-
-    {{ (admin_login_accounts | rejectattr('sudo', 'defined') | map(attribute='name') | list)
-       + (admin_login_accounts | selectattr('sudo', 'defined') | rejectattr('sudo') | map(attribute='name') | list)
-       + admin_login_removed_accounts }}
+    {{ (admin_login_effective_accounts | rejectattr('sudo', 'defined') | map(attribute='name') | list)
+       + (admin_login_effective_accounts | selectattr('sudo', 'defined') | rejectattr('sudo') | map(attribute='name') | list)
+       + admin_login_removed_accounts + admin_login_break_glass_cleanup }}
   tags: [chk_iam_09]
 
 - name: Remove principal mappings of retired accounts (ends certificate login)
   ansible.builtin.file:
     path: "{{ ssh_hardening_authorized_principals_dir | default('/etc/ssh/auth_principals') }}/{{ item }}"
     state: absent
-  loop: "{{ admin_login_removed_accounts }}"
+  loop: "{{ admin_login_removed_accounts + admin_login_break_glass_cleanup }}"
   tags: [chk_iam_04]
+
+- name: Restrict deploys to CI (CHG-02)
+  ansible.builtin.import_tasks: ci_only.yml

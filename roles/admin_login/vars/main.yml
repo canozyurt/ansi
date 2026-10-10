@@ -1,0 +1,13 @@
+---
+admin_login_ci_only_active: >-
+  {{ admin_login_ci_only_deploys | bool and (ssh_hardening_trusted_user_ca_keys | default([])) | length > 0 }}
+# With CI-only deploys, people keep their logins but not sudo; the break-glass account has sudo.
+admin_login_effective_accounts: >-
+  {{ (admin_login_accounts | map('combine', {'sudo': false}) | list + [admin_login_break_glass_account])
+     if admin_login_ci_only_active | bool else admin_login_accounts }}
+# A break-glass account this role created earlier loses sudo and its principal when CI-only is off.
+admin_login_break_glass_cleanup: >-
+  {{ [admin_login_break_glass_account.name]
+     if not admin_login_ci_only_active | bool
+        and admin_login_break_glass_account.name not in admin_login_accounts | map(attribute='name') | list
+     else [] }}

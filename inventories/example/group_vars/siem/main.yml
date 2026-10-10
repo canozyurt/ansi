@@ -22,13 +22,14 @@ wazuh_dashboard_oidc_client_secret: "{{ vault_wazuh_dashboard_oidc_client_secret
 # the manager cluster talk only between SIEM nodes; the API only from management; the dashboard from
 # the edge proxies and management (NET-01, NET-03).
 siem_agent_sources: "{{ (network_zones.values() | list) + firewall_mgmt_cidrs }}"
+# The indexer (a data store) and the cluster ports answer the SIEM nodes only, not the whole mgmt zone (NET-02).
 firewall_rules_wazuh:
-  - { name: wazuh-agents, port: 1514, sources: "{{ siem_agent_sources }}" }
-  - { name: wazuh-enrollment, port: 1515, sources: "{{ siem_agent_sources }}" }
-  - { name: wazuh-manager-cluster, port: 1516, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: wazuh-api, port: 55000, sources: "{{ firewall_mgmt_cidrs }}" }
-  - { name: wazuh-indexer-http, port: 9200, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: wazuh-indexer-transport, port: 9300, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: wazuh-dashboard, port: 5601, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }
+  - { name: wazuh-agents, port: 1514, class: service, sources: "{{ siem_agent_sources }}" }
+  - { name: wazuh-enrollment, port: 1515, class: service, sources: "{{ siem_agent_sources }}" }
+  - { name: wazuh-manager-cluster, port: 1516, class: cluster, sources: "{{ network_siem_host_cidrs }}" }
+  - { name: wazuh-api, port: 55000, class: admin, sources: "{{ firewall_mgmt_cidrs + network_siem_host_cidrs }}" }
+  - { name: wazuh-indexer-http, port: 9200, class: database, sources: "{{ network_siem_host_cidrs }}" }
+  - { name: wazuh-indexer-transport, port: 9300, class: cluster, sources: "{{ network_siem_host_cidrs }}" }
+  - { name: wazuh-dashboard, port: 5601, class: admin, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }
   # Only when wazuh_dashboard_port is 443 (no edge proxy in front).
-  - { name: wazuh-dashboard-https, port: 443, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }
+  - { name: wazuh-dashboard-https, port: 443, class: admin, sources: "{{ firewall_mgmt_cidrs + [network_zones.app] }}" }

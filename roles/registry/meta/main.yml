@@ -12,4 +12,7 @@ galaxy_info:
       versions: [jammy, noble]
 dependencies:
   - role: versions
+  # Signature check before any container is created (CHG-08).
+  - role: image_verify
+    image_verify_images: ["{{ registry_image }}", "{{ registry_build_base_image }}"]
   - role: rbac_model

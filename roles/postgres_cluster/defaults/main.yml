@@ -18,7 +18,7 @@ postgres_cluster_allow_single_node: false
 # prebuilt copy from your registry instead.
 postgres_cluster_image_build: true
 postgres_cluster_image_recipe_hash: >-
-  {{ ((lookup('ansible.builtin.file', 'Dockerfile') ~ (versions_postgres | to_json) ~ versions_images.postgres_base)
+  {{ ((lookup('ansible.builtin.file', 'Dockerfile') ~ (versions_postgres | to_json) ~ (versions_images_upstream | default(versions_images)).postgres_base)
      | hash('sha256'))[:8] }}
 postgres_cluster_image: >-
   localhost/compliant-postgres:{{ versions_postgres.packages['postgresql-' ~ versions_postgres.major] }}-patroni{{

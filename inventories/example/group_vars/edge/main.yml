@@ -17,14 +17,14 @@ keepalived_vips:
 
 # Admin-only services (grafana, openbao) and admin paths: VPN and bastion ranges (NET-02).
 edge_admin_cidrs: "{{ firewall_mgmt_cidrs }}"
-# Prometheus scrapes 8405 from the monitoring hosts in the mgmt zone.
-edge_metrics_allowed_cidrs: ["{{ network_zones.mgmt }}"]
+# Prometheus scrapes 8405 from the monitoring hosts.
+edge_metrics_allowed_cidrs: "{{ monitoring_source_cidrs }}"
 
 # 80/443 open to everyone; metrics to monitoring only; VRRP only within the edge segment (NET-01, NET-03).
 # keepalived additionally accepts adverts only from its configured peers (check_unicast_src).
 firewall_rules_edge:
-  - { name: edge-http, port: 80, sources: [any] }
-  - { name: edge-https, port: 443, sources: [any] }
-  - { name: edge-metrics, port: 8405, sources: "{{ edge_metrics_allowed_cidrs }}" }
+  - { name: edge-http, port: 80, class: public, sources: [any] }
+  - { name: edge-https, port: 443, class: public, sources: [any] }
+  - { name: edge-metrics, port: 8405, class: metrics, sources: "{{ edge_metrics_allowed_cidrs }}" }
 firewall_rules_keepalived:
-  - { name: edge-vrrp, proto: vrrp, sources: ["{{ network_zones.app }}"] }
+  - { name: edge-vrrp, proto: vrrp, class: cluster, sources: ["{{ network_zones.app }}"] }

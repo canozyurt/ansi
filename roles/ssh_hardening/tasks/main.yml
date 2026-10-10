@@ -63,7 +63,17 @@
     mode: "0600"
     validate: /usr/sbin/sshd -t -f %s
   notify: Reload sshd
-  tags: [chk_iam_06]
+  tags: [chk_iam_06, chk_chg_02]
+
+- name: Explain why CI-only deploys are not enforced yet
+  ansible.builtin.debug:
+    msg: >-
+      ci_only_deploys is set but no SSH user CA is trusted yet (ssh_hardening_trusted_user_ca_keys), so the
+      deploy account still accepts keys. Deploy the SSH CA (playbooks/secrets.yml) and set the CA key.
+  when:
+    - ssh_hardening_ci_only_deploys | bool
+    - ssh_hardening_trusted_user_ca_keys | length == 0
+  tags: [chk_chg_02]
 
 - name: Remove small Diffie-Hellman moduli
   ansible.builtin.shell: |

@@ -1,0 +1,119 @@
+---
+- name: Check the evidence store settings
+  ansible.builtin.assert:
+    that:
+      - evidence_store_password_seed | length >= 32
+    fail_msg: Set backup_password_seed (32+ characters, Ansible Vault or OpenBao); the evidence store credentials derive from it.
+    quiet: true
+  no_log: true
+  tags: [chk_evd_02]
+
+- name: Work out which servers hold the evidence copies
+  ansible.builtin.set_fact:
+    evidence_store_repo_servers: >-
+      {{ (evidence_store_servers | difference([inventory_hostname]))
+         if (evidence_store_skip_self | bool and (evidence_store_servers | difference([inventory_hostname])) | length > 0)
+         else evidence_store_servers }}
+
+- name: Require at least one evidence server
+  ansible.builtin.assert:
+    that: evidence_store_repo_servers | length > 0
+    fail_msg: The evidence store needs the backup group (roles/backup_server).
+    quiet: true
+  tags: [chk_evd_02]
+
+- name: Install restic (pinned, verified by SHA-256)
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: restic.yml
+  tags: [chk_chg_05]
+
+- name: Create the evidence store directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ evidence_store_config_dir }}", mode: "0700" }
+    - { path: "{{ evidence_store_config_dir }}/repos", mode: "0700" }
+    - { path: "{{ evidence_store_state_file | dirname }}", mode: "0700" }
+    - { path: "{{ evidence_store_cache_dir }}", mode: "0700" }
+    - { path: /var/lib/compliance-evidence, mode: "0750" }
+    - { path: "{{ evidence_store_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_evd_02]
+
+- name: Write one environment file per evidence repository (contains secrets)
+  ansible.builtin.template:
+    src: repo.env.j2
+    dest: "{{ evidence_store_config_dir }}/repos/{{ item }}.env"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ evidence_store_repo_servers }}"
+  no_log: true
+  tags: [chk_evd_02, chk_sec_02]
+
+- name: Find evidence repository files of servers that are gone
+  ansible.builtin.find:
+    paths: "{{ evidence_store_config_dir }}/repos"
+    patterns: "*.env"
+  register: evidence_store_env_files
+
+- name: Delete stale evidence repository files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ evidence_store_env_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename | regex_replace('\.env$', '')) not in evidence_store_repo_servers
+
+- name: Write the upload settings
+  ansible.builtin.copy:
+    content: "{{ evidence_store_config | to_nice_json }}\n"
+    dest: "{{ evidence_store_config_dir }}/config.json"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    evidence_store_config:
+      host: "{{ inventory_hostname }}"
+      restic: "{{ evidence_store_restic_bin }}"
+      paths: "{{ evidence_store_paths + evidence_store_extra_paths }}"
+      state_file: "{{ evidence_store_state_file }}"
+      cache_dir: "{{ evidence_store_cache_dir }}"
+      textfile_dir: "{{ evidence_store_textfile_dir }}"
+      repo_dir: "{{ evidence_store_config_dir }}/repos"
+      repos: "{{ evidence_store_repo_servers }}"
+  tags: [chk_evd_02]
+
+- name: Install the upload tool
+  ansible.builtin.copy:
+    src: compliant-evidence-upload
+    dest: /usr/local/sbin/compliant-evidence-upload
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_evd_02]
+
+- name: Install the upload service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [compliant-evidence-upload.service, compliant-evidence-upload.timer]
+  tags: [chk_evd_02]
+
+- name: Enable the weekly evidence upload
+  ansible.builtin.systemd_service:
+    name: compliant-evidence-upload.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_evd_02]

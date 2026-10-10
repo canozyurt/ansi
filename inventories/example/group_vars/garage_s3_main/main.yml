@@ -1,6 +1,10 @@
 ---
 # Garage cluster s3-main (NET-01, NET-03). Set garage_cluster_zone per host (rack or availability zone).
+# S3 clients in the mgmt zone (Forgejo, SIEM snapshots) by host address, never the whole zone (NET-02).
 firewall_rules_garage_s3_main:
-  - { name: garage-s3-main-s3, port: 3900, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}", "{{ network_zones.data }}"] }
-  - { name: garage-s3-main-rpc, port: 3901, sources: ["{{ network_zones.data }}"] }
-  - { name: garage-s3-main-metrics, port: 3904, sources: "{{ monitoring_source_cidrs }}" }
+  - name: garage-s3-main-s3
+    port: 3900
+    class: database
+    sources: "{{ [network_zones.app, network_zones.data] + network_mgmt_datastore_client_cidrs }}"
+  - { name: garage-s3-main-rpc, port: 3901, class: cluster, sources: ["{{ network_zones.data }}"] }
+  - { name: garage-s3-main-metrics, port: 3904, class: metrics, sources: "{{ monitoring_source_cidrs }}" }

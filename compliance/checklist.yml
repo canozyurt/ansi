@@ -77,7 +77,8 @@ requirements:
       iso27001: ["5.18"]
       iso27017: []
     check: "Scheduled job stores the report as evidence"
-    status: not_started
+    status: implemented
+    progress: "roles/access_review (playbooks/audits.yml): quarterly timer on every host writes CSV+JSON evidence under /var/lib/compliance-evidence/access-review/<quarter>/ - local accounts (shell, password/lock state, groups, sudo, SSH principals and keys) on every host; on the first Keycloak node users, groups, role assignments, admins, last login, disabled, stale and service accounts from the Keycloak admin API through a read-only client-credentials service account (roles/keycloak creates it when keycloak_access_review_client_secret is set), plus VPN peers with owner and expiry. Registered with backup_register and uploaded to the evidence store; AccessReviewOverdue alerts when a report is older than 100 days; playbooks/access_review.yml runs it on demand and collects a bundle. Classification checked on sample data; nothing run against Keycloak (not tested)."
   - id: IAM-06
     requirement: "SSH allows no passwords and no direct root login; admins use short-lived certificates"
     core: true
@@ -146,8 +147,8 @@ requirements:
       iso27001: ["8.20", "8.24"]
       iso27017: []
     check: "TLS scanner (e.g. testssl.sh) against every endpoint weekly"
-    status: designed
-    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI, weekly TLS scan of every endpoint. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT. SIEM: SIEM: TLS 1.2+ on indexer (9200/9300), manager API, enrollment and dashboard; node certificates from a dedicated SIEM CA (roles/wazuh_certs), HTTP certificates from tls_cert when the internal PKI is set. Valkey: TLS 1.2+ only for clients, replication and Sentinel, plaintext port disabled (tested single node). RabbitMQ: AMQPS, management and Prometheus over TLS only, Erlang distribution and CLI tools over TLS (peer verification with CA-signed certificates; encrypted but unverified with temporary self-signed ones) (not tested). Garage: S3 API and metrics through an HAProxy TLS sidecar, plaintext listeners on loopback, RPC encrypted with the cluster secret (not tested)."
+    status: implemented
+    progress: "Keycloak serves TLS 1.2+ only, no plain HTTP (tested). Remaining: issued certs from PKI. Edge terminates TLS 1.2+ (Mozilla intermediate) and re-encrypts to backends verified against the internal CA (tested). Unbound serves DNS-over-TLS on 853 and forwards upstream over DoT. SIEM: SIEM: TLS 1.2+ on indexer (9200/9300), manager API, enrollment and dashboard; node certificates from a dedicated SIEM CA (roles/wazuh_certs), HTTP certificates from tls_cert when the internal PKI is set. Valkey: TLS 1.2+ only for clients, replication and Sentinel, plaintext port disabled (tested single node). RabbitMQ: AMQPS, management and Prometheus over TLS only, Erlang distribution and CLI tools over TLS (peer verification with CA-signed certificates; encrypted but unverified with temporary self-signed ones) (not tested). Garage: S3 API and metrics through an HAProxy TLS sidecar, plaintext listeners on loopback, RPC encrypted with the cluster secret (not tested). Weekly TLS scan (roles/tls_scan, monitoring hosts): testssl.sh container against every https scrape target, every edge hostname and extra (STARTTLS) endpoints; JSON evidence under /var/lib/compliance-evidence/tls/, per-target metrics and alerts for protocols below TLS 1.2, weak or obsolete ciphers, certificate problems and missed scans (parser checked on a sample report; not run, not tested)."
   - id: SEC-04
     requirement: "Data at rest is encrypted: disks, databases, backups and object storage"
     core: true
@@ -246,8 +247,8 @@ requirements:
       iso27001: ["8.9"]
       iso27017: ["CLD.9.5.2"]
     check: "OpenSCAP or ansible-lockdown audit in CI and weekly"
-    status: designed
-    progress: "Done: CIS L1 subset (sysctl, modules, core dumps, sudo, accounts, services). Remaining: full benchmark scan (OpenSCAP) in CI."
+    status: implemented
+    progress: "Done: CIS L1 subset (sysctl, modules, core dumps, sudo, accounts, services). roles/cis_audit: weekly OpenSCAP CIS Level 1 scan on every host (distribution SCAP content on Debian 12 and Ubuntu 22.04; Debian has no CIS profile in SSG, so ANSSI minimal there plus the Wazuh SCA CIS policy), evidence (XCCDF/ARF/HTML/summary) under /var/lib/compliance-evidence/cis/, textfile metrics and alerts on score drops, rule regressions and missed runs; exceptions in docs/cis-exceptions.md count as excepted. CI: .github/workflows/audits.yml runs the scan on a baselined test container per release (molecule/audits). Parser checked on a sample results file; scans not run (not tested). Remaining: record the SHA-256 of the scap-security-guide release in roles/versions (needed for Ubuntu 24.04, which refuses to scan until then)."
   - id: HRD-02
     requirement: "Containers run as non-root from pinned, signed images with minimal base and read-only filesystem where possible"
     core: true
@@ -266,8 +267,8 @@ requirements:
       iso27001: ["8.9"]
       iso27017: ["CLD.9.5.2"]
     check: "docker-bench-security in CI and weekly"
-    status: designed
-    progress: "Done: daemon.json hardening, socket permissions, audit rules. Remaining: docker-bench-security run in CI."
+    status: implemented
+    progress: "Done: daemon.json hardening, socket permissions, audit rules. roles/docker_bench: weekly docker-bench-security run on container hosts, JSON evidence under /var/lib/compliance-evidence/docker-bench/, textfile metrics, alerts on WARN results outside the documented exceptions (docs/cis-exceptions.md) and on missed runs; CI job in .github/workflows/audits.yml (molecule/audits with Docker). Parser checked on a sample log; not run (not tested). Remaining: record docker-bench-security's SHA-256 in roles/versions; until then the role and the CI job refuse to run (or use docker_bench_local_src with a reviewed copy)."
   - id: HRD-04
     requirement: "Security patches applied within 14 days for critical and 30 days for high severity"
     core: true
@@ -326,8 +327,8 @@ requirements:
       iso27001: ["8.20", "8.22"]
       iso27017: ["CLD.13.1.4"]
     check: "Port scan from the internet finds no management ports"
-    status: designed
-    progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Remaining: admin UIs and databases of each service restricted to the same sources (several still allow the whole mgmt zone). Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested)."
+    status: implemented
+    progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested). Every firewall rule now carries a class; admin UIs/APIs and data stores allow only firewall_mgmt_cidrs plus named client hosts (group_vars/all/network.yml: monitoring, SIEM, control-plane data store clients) or declared client zones, never any or the whole mgmt zone (fixed: Prometheus, Alertmanager, Grafana, Keycloak, GRC, Wazuh indexer/API, Patroni API, PostgreSQL/Valkey/Garage clients, registry, status page, metrics ports). roles/firewall refuses admin/database rules open to any or the mgmt zone; tools/firewall_audit.py checks the rendered rule set of the example inventory in CI (.github/workflows/network.yml) and generates docs/network.md. Audit run locally on the example inventory; its unit tests (tools/tests) are written, not run; firewall changes not tested on hosts (not tested)."
   - id: NET-03
     requirement: "Management, application and data networks are separated; traffic between them is allowed by explicit rule"
     core: true
@@ -336,8 +337,8 @@ requirements:
       iso27001: ["8.22"]
       iso27017: ["CLD.9.5.1"]
     check: "Firewall rule test between zones"
-    status: designed
-    progress: "Zones defined in the inventory; inter-zone rules come with the service roles."
+    status: implemented
+    progress: "Zones as data: inventory groups mgmt/app/data (network_zone in group_vars/<zone>/zone.yml; vpn, bastion, dns in mgmt), CIDRs in network_zones, host addresses in group_vars/all/network.yml, allowed flows (service, port, from, to) in compliance/zone-flows.yml. tools/firewall_audit.py renders every host rule from the example inventory and fails on a source in another zone without a declared flow, on sources outside or spanning zones and on hosts outside their zone; port matrix in docs/network.md. CI job .github/workflows/network.yml runs the audit and tools/tests (fixture inventory with known violations); the audit was run locally, the tests are written but not run, no host-level firewall test between zones yet (not tested)."
   - id: NET-04
     requirement: "Public endpoints sit behind the reverse proxy with security headers, rate limits and WAF rules"
     core: true
@@ -424,8 +425,8 @@ requirements:
       iso27001: ["8.32", "8.15"]
       iso27017: []
     check: "CI run logs shipped to SIEM; host denies ad-hoc Ansible runs"
-    status: designed
-    progress: "Forgejo Actions runners (roles/forgejo_runner, registered with a vault secret, jobs in unprivileged containers on an isolated network) and a documented deploy pipeline fetching the vault password from OpenBao. Remaining: deploy runner and pipeline in production, deny ad-hoc Ansible runs on hosts, ship CI run logs to the SIEM."
+    status: implemented
+    progress: "Forgejo Actions runners (roles/forgejo_runner) and deploy pipeline. Run records: the run_record callback (ansible.cfg) and tools/ansible-run log who (CI actor/user), commit, playbook, limit, tags, check mode and per-host results to journald on the controller and on every host touched (identifier ansible-run, SIEM rule 100130). ci_only_deploys (example inventory: true): the deploy account accepts only certificates with the ci-deploy principal (signed through the OpenBao ci-deploy AppRole, which can only sign that role and read the vault password; tools/ci-openbao-login), static keys removed, sudo allowed only in a session that logged in with that certificate (pam_exec check, refusals are SIEM rule 100131); people lose sudo; break-glass account with alerting (SIEM 100120, BreakGlassLogin). docs/audits.md. Not tested."
   - id: CHG-03
     requirement: "Drift from the declared state is detected and alerted"
     core: true
@@ -434,7 +435,8 @@ requirements:
       iso27001: ["8.9"]
       iso27017: []
     check: "Scheduled check-mode run; any change counts as drift"
-    status: not_started
+    status: implemented
+    progress: "Scheduled check-mode run of site.yml through tools/ansible-run: .github/workflows/drift.yml and .forgejo/workflows/drift.yml (daily, deploy runner, ci-deploy AppRole). playbooks/run_record.yml writes ansible_drift_changed_tasks / failed / last-check timestamp per host (textfile collector); DriftDetected, DriftCheckFailed and DriftCheckNotRun alerts; tools/drift_report.py fails the job and lists drifted hosts (checked on sample records). Not run (not tested)."
   - id: CHG-04
     requirement: "Dev, test and production use separate inventories, and production data is never copied to test"
     core: true
@@ -483,8 +485,8 @@ requirements:
       iso27001: ["8.8", "8.19", "8.32"]
       iso27017: []
     check: "Registry trust store holds the CI signing keys; registry-check-signature fails under enforce for an unsigned image"
-    status: designed
-    progress: "roles/registry: Zot with Trivy CVE scanning, cosign/notation trust stores and registry-check-signature (registry_signature_policy off/warn/enforce); the unsigned-image refusal passed in molecule/registry. Remaining: CI signing step, roles pulling from the internal registry and calling the check before deploy."
+    status: implemented
+    progress: "roles/registry: Zot with Trivy CVE scanning, cosign/notation trust stores and registry-check-signature; the unsigned-image refusal passed in molecule/registry. CI: .github/workflows/images.yml and .forgejo/workflows/images.yml run tools/image_mirror.py (crane copy into <mirror>/<upstream path>, digest pins enforced, syft SPDX SBOM as a signed cosign attestation, cosign signature with an OpenBao transit key via hashivault:// or a CI secret key; pinned crane/cosign/syft via go install). image_registry_mirror (group_vars/all/images.yml) is applied once in roles/versions (tasks rewrite versions_images, so no service role changed); roles/image_verify (meta dependency of every container role) logs in to the mirror and runs registry-check-signature for each image before containers are created when image_signature_policy is enforce, keeping results under /var/lib/compliance-evidence/image-signatures. Mirror dry run checked locally; workflows, mirror pulls and the check on hosts not run (not tested). Not covered: Forgejo Actions job images pulled by the runner."
   - id: DAT-01
     requirement: "Each product instance gets its own database or bucket and credentials"
     controls:
@@ -528,8 +530,8 @@ requirements:
       iso27001: ["5.33"]
       iso27017: []
     check: "Evidence store retention test"
-    status: designed
-    progress: "CISO Assistant (roles/grc) holds evidence with a 12-month audit log and backups; docs/grc.md describes attaching each release's export and CI log. Remaining: tamper-evident evidence store, automated upload, retention test."
+    status: implemented
+    progress: "CISO Assistant (roles/grc) holds evidence with a 12-month audit log. Evidence store: dedicated restic repository on every append-only rest-server (roles/backup_server, evidence login that can append but not delete); roles/evidence_store uploads /var/lib/compliance-evidence from every host weekly (EvidenceUploadStale); the servers keep every evidence snapshot 13 months and run a weekly retention check (oldest kept evidence and one snapshot per calendar month over 12 months; EvidenceRetentionViolated, EvidenceRetentionCheckNotRun), whose verdict is itself evidence. Audit roles register their directories with backup_register. Retention logic checked on sample snapshot listings; not run (not tested). Remaining: CI artifacts (drift records, CI scans) are kept 90 days in CI, not yet uploaded to the store."
   - id: EVD-03
     requirement: "An asset inventory with an owner per asset is generated from inventory and agents"
     controls:
@@ -556,5 +558,5 @@ requirements:
       iso27001: ["5.24", "5.25", "5.26", "5.27"]
       iso27017: []
     check: "Incident issues carry severity, timeline and a linked postmortem; tracker retention reviewed yearly"
-    status: designed
-    progress: "docs/incident-response.md: severities, roles, alert-to-incident flow, Forgejo issue and postmortem templates, status page comms (roles/status_page), 12-month retention. Remaining: Forgejo labels/templates provisioned by the Forgejo role; retention check."
+    status: implemented
+    progress: "docs/incident-response.md: severities, roles, alert-to-incident flow, templates, status page comms, 12-month retention. roles/forgejo org_setup provisions the incident tracker (forgejo_incident_tracker_*: platform/incidents in the example) with branch protection, labels incident, sev1-sev4, postmortem-needed, postmortem, security, and the docs/templates issue templates in .forgejo/ISSUE_TEMPLATE (later changes as a pull request); settings exported as evidence. forgejo-incident-export.timer exports all incident issues monthly to /var/lib/compliance-evidence/incidents (append-only backup) with metrics; alerts for stale export, records deleted inside retention, overdue postmortems and the yearly retention review (group_vars/monitoring/incidents.yml). Export script checked against a stub API locally; role tasks and alerts not run (not tested)."

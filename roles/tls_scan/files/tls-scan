@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Weekly TLS scan of every endpoint (SEC-03), installed by roles/tls_scan.
+
+Runs testssl.sh (one-shot container per target) against the targets in /etc/tls-scan/config.json,
+keeps one JSON report per target under the evidence directory, prints one summary line per target
+(journald, identifier tls-scan) and writes textfile metrics per target: offered protocols, weak and
+obsolete cipher categories, missing forward secrecy, certificate problems and scan success.
+
+For tests, `tls-scan --parse REPORT.json` summarizes an existing testssl.sh JSON report.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG = "/etc/tls-scan/config.json"
+CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+PROTOCOLS = {"SSLv2": "ssl2", "SSLv3": "ssl3", "TLS1": "tls1.0", "TLS1_1": "tls1.1", "TLS1_2": "tls1.2", "TLS1_3": "tls1.3"}
+WEAK_PROTOCOLS = {"ssl2", "ssl3", "tls1.0", "tls1.1"}
+WEAK_CIPHERS = {"cipherlist_NULL", "cipherlist_aNULL", "cipherlist_EXPORT", "cipherlist_LOW", "cipherlist_3DES_IDEA"}
+OBSOLETE_CIPHERS = {"cipherlist_OBSOLETED", "cipherlist_AVERAGE"}  # 3.2 name, 3.0 name
+NO_FS_CIPHERS = {"cipherlist_STRONG_NOFS"}
+CERT_PROBLEM_SEVERITIES = {"MEDIUM", "HIGH", "CRITICAL"}
+UID = 65534  # the scanner runs as nobody
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def label(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def offered(finding):
+    return str(finding).strip().lower().startswith("offered")
+
+
+def parse(path):
+    """Summary of a testssl.sh JSON (flat) report."""
+    with open(path, encoding="utf-8") as fh:
+        findings = json.load(fh)
+    if isinstance(findings, dict):  # --jsonfile-pretty layout
+        findings = [f for block in findings.get("scanResult", []) for v in block.values() if isinstance(v, list) for f in v]
+    summary = {"protocols": {}, "weak_ciphers": [], "obsolete_ciphers": [], "no_fs_ciphers": [],
+               "cert_problems": [], "fatal": []}
+    for item in findings:
+        fid = str(item.get("id", ""))
+        base = fid.split()[0]
+        finding = item.get("finding", "")
+        severity = str(item.get("severity", "")).upper()
+        if base in PROTOCOLS:
+            summary["protocols"][PROTOCOLS[base]] = offered(finding)
+        elif base in WEAK_CIPHERS and offered(finding):
+            summary["weak_ciphers"].append(base)
+        elif base in OBSOLETE_CIPHERS and offered(finding):
+            summary["obsolete_ciphers"].append(base)
+        elif base in NO_FS_CIPHERS and offered(finding):
+            summary["no_fs_ciphers"].append(base)
+        elif base.startswith("cert") and severity in CERT_PROBLEM_SEVERITIES:
+            summary["cert_problems"].append(f"{fid}: {finding}")
+        if severity == "FATAL" or base == "scanProblem":
+            summary["fatal"].append(f"{fid}: {finding}")
+    summary["weak_protocols"] = sorted(p for p, on in summary["protocols"].items() if on and p in WEAK_PROTOCOLS)
+    summary["ok"] = not summary["fatal"] and bool(summary["protocols"])
+    return summary
+
+
+def safe_name(value):
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in value)[:200]
+
+
+def scan(cfg, target, run_dir):
+    name = safe_name(target["name"])
+    scratch = tempfile.mkdtemp(prefix=".scan.", dir=run_dir)
+    os.chown(scratch, UID, UID)
+    cmd = ["docker", "run", "--rm", "--network=host", f"--user={UID}:{UID}", "--cap-drop=ALL",
+           "--security-opt=no-new-privileges:true", "--read-only", "--tmpfs=/tmp:rw,size=64m",
+           f"--memory={cfg['memory_limit']}", f"--pids-limit={cfg['pids_limit']}", "--log-driver=none",
+           f"--volume={scratch}:/out"]
+    args = ["--jsonfile", "/out/report.json", "--quiet", "--warnings", "off", "--color", "0", "--ip", "one",
+            "--connect-timeout", "10", "--openssl-timeout", "10", "-p", "-s", "-S"]
+    if os.path.exists(CA_BUNDLE):
+        # Internal CA: chains issued by the internal PKI are trusted like on the hosts.
+        cmd.append(f"--volume={CA_BUNDLE}:/ca/ca-certificates.crt:ro")
+        args += ["--add-ca", "/ca/ca-certificates.crt"]
+    if cfg.get("vulnerabilities"):
+        args.append("-U")
+    if target.get("starttls"):
+        args += ["--starttls", target["starttls"]]
+    cmd += [cfg["image"]] + args + [f"{target['host']}:{target['port']}"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=int(cfg["timeout"]), check=False)
+        error = proc.stderr.strip()[-500:]
+    except subprocess.TimeoutExpired:
+        error = f"timed out after {cfg['timeout']}s"
+    report = os.path.join(run_dir, f"{name}.json")
+    produced = os.path.join(scratch, "report.json")
+    if os.path.exists(produced):
+        shutil.move(produced, report)
+    shutil.rmtree(scratch, ignore_errors=True)
+    if not os.path.exists(report):
+        return {"ok": False, "error": error or "no report", "protocols": {}, "weak_protocols": [], "weak_ciphers": [],
+                "obsolete_ciphers": [], "no_fs_ciphers": [], "cert_problems": [], "fatal": []}, None
+    try:
+        return parse(report), report
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc), "protocols": {}, "weak_protocols": [], "weak_ciphers": [],
+                "obsolete_ciphers": [], "no_fs_ciphers": [], "cert_problems": [], "fatal": []}, report
+
+
+def write_metrics(cfg, results, start):
+    end = time.time()
+    lines = []
+
+    def metric(name, help_text, samples):
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.extend(samples)
+
+    metric("tls_scan_protocol_offered", "1 when the endpoint offers the protocol (last scan).",
+           [f'tls_scan_protocol_offered{{target="{label(t)}",protocol="{p}"}} {int(on)}'
+            for t, s in results for p, on in sorted(s["protocols"].items())])
+    metric("tls_scan_weak_protocols", "Protocols below TLS 1.2 the endpoint offers.",
+           [f'tls_scan_weak_protocols{{target="{label(t)}"}} {len(s["weak_protocols"])}' for t, s in results if s["ok"]])
+    metric("tls_scan_weak_ciphers", "Weak cipher categories offered (NULL, anonymous, export, low, 3DES/IDEA).",
+           [f'tls_scan_weak_ciphers{{target="{label(t)}"}} {len(s["weak_ciphers"])}' for t, s in results if s["ok"]])
+    metric("tls_scan_obsolete_ciphers", "Obsolete cipher categories offered (CBC and other non-AEAD suites).",
+           [f'tls_scan_obsolete_ciphers{{target="{label(t)}"}} {len(s["obsolete_ciphers"])}' for t, s in results if s["ok"]])
+    metric("tls_scan_no_forward_secrecy_ciphers", "Strong cipher categories without forward secrecy offered.",
+           [f'tls_scan_no_forward_secrecy_ciphers{{target="{label(t)}"}} {len(s["no_fs_ciphers"])}'
+            for t, s in results if s["ok"]])
+    metric("tls_scan_certificate_problems", "Certificate findings of medium severity or worse (trust, expiry, key, signature).",
+           [f'tls_scan_certificate_problems{{target="{label(t)}"}} {len(s["cert_problems"])}' for t, s in results if s["ok"]])
+    metric("tls_scan_success", "1 when the last scan of the endpoint produced a usable report.",
+           [f'tls_scan_success{{target="{label(t)}"}} {int(s["ok"])}' for t, s in results])
+    metric("tls_scan_targets", "Endpoints in the last TLS scan.", [f"tls_scan_targets {len(results)}"])
+    metric("tls_scan_last_run_timestamp_seconds", "End of the last TLS scan.", [f"tls_scan_last_run_timestamp_seconds {int(end)}"])
+    metric("tls_scan_duration_seconds", "Duration of the last TLS scan.", [f"tls_scan_duration_seconds {int(end - start)}"])
+    out_dir = cfg["textfile_dir"]
+    os.makedirs(out_dir, mode=0o755, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=out_dir, prefix=".tls_scan.prom.", delete=False) as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(fh.name, 0o644)
+    os.replace(fh.name, os.path.join(out_dir, "tls_scan.prom"))
+
+
+def prune(evidence_dir, retention_days):
+    cutoff = time.time() - retention_days * 86400
+    for entry in os.scandir(evidence_dir):
+        if entry.is_dir(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+            shutil.rmtree(entry.path)
+            log(f"removed evidence older than {retention_days} days: {entry.name}")
+
+
+def run(cfg):
+    start = time.time()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    run_dir = os.path.join(cfg["evidence_dir"], stamp)
+    os.makedirs(run_dir, mode=0o750, exist_ok=True)
+    results, failures = [], 0
+    for target in cfg["targets"]:
+        summary, report = scan(cfg, target, run_dir)
+        results.append((target["name"], summary))
+        if summary["ok"]:
+            log(f"target={target['name']} protocols={','.join(p for p, on in sorted(summary['protocols'].items()) if on)} "
+                f"weak_protocols={len(summary['weak_protocols'])} weak_ciphers={len(summary['weak_ciphers'])} "
+                f"obsolete_ciphers={len(summary['obsolete_ciphers'])} cert_problems={len(summary['cert_problems'])} "
+                f"report={report}")
+            for problem in summary["cert_problems"]:
+                log(f"target={target['name']} certificate: {problem}")
+        else:
+            failures += 1
+            log(f"target={target['name']} scan failed: {summary.get('error') or '; '.join(summary['fatal'])}")
+    with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as fh:
+        json.dump({"host": os.uname().nodename, "time": stamp, "image": cfg["image"],
+                   "targets": {name: s for name, s in results}}, fh, indent=1, sort_keys=True)
+    write_metrics(cfg, results, start)
+    prune(cfg["evidence_dir"], int(cfg["retention_days"]))
+    log(f"scan finished: targets={len(results)} failures={failures} evidence={run_dir}")
+    return 1 if failures else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--parse", metavar="REPORT_JSON", help="summarize an existing testssl.sh report and exit")
+    args = parser.parse_args()
+    if args.parse:
+        print(json.dumps(parse(args.parse), indent=1, sort_keys=True))
+        return 0
+    os.umask(0o027)
+    with open(CONFIG, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    return run(cfg)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

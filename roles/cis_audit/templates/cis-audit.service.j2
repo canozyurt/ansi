@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Weekly OpenSCAP CIS benchmark scan (HRD-01)
+Documentation=file:///usr/local/sbin/cis-audit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cis-audit
+SyslogIdentifier=cis-audit
+# Runs as root: the checks read every configuration file. The scan only reads.
+Nice={{ cis_audit_nice }}
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+NoNewPrivileges=true
+PrivateTmp=true

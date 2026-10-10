@@ -1,0 +1,19 @@
+---
+# Image provenance (CHG-08). CI (.github/workflows/images.yml or .forgejo/workflows/images.yml) copies
+# every image in roles/versions into the internal Zot registry under <registry>/<upstream path>, signs it
+# with cosign and attaches an SBOM; Zot scans it with Trivy.
+#
+# Hosts pull <mirror>/<upstream reference> instead of the upstream registry (roles/versions tasks).
+# Turning this on changes every image reference: roll it out with playbooks/upgrade.yml.
+# A new site bootstraps without it: the registry is reached through the edge proxy, so set
+# image_registry_mirror: "" and image_signature_policy: "off" until the edge, the registry and the CI
+# mirror job run, then set these values. The registry's own image always comes from upstream
+# (versions_mirror_exclude).
+image_registry_mirror: registry.example.internal
+# Read-only robot for pulls and signature checks (registry_robots "puller" in group_vars/registry).
+image_registry_pull_user: puller
+image_registry_pull_password: "{{ vault_registry_puller_password }}"
+
+# off | warn | enforce: before a container is created, roles/image_verify runs registry-check-signature
+# for each image; enforce stops the play unless the image comes from the mirror with a trusted signature.
+image_signature_policy: enforce

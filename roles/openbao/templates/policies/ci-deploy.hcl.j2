@@ -1,0 +1,7 @@
+# AppRole {{ openbao_ci_deploy_approle }} (deploy pipeline, CHG-02): sign the CI's short-lived SSH
+# certificate (principal from the {{ openbao_ci_deploy_ssh_role }} signing role) and read the Ansible
+# vault password. Nothing else.
+path "{{ openbao_ssh_mount }}/sign/{{ openbao_ci_deploy_ssh_role }}" { capabilities = ["update"] }
+{% for path in openbao_ci_deploy_kv_paths %}
+path "{{ path }}" { capabilities = ["read"] }
+{% endfor %}

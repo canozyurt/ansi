@@ -1,0 +1,15 @@
+---
+network_zone: data
+firewall_rules_fixture:
+  # Fine: app zone to the database through a declared flow, admins through the access networks.
+  - { name: db-good, port: 5432, class: database, sources: "{{ [network_zones.app] + firewall_mgmt_cidrs }}" }
+  # NET-02: a database port open to the whole mgmt zone.
+  - { name: db-mgmt-zone, port: 6379, class: database, sources: ["{{ network_zones.mgmt }}"] }
+  # NET-02: an admin port open to everyone.
+  - { name: admin-any, port: 15672, class: admin, sources: [any] }
+  # NET-03: app -> data on a port without a declared flow.
+  - { name: undeclared, port: 9999, class: service, sources: ["{{ network_zones.app }}"] }
+  # Missing class.
+  - { name: no-class, port: 7000, sources: ["{{ network_zones.data }}"] }
+  # Source that spans every zone.
+  - { name: too-wide, port: 7001, class: service, sources: [10.0.0.0/8] }
