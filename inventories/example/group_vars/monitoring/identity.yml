@@ -40,8 +40,8 @@ oauth2_proxy_cookie_secrets:
   alertmanager: "{{ vault_oauth2_proxy_alertmanager_cookie_secret }}"
 
 firewall_rules_oauth2_proxy:
-  - { name: prometheus-sso, port: 9443, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: alertmanager-sso, port: 9446, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: prometheus-sso, port: 9443, class: admin, sources: "{{ firewall_mgmt_cidrs }}" }
+  - { name: alertmanager-sso, port: 9446, class: admin, sources: "{{ firewall_mgmt_cidrs }}" }
 
 # ------------------------------------------------------------------ alert rules
 prometheus_rules_identity:

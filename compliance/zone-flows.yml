@@ -45,6 +45,8 @@ flows:
   - { service: ssh, port: 22, from: access, to: [mgmt, app, data] }
   - { service: prometheus-ui, port: 9090, from: access, to: mgmt }
   - { service: alertmanager-ui, port: 9093, from: access, to: mgmt }
+  - { service: prometheus-sso, port: 9443, from: access, to: mgmt }
+  - { service: alertmanager-sso, port: 9446, from: access, to: mgmt }
   - { service: grafana, port: 3000, from: [access, app], to: mgmt }
   - { service: keycloak, port: 8443, from: [access, app], to: mgmt }
   - { service: grc, port: 8443, from: [access, app], to: mgmt }

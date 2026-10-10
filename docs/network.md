@@ -23,6 +23,8 @@ To open a port: add the rule with its `class` to `firewall_rules_<role>` in the 
 | ssh | 22 | tcp | access | mgmt, app, data |
 | prometheus-ui | 9090 | tcp | access | mgmt |
 | alertmanager-ui | 9093 | tcp | access | mgmt |
+| prometheus-sso | 9443 | tcp | access | mgmt |
+| alertmanager-sso | 9446 | tcp | access | mgmt |
 | grafana | 3000 | tcp | access, app | mgmt |
 | keycloak | 8443 | tcp | access, app | mgmt |
 | grc | 8443 | tcp | access, app | mgmt |
@@ -213,6 +215,8 @@ Zone `mgmt`.
 | 9094 | tcp | alertmanager-cluster | cluster | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9100 | tcp | node-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9115 | tcp | blackbox-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
+| 9443 | tcp | prometheus-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
+| 9446 | tcp | alertmanager-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
 | 57800 | tcp | keycloak-cluster-fd | cluster | 10.10.0.0/24 (mgmt) |
 
 ### mgmt-2.example.internal
@@ -238,6 +242,8 @@ Zone `mgmt`.
 | 9094 | tcp | alertmanager-cluster | cluster | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9100 | tcp | node-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9115 | tcp | blackbox-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
+| 9443 | tcp | prometheus-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
+| 9446 | tcp | alertmanager-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
 | 57800 | tcp | keycloak-cluster-fd | cluster | 10.10.0.0/24 (mgmt) |
 
 ### mgmt-3.example.internal
@@ -260,6 +266,8 @@ Zone `mgmt`.
 | 9094 | tcp | alertmanager-cluster | cluster | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9100 | tcp | node-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
 | 9115 | tcp | blackbox-exporter | metrics | 10.10.0.11/32 (mgmt)<br>10.10.0.12/32 (mgmt)<br>10.10.0.13/32 (mgmt) |
+| 9443 | tcp | prometheus-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
+| 9446 | tcp | alertmanager-sso | admin | 10.10.0.31/32 (access)<br>10.10.0.32/32 (access)<br>10.99.0.0/24 (access)<br>10.10.0.21/32 (access)<br>10.10.0.22/32 (access) |
 | 57800 | tcp | keycloak-cluster-fd | cluster | 10.10.0.0/24 (mgmt) |
 
 ### siem-1.example.internal, siem-2.example.internal, siem-3.example.internal
