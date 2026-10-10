@@ -44,3 +44,6 @@
 
 - name: Deploy central logging and the SIEM
   ansible.builtin.import_playbook: siem.yml
+
+- name: Deploy the scheduled compliance audits and the evidence store
+  ansible.builtin.import_playbook: audits.yml

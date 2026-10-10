@@ -125,8 +125,8 @@ prometheus_rules_drift:
           summary: >-
             {% raw %}{{ $labels.instance }} differs from the declared state: {{ $value }} task(s) would change{% endraw %}
           description: >-
-            The weekly check-mode run of site.yml (drift workflow) found changes. The diff is in the workflow's
-            evidence (drift/<time>/ansible.log). Either someone changed the host outside CI (CHG-02: find the
+            The daily check-mode run of site.yml (drift workflow) found changes. The diff is in that run's log and
+            run record (workflow artifact drift-<run id>). Either someone changed the host outside CI (CHG-02: find the
             session in the SIEM) or the code changed without a deploy. Re-apply from CI or revert. See docs/audits.md.
 
       - alert: DriftCheckFailed
@@ -136,10 +136,10 @@ prometheus_rules_drift:
           summary: "{% raw %}The drift check had {{ $value }} failed task(s) on {{ $labels.instance }}; drift is unknown{% endraw %}"
 
       - alert: DriftCheckNotRun
-        expr: (time() - ansible_drift_last_check_timestamp_seconds) > 8 * 86400
+        expr: (time() - ansible_drift_last_check_timestamp_seconds) > 3 * 86400
         labels: { severity: warning, checklist: CHG-03 }
         annotations:
-          summary: "{% raw %}No drift check has reached {{ $labels.instance }} for more than 8 days{% endraw %}"
+          summary: "{% raw %}No drift check has reached {{ $labels.instance }} for more than 3 days (the workflow runs daily){% endraw %}"
 
 prometheus_rules_ci_only_deploys:
   - name: ci-only-deploys  # CHG-02
@@ -160,9 +160,10 @@ prometheus_rules_evidence:
         expr: evidence_retention_ok == 0 and evidence_check_success == 1
         labels: { severity: critical, checklist: EVD-02 }
         annotations:
-          summary: >-
-            {% raw %}The evidence store on {{ $labels.instance }} misses evidence: {{ with printf "evidence_months_missing{instance='%s'}" $labels.instance | query }}{{ . | first | value }}{{ end }} month(s) without snapshots or old evidence gone{% endraw %}
-          description: The problems are in the journal of the backup server (SYSLOG_IDENTIFIER=compliant-evidence-check).
+          summary: "{% raw %}The evidence store on {{ $labels.instance }} fails its 12-month retention check{% endraw %}"
+          description: >-
+            A calendar month has no evidence snapshot (evidence_months_missing) or evidence younger than 12 months is
+            gone. The problems are in the journal of the backup server (SYSLOG_IDENTIFIER=compliant-evidence-check).
 
       - alert: EvidenceRetentionCheckNotRun
         expr: (time() - evidence_check_last_run_timestamp_seconds) > 8 * 86400 or evidence_check_success == 0

@@ -1,0 +1,47 @@
+---
+# Drift detection (CHG-03) on Forgejo Actions: the same job as .github/workflows/drift.yml (see the
+# comments there). Runs on the deploy runners (roles/forgejo_runner, label "deploy") in the Ansible
+# tool image, pinned by digest in the repository variable ANSIBLE_RUNNER_IMAGE
+# (registry/.../ansible-runner:<tag>@sha256:<digest>; ansible-core, the pinned collections, curl, jq,
+# openssh-client). Needs the repository variables BAO_ADDR, BAO_CACERT (path inside the image),
+# BAO_DEPLOY_ROLE_ID and the secret BAO_DEPLOY_SECRET_ID. Not run yet (not tested).
+name: drift
+
+on:
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: deploy
+    container:
+      image: ${{ vars.ANSIBLE_RUNNER_IMAGE }}
+    timeout-minutes: 120
+    env:
+      INVENTORY: inventories/production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to OpenBao (vault password, CI SSH certificate) [chk_chg_02]
+        id: login
+        env:
+          BAO_ADDR: ${{ vars.BAO_ADDR }}
+          BAO_CACERT: ${{ vars.BAO_CACERT }}
+          BAO_ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
+          BAO_SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
+        run: echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
+
+      - name: Check-mode run of site.yml with a run record [chk_chg_03]
+        env:
+          ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
+        run: |
+          tools/ansible-run playbooks/site.yml -i "$INVENTORY" --check --diff ${{ steps.login.outputs.opts }} \
+            | tee "$RUNNER_TEMP/drift.log"
+
+      - name: Report drift (fails when a host drifted) [chk_chg_03]
+        run: python3 tools/drift_report.py "$(ls -1 "$RUNNER_TEMP"/run-record/*.json | tail -n 1)"
+
+      - name: Remove the credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ci-auth"

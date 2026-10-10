@@ -1,0 +1,39 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    converge_docker_bench: "{{ lookup('ansible.builtin.env', 'MOLECULE_DOCKER_BENCH') | default('true', true) | bool }}"
+  tasks:
+    - name: Apply the host baseline (what the CIS scan measures)
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+      loop: [common, os_hardening, ssh_hardening]
+
+    - name: Deploy the CIS scan
+      ansible.builtin.include_role:
+        name: cis_audit
+
+    - name: Install the container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+      when: converge_docker_bench
+
+    - name: Deploy the Docker benchmark check
+      ansible.builtin.include_role:
+        name: docker_bench
+      when: converge_docker_bench
+
+    # Start the jobs directly: the oneshot services block until the scan is done.
+    - name: Run the CIS scan
+      ansible.builtin.systemd_service:
+        name: cis-audit.service
+        state: started
+      changed_when: true
+
+    - name: Run the Docker benchmark check
+      ansible.builtin.systemd_service:
+        name: docker-bench.service
+        state: started
+      changed_when: true
+      when: converge_docker_bench

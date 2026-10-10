@@ -4,9 +4,10 @@
 # are kept as evidence under /var/lib/compliance-evidence/docker-bench/, a summary goes to journald
 # (identifier docker-bench) and result counts go to the textfile collector; WARN results that are
 # not documented exceptions raise an alert (group_vars/monitoring/audits.yml).
-docker_bench_version: "{{ versions_tools.docker_bench_security.version }}"
-docker_bench_url: "{{ versions_tools.docker_bench_security.url }}"
-docker_bench_sha256: "{{ versions_tools.docker_bench_security.sha256 }}"
+# Not pinned in roles/versions yet (no recorded SHA-256): the role refuses to download until it is.
+docker_bench_version: "{{ (versions_tools.docker_bench_security | default({})).version | default('local') }}"
+docker_bench_url: "{{ (versions_tools.docker_bench_security | default({})).url | default('') }}"
+docker_bench_sha256: "{{ (versions_tools.docker_bench_security | default({})).sha256 | default('') }}"
 # Copy the scripts from this directory on the controller instead of downloading (CI checks out the
 # pinned tag; air-gapped sites keep a reviewed copy). Empty: download and verify the SHA-256.
 docker_bench_local_src: ""

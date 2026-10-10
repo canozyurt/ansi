@@ -86,18 +86,19 @@ versions_tools:
       amd64: 8751cc0daf739634835a3bd8206e3094c84d552e2c462e4a4baf80f40dd92685
       arm64: 49e1f948af8e5c6ed5c803bad4508cf7af37be6c15b7fb2840109900b916eb48
 
-  # CIS benchmark content for OpenSCAP (roles/cis_audit) where the distribution's ssg packages lack
-  # the release's data stream (Ubuntu 24.04). Fill in sha256 from the release page before use; the
-  # role refuses to download without it.
-  scap_security_guide:
-    version: 0.1.76
-    url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
-    sha256: ""
-  # CIS Docker Benchmark checks (roles/docker_bench). Same rule: no download without the sha256.
-  docker_bench_security:
-    version: 1.6.0
-    url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
-    sha256: ""
+  # Not pinned yet (tools/pins.py requires a SHA-256, which nobody has recorded from the release pages):
+  # roles/cis_audit (Ubuntu 24.04 only; Debian 12 and Ubuntu 22.04 use the distribution's data stream)
+  # and roles/docker_bench refuse to run until these entries exist with their sha256. To pin, copy
+  # them uncommented with the SHA-256 of the release asset, and list them under the
+  # "OpenSCAP and docker-bench-security" tool in compliance/tools.yml (versions: [tools/...]).
+  #   scap_security_guide:
+  #     version: 0.1.76
+  #     url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
+  #     sha256: <sha256 of the zip>
+  #   docker_bench_security:
+  #     version: 1.6.0
+  #     url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
+  #     sha256: <sha256 of the archive>
 
 # PostgreSQL server image recipe (roles/postgres_cluster): Ubuntu archive packages pinned to exact
 # versions (PostgreSQL 18 is in main, with Canonical security maintenance) and Patroni from PyPI,

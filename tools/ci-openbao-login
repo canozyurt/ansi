@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# CI login to OpenBao for deploy and drift pipelines (CHG-02). Uses the ci-deploy AppRole
+# (roles/openbao: openbao_ci_deploy_*), which can do exactly two things:
+#   1. read the Ansible vault password (KV v2 secret/ci/ansible-vault, field "password");
+#   2. sign a one-hour SSH certificate with the ci-deploy principal for a key made for this job.
+# The deploy account on every host accepts only that certificate and allows sudo only in a session
+# that logged in with it (roles/admin_login, ci_only_deploys).
+#
+#   tools/ci-openbao-login <output dir>
+# Environment: BAO_ADDR, BAO_ROLE_ID, BAO_SECRET_ID; optional BAO_CACERT, BAO_KV_PATH
+# (default secret/data/ci/ansible-vault), BAO_SSH_MOUNT (ssh-client-signer), BAO_SSH_ROLE (ci-deploy).
+# Writes <dir>/vault-pass, <dir>/id_ed25519 and <dir>/id_ed25519-cert.pub (all 0600) and prints the
+# ansible-playbook options that use them. The token is revoked before exit.
+set -euo pipefail
+out=${1:?usage: $0 <output dir>}
+: "${BAO_ADDR:?}" "${BAO_ROLE_ID:?}" "${BAO_SECRET_ID:?}"
+kv=${BAO_KV_PATH:-secret/data/ci/ansible-vault}
+mount=${BAO_SSH_MOUNT:-ssh-client-signer}
+role=${BAO_SSH_ROLE:-ci-deploy}
+curl_opts=(-sSf --proto =https)
+[ -n "${BAO_CACERT:-}" ] && curl_opts+=(--cacert "$BAO_CACERT")
+
+umask 077
+mkdir -p "$out"
+token=$(jq -n --arg r "$BAO_ROLE_ID" --arg s "$BAO_SECRET_ID" '{role_id: $r, secret_id: $s}' |
+  curl "${curl_opts[@]}" --data @- "$BAO_ADDR/v1/auth/approle/login" | jq -r .auth.client_token)
+[ -n "$token" ] && [ "$token" != null ] || { echo "OpenBao AppRole login failed" >&2; exit 1; }
+revoke() { curl "${curl_opts[@]}" -o /dev/null -X POST -H "X-Vault-Token: $token" "$BAO_ADDR/v1/auth/token/revoke-self" || true; }
+trap revoke EXIT
+
+curl "${curl_opts[@]}" -H "X-Vault-Token: $token" "$BAO_ADDR/v1/$kv" | jq -er .data.data.password > "$out/vault-pass"
+
+rm -f "$out/id_ed25519" "$out/id_ed25519.pub" "$out/id_ed25519-cert.pub"
+ssh-keygen -q -t ed25519 -N '' -C "ci-${GITHUB_RUN_ID:-local}" -f "$out/id_ed25519"
+jq -n --rawfile k "$out/id_ed25519.pub" --arg p "$role" \
+    '{public_key: $k, valid_principals: $p, cert_type: "user"}' |
+  curl "${curl_opts[@]}" -H "X-Vault-Token: $token" --data @- "$BAO_ADDR/v1/$mount/sign/$role" |
+  jq -er .data.signed_key > "$out/id_ed25519-cert.pub"
+chmod 0600 "$out"/*
+
+echo "--vault-password-file $out/vault-pass --private-key $out/id_ed25519"

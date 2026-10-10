@@ -42,11 +42,11 @@
       ansible.builtin.assert:
         that:
           - cis_audit_content != 'distro'
-          - versions_tools.scap_security_guide.sha256 is match('^[0-9a-f]{64}$')
+          - ((versions_tools.scap_security_guide | default({})).sha256 | default('')) is match('^[0-9a-f]{64}$')
         fail_msg: >-
           No data stream {{ cis_audit_platforms[cis_audit_platform_key].datastream }} in the distribution's
-          packages. Set versions_tools.scap_security_guide.sha256 (roles/versions) to the SHA-256 of
-          scap-security-guide-{{ versions_tools.scap_security_guide.version }}.zip so the pinned release can be used.
+          packages, and no pinned upstream release: add versions_tools.scap_security_guide to roles/versions
+          (version, url and the SHA-256 of the release zip; see the comment there) so the pinned release can be used.
         quiet: true
 
     - name: Create the content directories

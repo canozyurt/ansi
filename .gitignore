@@ -12,3 +12,5 @@ inventories/*/
 .env
 # OpenBao init output (unseal keys, tokens): move it to offline storage, never commit it
 .openbao-init/
+# Access review bundles collected by playbooks/access_review.yml (evidence, not source)
+/access-review/

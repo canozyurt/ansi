@@ -61,7 +61,8 @@
                                                           - ('1970-01-01T00:00:00Z' | to_datetime('%Y-%m-%dT%H:%M:%SZ'))).total_seconds() | int }}
           # HELP ansible_drift_info Commit and limit of the last check-mode run of site.yml.
           # TYPE ansible_drift_info gauge
-          ansible_drift_info{commit="{{ run_record.what.commit | regex_replace('[^0-9a-f]', '') }}",limit="{{ run_record.what.limit | regex_replace('["\\\\]', '') }}"} 1
+          ansible_drift_info{commit="{{ run_record.what.commit | regex_replace('[^0-9a-f]', '') }}",limit="{{
+                             run_record.what.limit | regex_replace('["\\\\]', '') }}"} 1
         dest: "{{ run_record_textfile_dir }}/ansible_drift.prom"
         owner: root
         group: root
@@ -71,5 +72,7 @@
         - inventory_hostname in run_record.hosts
         - run_record.what.check_mode | bool
         - run_record.what.playbook | basename == 'site.yml'
-        - run_record.what.tags | length == 0
+        # A full run: ansible-playbook records tags ['all'] when none are given.
+        - run_record.what.tags | difference(['all']) | length == 0
+        - run_record.what.skip_tags | default([]) | length == 0
       tags: [always, chk_chg_03]

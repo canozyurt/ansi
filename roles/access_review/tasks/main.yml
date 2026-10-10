@@ -98,3 +98,14 @@
   args:
     creates: "{{ access_review_textfile_dir }}/access_review.prom"
   tags: [chk_iam_05]
+
+- name: Register the reports with the backup role
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: access-review
+    backup_register_paths: ["{{ access_review_evidence_dir }}", "{{ access_review_state_dir }}"]
+    backup_register_rpo_hours: "{{ access_review_backup_rpo_hours }}"
+    backup_register_rto_hours: "{{ access_review_backup_rto_hours }}"
+  when: access_review_backup | bool
+  tags: [chk_iam_05, chk_evd_02]

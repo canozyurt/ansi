@@ -35,3 +35,8 @@ access_review_admin_roles: >-
      or ['platform-admin', 'security-admin'] }}
 # VPN peers from the inventory (roles/wireguard_gateway).
 access_review_vpn_peers: "{{ wireguard_peers | default([]) }}"
+
+# Register the reports with the backup role (append-only copies; the evidence store keeps 12 months).
+access_review_backup: true
+access_review_backup_rpo_hours: 168
+access_review_backup_rto_hours: 24

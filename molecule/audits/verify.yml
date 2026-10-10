@@ -1,0 +1,63 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    verify_docker_bench: "{{ lookup('ansible.builtin.env', 'MOLECULE_DOCKER_BENCH') | default('true', true) | bool }}"
+  tasks:
+    - name: Find the CIS scan summaries
+      ansible.builtin.find:
+        paths: /var/lib/compliance-evidence/cis
+        patterns: summary.json
+        recurse: true
+      register: verify_cis_summaries
+      tags: [chk_hrd_01]
+
+    - name: Read the latest CIS summary
+      ansible.builtin.slurp:
+        src: "{{ (verify_cis_summaries.files | sort(attribute='mtime') | last).path }}"
+      register: verify_cis_summary
+      tags: [chk_hrd_01]
+
+    - name: Read the CIS metrics
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile_collector/cis_audit.prom
+      register: verify_cis_metrics
+      tags: [chk_hrd_01]
+
+    - name: The scan produced results, evidence and metrics
+      ansible.builtin.assert:
+        that:
+          - (verify_cis_summary.content | b64decode | from_json).counts is defined
+          - (verify_cis_summary.content | b64decode | from_json).counts.values() | sum > 0
+          - verify_cis_metrics.content | b64decode is search("(?m)^cis_audit_success 1$")
+        quiet: true
+      tags: [chk_hrd_01]
+
+    - name: Show the CIS result counts
+      ansible.builtin.debug:
+        msg: "{{ (verify_cis_summary.content | b64decode | from_json).counts }}"
+
+    - name: Check the Docker benchmark evidence
+      when: verify_docker_bench
+      tags: [chk_hrd_03]
+      block:
+        - name: Find the Docker benchmark summaries
+          ansible.builtin.find:
+            paths: /var/lib/compliance-evidence/docker-bench
+            patterns: summary.json
+            recurse: true
+          register: verify_bench_summaries
+
+        - name: Read the Docker benchmark metrics
+          ansible.builtin.slurp:
+            src: /var/lib/node_exporter/textfile_collector/docker_bench.prom
+          register: verify_bench_metrics
+
+        - name: The check produced evidence and metrics
+          ansible.builtin.assert:
+            that:
+              - verify_bench_summaries.files | length > 0
+              - verify_bench_metrics.content | b64decode is search("(?m)^docker_bench_success 1$")
+            quiet: true

@@ -6,8 +6,8 @@
       - docker_bench_retention_days | int >= 90
       - docker_bench_exceptions | rejectattr('reason', 'defined') | list | length == 0
     fail_msg: >-
-      Set versions_tools.docker_bench_security.sha256 (roles/versions) to the SHA-256 of the pinned
-      release archive, or docker_bench_local_src to a reviewed copy; every exception needs a reason;
+      Pin docker-bench-security in roles/versions (versions_tools.docker_bench_security with the SHA-256 of
+      the release archive; see the comment there), or set docker_bench_local_src to a reviewed copy; every exception needs a reason;
       reports are kept at least 90 days.
     quiet: true
   tags: [chk_hrd_03, chk_chg_05]
