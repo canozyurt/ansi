@@ -109,7 +109,21 @@ jobs:
 
       - name: molecule test -s ${{ matrix.scenario }}
         if: steps.upgrade_path.outputs.skip != 'true'
-        run: molecule test -s ${{ matrix.scenario }}
+        run: molecule test -s ${{ matrix.scenario }} --destroy never
+
+      # Containers are kept on failure so the failed units can be read before the cleanup step.
+      - name: Failed systemd units in the test containers
+        if: failure()
+        run: |
+          for c in $(docker ps --format '{{.Names}}'); do
+            echo "::group::$c"
+            docker exec "$c" systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | while read -r unit; do
+              [ -n "$unit" ] || continue
+              echo "--- $unit"
+              docker exec "$c" journalctl -u "$unit" --no-pager -n 40 2>/dev/null || true
+            done
+            echo "::endgroup::"
+          done
 
       - name: Clean up leftover containers
         if: always()
