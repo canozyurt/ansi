@@ -36,6 +36,8 @@ wazuh_manager_writer:
     - "indices:admin/index_template/put"
     - "cluster:admin/ingest/pipeline/get"
     - "cluster:admin/ingest/pipeline/put"
+    # The indexer connector clears the scrolls of its state queries (cluster-level action).
+    - "indices:data/read/scroll/clear"
   index_permissions:
     - index_patterns:
         - "wazuh-alerts-*"
