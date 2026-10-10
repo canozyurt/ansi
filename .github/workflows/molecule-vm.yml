@@ -85,10 +85,15 @@ jobs:
           docker version --format 'docker {{.Server.Version}}'
           nproc; free -h | head -2; df -h / | tail -1
 
+      # The runner's own Python may be newer than ansible-core supports; uv brings the CI version.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+
       - name: Install tools in a virtualenv
         run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install -q -r requirements-dev.txt
+          uv venv --python 3.12 "$RUNNER_TEMP/venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install -q -r requirements-dev.txt
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Install collections
@@ -113,5 +118,5 @@ jobs:
       - name: Clean up leftover containers
         if: always()
         run: |
-          molecule destroy -s ${{ matrix.scenario }} || true
+          if command -v molecule >/dev/null; then molecule destroy -s ${{ matrix.scenario }} || true; fi
           docker container prune -f >/dev/null
