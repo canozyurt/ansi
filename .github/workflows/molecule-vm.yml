@@ -72,6 +72,13 @@ jobs:
           - openbao-ha
           - postgres-ha
     steps:
+      # The test containers run Docker inside, on anonymous volumes; drop what earlier jobs left behind.
+      - name: Free disk space from earlier scenarios
+        run: |
+          docker container prune -f >/dev/null
+          docker volume prune -af >/dev/null
+          df -h / | tail -1
+
       - uses: actions/checkout@v4
 
       - name: Runner environment
@@ -122,6 +129,11 @@ jobs:
               echo "--- $unit"
               docker exec "$c" journalctl -u "$unit" --no-pager -n 40 2>/dev/null || true
             done
+            # Service containers inside the test container: their recent errors.
+            for s in $(docker exec "$c" docker ps -a --format '{{.Names}}' 2>/dev/null); do
+              echo "--- container $s"
+              docker exec "$c" docker logs --tail 300 "$s" 2>&1 | grep -iE 'error|fatal|panic|fail' | tail -n 15 || true
+            done
             echo "::endgroup::"
           done
 
@@ -130,3 +142,4 @@ jobs:
         run: |
           if command -v molecule >/dev/null; then molecule destroy -s ${{ matrix.scenario }} || true; fi
           docker container prune -f >/dev/null
+          docker volume prune -af >/dev/null
