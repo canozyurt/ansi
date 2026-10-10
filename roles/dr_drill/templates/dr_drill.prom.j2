@@ -1,0 +1,22 @@
+{%- set labels = 'service="' ~ dr_drill_service ~ '",cluster="' ~ (dr_drill_instance.name | default('')) ~ '"' -%}
+{%- set ok = dr_drill_errors | length == 0 -%}
+# HELP dr_drill_last_run_timestamp_seconds Unix time of the last DR drill (playbooks/dr_drill.yml, HA-02).
+# TYPE dr_drill_last_run_timestamp_seconds gauge
+dr_drill_last_run_timestamp_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ dr_drill_t0 | int }}
+# HELP dr_drill_last_status 1 if the last DR drill restored and verified the data, 0 if not.
+# TYPE dr_drill_last_status gauge
+dr_drill_last_status{{ '{' }}{{ labels }}{{ '}' }} {{ 1 if ok else 0 }}
+{% if dr_drill_last_success | int > 0 %}
+# HELP dr_drill_last_success_timestamp_seconds Unix time of the last successful DR drill.
+# TYPE dr_drill_last_success_timestamp_seconds gauge
+dr_drill_last_success_timestamp_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ dr_drill_last_success | int }}
+{% endif %}
+# HELP dr_drill_duration_seconds Restore plus verification time of the last DR drill.
+# TYPE dr_drill_duration_seconds gauge
+dr_drill_duration_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ dr_drill_duration | int }}
+# HELP dr_drill_rto_seconds Declared recovery time objective of the service.
+# TYPE dr_drill_rto_seconds gauge
+dr_drill_rto_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ (dr_drill_def.rto_hours | float * 3600) | int }}
+# HELP dr_drill_backup_age_seconds Age of the restored backup when the drill ran (oldest of the declarations).
+# TYPE dr_drill_backup_age_seconds gauge
+dr_drill_backup_age_seconds{{ '{' }}{{ labels }}{{ '}' }} {{ dr_drill_backup_log | map(attribute='age_seconds') | select('number') | max | default(0) }}

@@ -2,7 +2,8 @@
 - name: Check that the previous release is known
   ansible.builtin.import_playbook: ../shared/check_upgrade_from.yml
   vars:
-    check_upgrade_from_keys: [postgres, postgres_base, etcd, postgres_exporter]
+    check_upgrade_from_keys: [postgres_base, etcd, postgres_exporter]
+    check_upgrade_from_vars: [versions_postgres_upgrade_from]
 
 - name: Prepare the test host
   ansible.builtin.import_playbook: ../default/prepare.yml
@@ -10,7 +11,7 @@
 - name: Install the previous release
   ansible.builtin.import_playbook: ../postgres/converge.yml
   vars:
-    versions_postgres: "{{ versions_upgrade_from.postgres }}"
+    versions_postgres: "{{ versions_postgres_upgrade_from }}"
     postgres_cluster_image_base: "{{ versions_upgrade_from.postgres_base }}"
     postgres_cluster_etcd_image: "{{ versions_upgrade_from.etcd }}"
     postgres_cluster_exporter_image: "{{ versions_upgrade_from.postgres_exporter }}"

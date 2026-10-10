@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: dr_drill
+  author: compliant-infra-ansible contributors
+  description: Yearly disaster-recovery drills that restore each service's backup into scratch and verify it (HA-02)
+  license: Apache-2.0
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Debian
+      versions: [bookworm]
+    - name: Ubuntu
+      versions: [jammy, noble]
+dependencies:
+  - role: versions

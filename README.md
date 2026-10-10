@@ -78,7 +78,10 @@ Product playbooks (run separately, any number of instances, see
 | `garage.yml` | Garage S3-compatible object storage (replication factor 3) |
 
 Operations: `upgrade.yml` (one node at a time, backup first), `rolling_reboot.yml`,
-`postgres_major_upgrade.yml`. Architecture notes per service are in
+`postgres_major_upgrade.yml`, `ha_drill.yml` (stop one node, prove failover), `dr_drill.yml` (yearly
+restore into scratch, runbooks in [docs/dr/](docs/dr/README.md)), `data_export.yml` and `data_delete.yml`
+(encrypted export, deletion certificate). Releases: [docs/releasing.md](docs/releasing.md); who owns what:
+[docs/shared-responsibility.md](docs/shared-responsibility.md). Architecture notes per service are in
 [docs/architecture.md](docs/architecture.md); access, upgrades, incident response and GRC have their own
 pages under `docs/`. `tools/checklist.py` validates the checklist and `tools/evidence_export.py` exports
 evidence for auditors.

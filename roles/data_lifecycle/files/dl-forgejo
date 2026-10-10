@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Export, delete or check an owner (organisation or user) or one repository in Forgejo (DAT-02).
+
+    dl-forgejo export <owner>[/<repo>] <outdir>
+    dl-forgejo delete <owner>[/<repo>]
+    dl-forgejo check  <owner>[/<repo>]      prints present or absent
+
+Export uses ``forgejo dump-repo`` in the running Forgejo container: git data, wiki, issues,
+pull requests, comments, labels, milestones and releases in Forgejo's migration format, which
+``forgejo restore-repo`` (or a migration on another forge) imports. Delete removes the repositories
+through the API and then the organisation, or the user with purge.
+
+Environment: DL_URL (Forgejo root URL), DL_TOKEN (site-admin API token), DL_CT (container),
+DL_CA (CA bundle, optional), DL_RUN_ID.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+URL = os.environ["DL_URL"].rstrip("/")
+TOKEN = os.environ["DL_TOKEN"]
+CT = os.environ.get("DL_CT", "forgejo")
+CTX = ssl.create_default_context(cafile=os.environ.get("DL_CA") or None)
+UNITS = "wiki,issues,labels,releases,release_assets,milestones,pull_requests,comments"
+
+
+def api(method: str, path: str) -> tuple[int, object]:
+    req = urllib.request.Request(URL + "/api/v1" + path, method=method,
+                                 headers={"Authorization": "token " + TOKEN, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, context=CTX, timeout=60) as resp:
+            body = resp.read()
+            return resp.status, json.loads(body) if body else None
+    except urllib.error.HTTPError as err:
+        return err.code, None
+
+
+def owner_kind(owner: str) -> str | None:
+    if api("GET", f"/orgs/{owner}")[0] == 200:
+        return "org"
+    if api("GET", f"/users/{owner}")[0] == 200:
+        return "user"
+    return None
+
+
+def repos(scope: str) -> list[str]:
+    if "/" in scope:
+        return [scope] if api("GET", f"/repos/{scope}")[0] == 200 else []
+    kind = owner_kind(scope)
+    if kind is None:
+        return []
+    found, page = [], 1
+    while True:
+        status, items = api("GET", f"/{'orgs' if kind == 'org' else 'users'}/{scope}/repos?limit=50&page={page}")
+        if status != 200:
+            raise SystemExit(f"listing repositories of {scope} returned {status}")
+        if not items:
+            return found
+        found += [r["full_name"] for r in items]
+        page += 1
+
+
+def present(scope: str) -> bool:
+    if "/" in scope:
+        return api("GET", f"/repos/{scope}")[0] == 200
+    return owner_kind(scope) is not None
+
+
+def export(scope: str, out: str) -> None:
+    names = repos(scope)
+    if not names and not present(scope):
+        raise SystemExit(f"{scope} not found")
+    run_dir = f"/var/lib/gitea/tmp/data-lifecycle-{os.environ['DL_RUN_ID']}"
+    try:
+        for full in names:
+            owner, repo = full.split("/", 1)
+            target = f"{run_dir}/{owner}/{repo}"
+            # dump-repo reads the token from its flag; it runs inside the container only.
+            subprocess.run(["docker", "exec", CT, "forgejo", "dump-repo", "--git_service", "gitea",
+                            "--clone_addr", f"{URL}/{full}", "--auth_token", TOKEN, "--repo_dir", target,
+                            "--units", UNITS], check=True, stdout=subprocess.DEVNULL)
+        if names:
+            subprocess.run(["docker", "cp", f"{CT}:{run_dir}/.", os.path.join(out, "repositories")], check=True)
+    finally:
+        subprocess.run(["docker", "exec", CT, "rm", "-rf", run_dir], check=False)
+    if "/" not in scope:
+        status, info = api("GET", f"/orgs/{scope}")
+        if status != 200:
+            status, info = api("GET", f"/users/{scope}")
+        with open(os.path.join(out, "owner.json"), "w") as f:
+            json.dump(info, f, indent=2)
+    with open(os.path.join(out, "README.txt"), "w") as f:
+        f.write(f"Forgejo export of {scope}: repositories/<owner>/<repo> in Forgejo's migration format\n"
+                f"(units: {UNITS}). Import with: forgejo restore-repo --repo_dir <dir> --owner_name <owner>"
+                " --repo_name <repo>.\n")
+    print(f"exported {len(names)} repositories")
+
+
+def delete(scope: str) -> None:
+    for full in repos(scope):
+        status, _ = api("DELETE", f"/repos/{full}")
+        if status not in (204, 404):
+            raise SystemExit(f"deleting {full} returned {status}")
+    if "/" not in scope:
+        kind = owner_kind(scope)
+        if kind == "org":
+            status, _ = api("DELETE", f"/orgs/{scope}")
+        elif kind == "user":
+            status, _ = api("DELETE", f"/admin/users/{scope}?purge=true")
+        else:
+            status = 204
+        if status not in (204, 404):
+            raise SystemExit(f"deleting {scope} returned {status}")
+    if present(scope):
+        raise SystemExit(f"{scope} still exists after the delete")
+    print(f"deleted {scope}")
+
+
+def main() -> int:
+    if len(sys.argv) < 3 or sys.argv[1] not in ("export", "delete", "check"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    cmd, scope = sys.argv[1], sys.argv[2]
+    if not all(NAME.match(part) for part in scope.split("/")) or scope.count("/") > 1:
+        print("invalid scope", file=sys.stderr)
+        return 2
+    if cmd == "check":
+        print("present" if present(scope) else "absent")
+    elif cmd == "export":
+        export(scope, sys.argv[3])
+    else:
+        delete(scope)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

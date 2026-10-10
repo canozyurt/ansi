@@ -1,0 +1,73 @@
+#!/bin/sh
+# Export, delete or check the keys matching a pattern in a Valkey instance (DAT-02). Finds the
+# primary through Sentinel and talks to it over TLS from the local Valkey container.
+#   dl-valkey export <pattern> <outdir>   keys.tsv: hex(key) TAB pttl TAB hex(DUMP payload)
+#   dl-valkey delete <pattern>            UNLINK every match, then rewrite the RDB and AOF files on
+#                                         the primary and every replica so deleted values leave them
+#   dl-valkey check  <pattern>            prints present or absent
+# Environment: DL_CT (<name>-valkey), DL_SENTINEL_CT (<name>-sentinel), DL_NAME (Sentinel master
+# name), DL_PORT, DL_SPORT, REDISCLI_AUTH (the admin password).
+set -eu
+cmd=$1
+pattern=$2
+: "${DL_CT:?}" "${DL_SENTINEL_CT:?}" "${DL_NAME:?}" "${DL_PORT:?}" "${DL_SPORT:?}" "${REDISCLI_AUTH:?}"
+export REDISCLI_AUTH
+[ -n "$pattern" ] || { echo "dl-valkey: empty pattern" >&2; exit 2; }
+primary=$(docker exec -e REDISCLI_AUTH "$DL_SENTINEL_CT" valkey-cli --tls --cacert /tls/ca-bundle.crt \
+  --user admin --no-auth-warning -h 127.0.0.1 -p "$DL_SPORT" SENTINEL get-master-addr-by-name "$DL_NAME" | head -n1)
+[ -n "$primary" ] || { echo "dl-valkey: Sentinel does not know a primary" >&2; exit 1; }
+cli() {
+  host=$1; shift
+  docker exec -i -e REDISCLI_AUTH "$DL_CT" valkey-cli --tls --cacert /tls/ca-bundle.crt --user admin \
+    --no-auth-warning -h "$host" -p "$DL_PORT" "$@"
+}
+HEX='local function hex(s) return (s:gsub(".", function(c) return string.format("%02x", string.byte(c)) end)) end'
+EXPORT_LUA="$HEX
+local r = redis.call('SCAN', ARGV[1], 'MATCH', ARGV[2], 'COUNT', 500)
+local out = {r[1]}
+for _, k in ipairs(r[2]) do
+  local d = redis.call('DUMP', k)
+  if d then out[#out+1] = hex(k); out[#out+1] = tostring(redis.call('PTTL', k)); out[#out+1] = hex(d) end
+end
+return out"
+DELETE_LUA="local r = redis.call('SCAN', ARGV[1], 'MATCH', ARGV[2], 'COUNT', 500)
+for _, k in ipairs(r[2]) do redis.call('UNLINK', k) end
+return {r[1], tostring(#r[2])}"
+COUNT_LUA="local r = redis.call('SCAN', ARGV[1], 'MATCH', ARGV[2], 'COUNT', 1000)
+return {r[1], tostring(#r[2])}"
+# Runs a SCAN-based script until the cursor is back at 0; prints its rows (everything after the cursor).
+scan_loop() {
+  script=$1
+  cursor=0
+  while :; do
+    out=$(cli "$primary" EVAL "$script" 0 "$cursor" "$pattern")
+    cursor=$(printf '%s\n' "$out" | head -n1)
+    printf '%s\n' "$out" | tail -n +2
+    [ "$cursor" = "0" ] && break
+  done
+}
+count() { scan_loop "$COUNT_LUA" | awk '{n += $1} END {print n + 0}'; }
+case "$cmd" in
+  check)
+    [ "$(count)" = "0" ] && echo absent || echo present ;;
+  export)
+    out=$3
+    scan_loop "$EXPORT_LUA" | awk 'NF { printf "%s%s", $0, (NR % 3 == 0 ? "\n" : "\t") }' > "$out/keys.tsv"
+    {
+      echo "Valkey keys matching '$pattern' from instance $DL_NAME, one per line: hex(key) TAB PTTL (ms, -1 = none) TAB hex(DUMP payload)."
+      echo "Import each line with: RESTORE <key> <ttl or 0> <payload> (unhex key and payload first; same or newer Valkey version)."
+    } > "$out/README.txt"
+    echo "exported $(grep -c . "$out/keys.tsv" || true) keys"
+    ;;
+  delete)
+    deleted=$(scan_loop "$DELETE_LUA" | awk '{n += $1} END {print n + 0}')
+    [ "$(count)" = "0" ] || { echo "dl-valkey: keys still match after the delete" >&2; exit 1; }
+    replicas=$(cli "$primary" INFO replication | tr -d '\r' | sed -n 's/^slave[0-9]*:ip=\([^,]*\),port=\([0-9]*\).*/\1/p')
+    for node in "$primary" $replicas; do
+      cli "$node" BGREWRITEAOF >/dev/null
+      cli "$node" BGSAVE SCHEDULE >/dev/null
+    done
+    echo "deleted $deleted keys; RDB and AOF rewrite started on $primary${replicas:+ and $replicas}"
+    ;;
+  *) echo "usage: dl-valkey export|delete|check <pattern> [outdir]" >&2; exit 2 ;;
+esac

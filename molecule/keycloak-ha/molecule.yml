@@ -8,7 +8,7 @@ driver:
   name: docker
 platforms:
   - name: keycloak-ha-1
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -24,7 +24,7 @@ platforms:
         aliases: [sso.test.internal]
     groups: [keycloak, container_hosts]
   - name: keycloak-ha-2
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -40,7 +40,7 @@ platforms:
         aliases: [sso.test.internal]
     groups: [keycloak, container_hosts]
   - name: keycloak-ha-3
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host

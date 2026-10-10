@@ -54,6 +54,11 @@ jobs:
       - name: Every adopted tool is reviewed for licence, SSO, audit log and HA [chk_evd_04]
         run: python3 tools/tool_registry.py
 
+      # Documents every release must keep current: DR runbooks and rebuild order (HA-02), the
+      # shared-responsibility matrix against ISO 27017 (DAT-03), every upgrade scenario in CI (CHG-07).
+      - name: Release documents are complete [chk_ha_02] [chk_dat_03] [chk_chg_07]
+        run: python3 tools/release.py check
+
       - name: Self-tests of the CI gates
         run: python3 -m unittest discover -s tools/tests -v
 

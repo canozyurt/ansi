@@ -61,6 +61,8 @@ versions_images:
   redis_exporter: docker.io/oliver006/redis_exporter:v1.93.0
   rabbitmq: docker.io/library/rabbitmq:4.3.6-alpine
   garage: docker.io/dxflrs/garage:v2.4.1
+  # S3 client for Garage bucket export and deletion (roles/data_lifecycle, DAT-02).
+  rclone: docker.io/rclone/rclone:1.71.1
 
 # Host packages installed from upstream repositories (pinned, held).
 versions_packages:
@@ -100,10 +102,15 @@ versions_postgres:
 
 # What the previous release of this repository deployed. CI installs these first
 # and upgrades to versions_images, so every release proves its upgrade path.
-# Update this block when cutting a release.
+# Rewritten by tools/release.py bump-upgrade-from <tag> after each release (docs/releasing.md).
 versions_upgrade_from:
   keycloak: docker.io/keycloak/keycloak:26.7.5
   openbao: docker.io/openbao/openbao:2.6.4
   wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.7
   wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.7
   wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.7
+
+# The PostgreSQL server image recipe of the previous release (same shape as versions_postgres).
+# Empty until the first release that includes the PostgreSQL product playbook; tools/release.py
+# bump-upgrade-from copies versions_postgres here. molecule/postgres-upgrade is skipped while it is empty.
+versions_postgres_upgrade_from: {}

@@ -1,0 +1,51 @@
+---
+# Secure deletion of one data scope with a deletion certificate (DAT-02, ISO 27017 CLD.8.1.5).
+# Scopes as in playbooks/data_export.yml. Before running it:
+#   1. export the data for its owner (playbooks/data_export.yml) unless the owner declined;
+#   2. remove the scope from the inventory in a reviewed change (database, vhost, bucket, users,
+#      organisation), or the next playbook run would create it again; the playbook refuses otherwise.
+# The run deletes the data from the live service and its replicas, checks it is gone, and writes a
+# certificate (JSON plus its SHA-256) with the request, the method, the export reference and the date
+# by which the last backup copy expires, to /var/lib/compliance-evidence/data-deletion/ and to the
+# controller.
+#
+#   ansible-playbook -i inventories/<env> playbooks/data_delete.yml \
+#     -e data_service=postgres -e data_instance=pg-main -e data_scope=orders -e 'data_delete_roles=[orders_app]' \
+#     -e data_request_reference=REQ-123 -e data_requested_by="Jane Doe, Acme" -e data_delete_approved_by="Security owner" \
+#     -e data_delete_reason="Contract ended" -e data_delete_export_id=export-<run>-postgres-pg-main-orders \
+#     -e data_delete_confirm=DELETE:postgres/pg-main:orders
+#
+# There is no undo except restoring from backup while the backups still hold the data.
+- name: Check the request
+  hosts: localhost
+  gather_facts: false
+  vars:
+    data_confirm_expected: >-
+      DELETE:{{ data_service | default('') }}{{ ('/' ~ data_instance)
+      if (data_instance | default('')) | length > 0 else '' }}:{{ data_scope | default('') }}
+  tasks:
+    - name: Require the request details and the typed confirmation
+      ansible.builtin.assert:
+        that:
+          - (data_request_reference | default('')) | length > 0
+          - (data_requested_by | default('')) | length > 0
+          - (data_delete_approved_by | default('')) | length > 0
+          - (data_delete_reason | default('')) | length > 0
+          - data_delete_confirm | default('') == data_confirm_expected
+        fail_msg: >-
+          Nothing deleted. Give data_request_reference, data_requested_by, data_delete_approved_by and data_delete_reason
+          (they go on the certificate), and confirm with
+          -e data_delete_confirm={{ data_confirm_expected }}.
+        quiet: true
+      tags: [chk_dat_02]
+
+- name: Delete
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Delete, verify and write the deletion certificate
+      ansible.builtin.include_role:
+        name: data_lifecycle
+        tasks_from: delete
+      tags: [chk_dat_02]

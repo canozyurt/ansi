@@ -1,0 +1,18 @@
+---
+# One check on the restored data (dr_drill_check). A failure is recorded; the other checks still run.
+- name: "Check: {{ dr_drill_check.name }}"
+  ansible.builtin.command:
+    argv: "{{ dr_drill_check.argv }}"
+  environment: "{{ {'RESTORE_DIR': dr_drill_scratch} | combine(dr_drill_check.env | default({})) }}"
+  register: dr_drill_check_result
+  changed_when: false
+  failed_when: false
+  tags: [chk_ha_02]
+
+- name: "Record: {{ dr_drill_check.name }}"
+  ansible.builtin.set_fact:
+    dr_drill_check_log: >-
+      {{ dr_drill_check_log + [{'name': dr_drill_check.name, 'ok': dr_drill_check_result.rc == 0,
+         'output': ((dr_drill_check_result.stdout | default('')) ~ (dr_drill_check_result.stderr | default('')))[-2000:]}] }}
+    dr_drill_errors: >-
+      {{ dr_drill_errors + ([] if dr_drill_check_result.rc == 0 else ['check failed: ' ~ dr_drill_check.name]) }}

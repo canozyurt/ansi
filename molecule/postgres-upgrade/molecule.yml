@@ -1,7 +1,7 @@
 ---
 # Upgrade path of the PostgreSQL product playbook (CHG-07): prepare deploys the clusters of
-# molecule/postgres with what the previous release pinned (versions_upgrade_from: postgres = the
-# server image recipe {major, packages, patroni}, postgres_base, etcd, postgres_exporter), converge runs
+# molecule/postgres with what the previous release pinned (versions_postgres_upgrade_from = the
+# server image recipe {major, packages, patroni}; versions_upgrade_from: postgres_base, etcd, postgres_exporter), converge runs
 # playbooks/upgrade.yml (differential backup, replicas first, switchover), verify runs the postgres
 # checks again and checks the new image and the pre-upgrade backup. Minor versions only: major
 # upgrades use playbooks/postgres_major_upgrade.yml. The recipe hash also covers this release's
@@ -10,7 +10,7 @@ driver:
   name: docker
 platforms:
   - name: postgres-ubuntu2404
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host

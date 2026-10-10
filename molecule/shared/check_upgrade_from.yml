@@ -1,6 +1,9 @@
 ---
 # Shared by the *-upgrade scenarios: fail early and clearly when roles/versions has no previous
 # release for the service (tools/release.py fills versions_upgrade_from when a release is cut).
+#   check_upgrade_from_keys: image keys that must be in versions_upgrade_from
+#   check_upgrade_from_vars: other variables of roles/versions that must be set (e.g. the PostgreSQL
+#                            image recipe of the previous release, versions_postgres_upgrade_from)
 - name: Check that versions_upgrade_from names the previous release
   hosts: all
   gather_facts: false
@@ -12,9 +15,16 @@
 
     - name: The previous release is pinned for every image of the service
       ansible.builtin.assert:
-        that: check_upgrade_from_keys | reject('in', versions_upgrade_from) | list | length == 0
+        that:
+          - check_upgrade_from_keys | default([]) | reject('in', versions_upgrade_from) | list | length == 0
+          - check_upgrade_from_vars | default([]) | reject('in', vars) | list | length == 0
+          - >-
+            check_upgrade_from_vars | default([]) | select('in', vars)
+            | map('extract', vars) | reject | list | length == 0
         fail_msg: >-
-          versions_upgrade_from has no entry for {{ check_upgrade_from_keys | reject('in', versions_upgrade_from) | join(', ') }}.
+          The previous release is not pinned: versions_upgrade_from lacks
+          {{ check_upgrade_from_keys | default([]) | reject('in', versions_upgrade_from) | join(', ') or 'nothing' }};
+          unset or empty: {{ check_upgrade_from_vars | default([]) | join(', ') or 'nothing' }}.
           Cut a release with tools/release.py first (it copies the released versions into versions_upgrade_from).
         quiet: true
       tags: [chk_chg_07]

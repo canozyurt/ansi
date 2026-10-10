@@ -1,0 +1,48 @@
+---
+# Encrypted export of one data scope for its owner (DAT-02, ISO 27017 CLD.8.1.5): a PostgreSQL
+# database, the Valkey keys matching a pattern, a RabbitMQ vhost (definitions), a Garage bucket, or a
+# Forgejo organisation/user/repository. The export is encrypted to the recipient's X.509 certificate
+# (CMS, AES-256); a manifest lists every file with its SHA-256. Both land in data_lifecycle_local_dir
+# on the controller (default: data-exports/ next to playbooks/), the manifest also in
+# /var/lib/compliance-evidence/data-export/ on the host (kept by the backups).
+#
+#   ansible-playbook -i inventories/<env> playbooks/data_export.yml \
+#     -e data_service=postgres -e data_instance=pg-main -e data_scope=orders \
+#     -e data_export_recipient=/path/to/owner.crt -e data_request_reference=REQ-123 \
+#     -e data_export_confirm=postgres/pg-main:orders
+#
+#   forgejo has no instance: -e data_service=forgejo -e data_scope=acme -e data_export_confirm=forgejo:acme
+#
+# Valkey patterns are globs ("orders:*"). RabbitMQ messages are not exported (drain the queues first).
+- name: Check the request
+  hosts: localhost
+  gather_facts: false
+  vars:
+    data_confirm_expected: >-
+      {{ data_service | default('') }}{{ ('/' ~ data_instance)
+      if (data_instance | default('')) | length > 0 else '' }}:{{ data_scope | default('') }}
+  tasks:
+    - name: Require the recipient certificate, a request reference and explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - (data_export_recipient | default('')) | length > 0
+          - data_export_recipient is file
+          - (data_request_reference | default('')) | length > 0
+          - data_export_confirm | default('') == data_confirm_expected
+        fail_msg: >-
+          Nothing exported. Give the data owner's certificate (-e data_export_recipient=<PEM file>), the request or ticket
+          (-e data_request_reference=<id>) and confirm the scope with
+          -e data_export_confirm={{ data_confirm_expected }}.
+        quiet: true
+      tags: [chk_dat_02]
+
+- name: Export
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Export, encrypt and write the manifest
+      ansible.builtin.include_role:
+        name: data_lifecycle
+        tasks_from: export
+      tags: [chk_dat_02]

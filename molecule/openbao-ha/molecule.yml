@@ -7,7 +7,7 @@ driver:
   name: docker
 platforms:
   - name: openbao-ha-1
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -23,7 +23,7 @@ platforms:
         aliases: [bao.test.internal]
     groups: [openbao, container_hosts]
   - name: openbao-ha-2
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -39,7 +39,7 @@ platforms:
         aliases: [bao.test.internal]
     groups: [openbao, container_hosts]
   - name: openbao-ha-3
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host

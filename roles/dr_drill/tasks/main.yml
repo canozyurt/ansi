@@ -1,0 +1,63 @@
+---
+# Runs on every host of the play (playbooks/dr_drill.yml). Each drill is planned the same way on
+# every host; only the node chosen to run it acts.
+- name: Work out which drills to run
+  ansible.builtin.set_fact:
+    dr_drill_selected: >-
+      {{ dr_drill_all_services if dr_drill_services | default('all') == 'all'
+         else (dr_drill_services if dr_drill_services is not string else dr_drill_services.split(',')) | map('trim') | list }}
+    dr_drill_instance_filter: >-
+      {{ [] if (dr_drill_instances | default('')) | length == 0
+         else (dr_drill_instances if dr_drill_instances is not string else dr_drill_instances.split(',')) | map('trim') | list }}
+    dr_drill_run_id: "{{ dr_drill_run_id | default(now(utc=true, fmt='%Y%m%dt%H%M%Sz')) }}"
+  run_once: true
+
+- name: Check that every selected service declares a drill
+  ansible.builtin.assert:
+    that:
+      - dr_drill_selected | length > 0
+      - dr_drill_selected | map('regex_replace', '^', 'dr_drill_') | reject('in', vars) | list | length == 0
+    fail_msg: >-
+      Unknown drill(s): {{ dr_drill_selected | map('regex_replace', '^', 'dr_drill_') | reject('in', vars) | list | join(', ') }}.
+      Known: {{ dr_drill_all_services | join(', ') }}.
+    quiet: true
+  run_once: true
+  tags: [chk_ha_02]
+
+- name: Plan one drill per service and instance
+  ansible.builtin.set_fact:
+    dr_drill_plan: "{{ query('ansible.builtin.template', 'plan.json.j2') | first | from_json }}"
+  run_once: true
+  no_log: true
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: "{{ dr_drill_plan | map(attribute='label') | list }}"
+  run_once: true
+
+- name: Install the RabbitMQ scratch-import check
+  ansible.builtin.copy:
+    src: dr-drill-rabbitmq
+    dest: /usr/local/sbin/dr-drill-rabbitmq
+    owner: root
+    group: root
+    mode: "0755"
+  when: "'rabbitmq' in dr_drill_selected"
+
+- name: Run each drill
+  ansible.builtin.include_tasks: drill.yml
+  loop: "{{ dr_drill_plan }}"
+  loop_control:
+    loop_var: dr_drill_item
+    label: "{{ dr_drill_item.label }}"
+
+- name: Every drill restored and verified its data
+  ansible.builtin.assert:
+    that: dr_drill_results | default([]) | rejectattr('ok') | list | length == 0
+    fail_msg: >-
+      Failed drills: {{ dr_drill_results | default([]) | rejectattr('ok') | map(attribute='label') | join(', ') }}.
+      Details: {{ dr_drill_results | default([]) | rejectattr('ok') | map(attribute='errors') | list }}.
+      Reports are in {{ dr_drill_evidence_dir }} on the drill hosts; runbooks in docs/dr/.
+    success_msg: "Passed: {{ dr_drill_results | default([]) | map(attribute='label') | join(', ') }}"
+  run_once: true
+  tags: [chk_ha_02]

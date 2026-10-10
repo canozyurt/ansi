@@ -1,0 +1,130 @@
+---
+# Shared by export.yml and delete.yml: checks the request, finds the instance and the node that runs
+# the helper (the leader where the service has one), and installs the helpers there.
+- name: Name this run
+  ansible.builtin.set_fact:
+    data_lifecycle_run_id: "{{ data_lifecycle_run_id | default(now(utc=true, fmt='%Y%m%dt%H%M%Sz')) }}"
+    data_lifecycle_service: "{{ data_service | default('') }}"
+    data_lifecycle_label: >-
+      {{ data_service | default('') }}{{ ('/' ~ data_instance) if (data_instance | default('')) | length > 0 else '' }}:{{ data_scope | default('') }}
+  run_once: true
+
+- name: Check the service and scope
+  ansible.builtin.assert:
+    that:
+      - data_lifecycle_service in data_lifecycle_services
+      - (data_scope | default('')) | length > 0
+      - data_scope is match(lookup('ansible.builtin.vars', 'data_lifecycle_' ~ data_lifecycle_service).scope_regex)
+      - data_scope not in ['*', '/'] or data_allow_all | default(false) | bool
+    fail_msg: >-
+      Set -e data_service=<{{ data_lifecycle_services | join('|') }}>, -e data_instance=<inventory entry name> (not for
+      forgejo) and -e data_scope=<database | key pattern | vhost | bucket | owner[/repo]> in the service's format.
+      A scope of the whole instance ("*") also needs -e data_allow_all=true.
+    quiet: true
+  run_once: true
+  tags: [chk_dat_02]
+
+- name: Find the instance
+  ansible.builtin.set_fact:
+    data_lifecycle_instance: >-
+      {{ ((lookup('ansible.builtin.vars', 'data_lifecycle_' ~ data_lifecycle_service).instances
+          | selectattr('name', 'equalto', data_instance | default('')) | list) + [{}]) | first
+         if lookup('ansible.builtin.vars', 'data_lifecycle_' ~ data_lifecycle_service).instances is defined else {} }}
+  no_log: true
+
+- name: Read the service definition
+  ansible.builtin.set_fact:
+    data_lifecycle_def: "{{ lookup('ansible.builtin.vars', 'data_lifecycle_' ~ data_lifecycle_service) }}"
+  no_log: true
+
+- name: Find the nodes
+  ansible.builtin.set_fact:
+    data_lifecycle_nodes: "{{ groups[data_lifecycle_def.group] | default([]) | select('in', ansible_play_hosts) | list }}"
+    data_lifecycle_is_leader: false
+
+- name: Check that the instance exists and a node of it is reachable
+  ansible.builtin.assert:
+    that:
+      - data_lifecycle_def.instances is not defined or data_lifecycle_instance | length > 0
+      - data_lifecycle_nodes | length > 0
+    fail_msg: >-
+      {{ data_lifecycle_label }}: no instance named {{ data_instance | default('(unset)') }} in the inventory, or none of
+      its nodes ({{ data_lifecycle_def.group }}) is reachable in this run.
+    quiet: true
+  run_once: true
+
+- name: Ask each node whether it leads
+  when:
+    - data_lifecycle_def.leader is defined
+    - inventory_hostname in data_lifecycle_nodes
+  block:
+    - name: Ask over HTTP
+      ansible.builtin.uri:
+        url: "{{ data_lifecycle_def.leader.url }}"
+        status_code: "{{ [data_lifecycle_def.leader.status | default(200) | int] }}"
+        ca_path: "{{ data_lifecycle_def.leader.ca_path | default(omit) }}"
+        timeout: 10
+      register: data_lifecycle_leader_http
+      failed_when: false
+      when: data_lifecycle_def.leader.url is defined
+
+    - name: Ask with a command
+      ansible.builtin.command:
+        argv: "{{ data_lifecycle_def.leader.argv }}"
+      register: data_lifecycle_leader_cmd
+      changed_when: false
+      failed_when: false
+      when: data_lifecycle_def.leader.argv is defined
+
+    - name: Note whether this node leads
+      ansible.builtin.set_fact:
+        data_lifecycle_is_leader: >-
+          {{ (data_lifecycle_leader_http.status | default(0) == (data_lifecycle_def.leader.status | default(200) | int))
+             if data_lifecycle_def.leader.url is defined
+             else (data_lifecycle_leader_cmd.rc | default(1) == 0
+                   and data_lifecycle_leader_cmd.stdout | default('') is search(data_lifecycle_def.leader.stdout_regex, multiline=true)) }}
+
+- name: Pick the node that runs the helper
+  ansible.builtin.set_fact:
+    data_lifecycle_runner: >-
+      {{ data_host if (data_host | default('')) | length > 0
+         else (data_lifecycle_leaders | first) if data_lifecycle_def.leader is defined
+         else data_lifecycle_nodes | first }}
+  vars:
+    data_lifecycle_leaders: >-
+      {{ data_lifecycle_nodes | zip(data_lifecycle_nodes | map('extract', hostvars, 'data_lifecycle_is_leader') | list)
+         | selectattr(1) | map(attribute=0) | list + [''] }}
+
+- name: Check that a node can run the helper
+  ansible.builtin.assert:
+    that:
+      - data_lifecycle_runner | length > 0
+      - data_lifecycle_runner in ansible_play_hosts
+    fail_msg: >-
+      {{ data_lifecycle_label }}: no node of {{ data_lifecycle_def.group }} reports itself as leader/active. Fix the
+      service first, or name the node with -e data_host=<host>.
+    quiet: true
+  run_once: true
+
+- name: Install the helpers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ data_lifecycle_tools_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop: ["{{ data_lifecycle_def.script }}", dl-package]
+  when: inventory_hostname == data_lifecycle_runner
+
+- name: Ask the service whether the scope exists
+  ansible.builtin.command:
+    argv: ["{{ data_lifecycle_tools_dir }}/{{ data_lifecycle_def.script }}", check, "{{ data_scope }}"]
+  environment: "{{ data_lifecycle_def.env }}"
+  register: data_lifecycle_state_before
+  changed_when: false
+  no_log: true
+  when: inventory_hostname == data_lifecycle_runner
+
+- name: Note the state before
+  ansible.builtin.set_fact:
+    data_lifecycle_before: "{{ hostvars[data_lifecycle_runner].data_lifecycle_state_before.stdout | default('unknown') | trim }}"
