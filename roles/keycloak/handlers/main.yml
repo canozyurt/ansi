@@ -4,6 +4,8 @@
     name: "{{ keycloak_container_name }}"
     image: "{{ keycloak_image }}"
     command: [start]
+    user: "{{ keycloak_container_uid }}:0"
+    # policy-exception: read_only: Keycloak (Quarkus) writes its build cache and transaction logs under /opt/keycloak/data at start.
     network_mode: host
     env_file: "{{ keycloak_data_dir }}/keycloak.env"
     volumes:

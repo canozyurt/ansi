@@ -108,7 +108,7 @@
     pids_limit: 1024
     cap_drop: [ALL]
     security_opts: [no-new-privileges:true]
-    # The entrypoint writes the keystore holding the indexer password into the image's config directory.
+    # policy-exception: read_only: the entrypoint writes the keystore holding the indexer password into the image's config directory.
     read_only: false
     labels:
       com.compliant-infra.role: wazuh-dashboard

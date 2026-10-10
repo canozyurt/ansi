@@ -134,8 +134,8 @@
     ulimits: ["nofile:{{ wazuh_indexer_nofile }}:{{ wazuh_indexer_nofile }}"]
     cap_drop: [ALL]
     security_opts: [no-new-privileges:true]
-    # OpenSearch writes its keystore and plugin state into the image's config directory, so the root
-    # filesystem stays writable; configuration, certificates and data are mounted from the host.
+    # policy-exception: read_only: OpenSearch writes its keystore and plugin state into the image's config directory;
+    # configuration, certificates and data are mounted from the host.
     read_only: false
     labels:
       com.compliant-infra.role: wazuh-indexer

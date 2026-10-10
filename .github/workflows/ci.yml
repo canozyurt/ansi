@@ -33,10 +33,29 @@ jobs:
           pip install -r requirements-dev.txt
           ansible-galaxy collection install -r requirements.yml
 
-      - name: Secret scan (SEC-01)
+      # SEC-01: whole git history, with the allowlist for placeholders in .gitleaks.toml.
+      - name: Secret scan of the git history (gitleaks) [chk_sec_01]
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.28.0 \
-            detect --source /repo --redact --verbose
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.28.0 \
+            detect --source /repo --config /repo/.gitleaks.toml --redact --verbose
+
+      - name: Vault variables are encrypted [chk_sec_01]
+        run: python3 tools/vault_check.py
+
+      - name: Versions, collections and downloads are pinned [chk_chg_05]
+        run: python3 tools/pins.py
+
+      - name: Container policy (non-root, no capabilities, read-only, limits) [chk_hrd_02]
+        run: python3 tools/container_policy.py --report
+
+      - name: Inventories keep environments apart [chk_chg_04]
+        run: python3 tools/inventory_lint.py
+
+      - name: Every adopted tool is reviewed for licence, SSO, audit log and HA [chk_evd_04]
+        run: python3 tools/tool_registry.py
+
+      - name: Self-tests of the CI gates
+        run: python3 -m unittest discover -s tools/tests -v
 
       - name: yamllint
         run: yamllint -s .
@@ -47,7 +66,10 @@ jobs:
       - name: Syntax check
         run: ansible-playbook --syntax-check playbooks/site.yml
 
-      - name: Checklist status matches the code (EVD-01)
+      # EVD-01: fails when a status claims more than the code backs, and when a Core item marked
+      # verified has no tagged verify task. Core items marked implemented without a test are warnings
+      # until Molecule runs again; then add --strict-core (see compliance/checklist.yml, EVD-01).
+      - name: Checklist status matches the code; Core items have tests [chk_evd_01]
         run: python3 tools/checklist.py check
 
       - name: Checklist coverage report
@@ -55,7 +77,69 @@ jobs:
           {
             echo "## Compliance checklist"
             python3 tools/checklist.py report --md
+            echo "## Test coverage"
+            python3 tools/checklist.py coverage --md
           } >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    name: Image SBOM and vulnerability scan
+    needs: lint
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned tools (CHG-05). Trivy comes from roles/versions (pinned by digest); syft is CI-only.
+      SYFT_IMAGE: docker.io/anchore/syft:v1.18.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install PyYAML==6.0.2
+
+      - name: List the pinned images
+        run: |
+          python3 tools/pins.py --list-images > images.txt
+          trivy=$(python3 -c 'import yaml; print(yaml.safe_load(open("roles/versions/defaults/main.yml"))["versions_images"]["trivy"])')
+          echo "TRIVY_IMAGE=$trivy" >> "$GITHUB_ENV"
+          cat images.txt
+
+      - name: SBOM of every pinned image and of the repository (syft) [chk_chg_05]
+        run: |
+          mkdir -p sbom
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work "$SYFT_IMAGE" \
+            dir:/work --exclude ./sbom --exclude ./trivy -o spdx-json=/work/sbom/repository.spdx.json
+          while read -r image; do
+            out="sbom/$(echo "$image" | tr '/:@' '___').spdx.json"
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" "$SYFT_IMAGE" \
+              "registry:$image" -o "spdx-json=/work/$out"
+          done < images.txt
+
+      # Vulnerabilities (CRITICAL blocks unless waived in compliance/vuln-waivers.yml) and secrets baked
+      # into image layers (SEC-01). Images are pulled from their registries, no Docker daemon access.
+      - name: Scan pinned images for vulnerabilities and secrets (Trivy) [chk_chg_05] [chk_sec_01]
+        run: |
+          mkdir -p trivy
+          while read -r image; do
+            out="trivy/$(echo "$image" | tr '/:@' '___').json"
+            docker run --rm -v trivy-cache:/root/.cache/trivy -v "$PWD:/work" "$TRIVY_IMAGE" \
+              image --image-src remote --scanners vuln,secret --format json --output "/work/$out" "$image"
+          done < images.txt
+
+      - name: Gate on CRITICAL findings and secrets (waivers with reason and expiry) [chk_chg_05]
+        run: python3 tools/trivy_gate.py trivy/*.json --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the SBOMs and scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-and-image-scan-${{ github.sha }}
+          path: |
+            sbom/
+            trivy/
+            images.txt
+          retention-days: 90
 
   molecule:
     name: Molecule ${{ matrix.platform }}
@@ -85,13 +169,16 @@ jobs:
           PY_COLORS: "1"
           ANSIBLE_FORCE_COLOR: "1"
 
+  # Every service scenario on every supported OS (CHG-06): the scenarios take their platform image from
+  # MOLECULE_DISTRO (molecule/<scenario>/molecule.yml), so the matrix below is the shared platform list.
   molecule-services:
-    name: Molecule ${{ matrix.scenario }}
+    name: Molecule ${{ matrix.scenario }} (${{ matrix.distro }})
     needs: lint
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404]
         scenario:
           - keycloak
           - keycloak-upgrade
@@ -143,9 +230,10 @@ jobs:
             *) exit "$rc" ;;
           esac
 
-      - name: Deploy, idempotence and verify
+      - name: Deploy, idempotence and verify [chk_chg_06]
         if: steps.upgrade_path.outputs.skip != 'true'
         run: molecule test -s ${{ matrix.scenario }}
         env:
+          MOLECULE_DISTRO: ${{ matrix.distro }}
           PY_COLORS: "1"
           ANSIBLE_FORCE_COLOR: "1"

@@ -16,6 +16,7 @@
         group: root
         mode: "0755"
 
+    # pin-exception: the key is checked against wazuh_agent_gpg_fingerprint in the next tasks.
     - name: Download the Wazuh signing key
       ansible.builtin.get_url:
         url: "{{ wazuh_agent_gpg_key_url }}"
