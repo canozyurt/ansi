@@ -90,15 +90,19 @@ versions_tools:
       amd64: 8751cc0daf739634835a3bd8206e3094c84d552e2c462e4a4baf80f40dd92685
       arm64: 49e1f948af8e5c6ed5c803bad4508cf7af37be6c15b7fb2840109900b916eb48
 
-  # Not pinned yet (tools/pins.py requires a SHA-256, which nobody has recorded from the release pages):
-  # roles/cis_audit (Ubuntu 24.04 only; Debian 12 and Ubuntu 22.04 use the distribution's data stream)
-  # and roles/docker_bench refuse to run until these entries exist with their sha256. To pin, copy
-  # them uncommented with the SHA-256 of the release asset, and list them under the
-  # "OpenSCAP and docker-bench-security" tool in compliance/tools.yml (versions: [tools/...]).
-  #   scap_security_guide:
-  #     version: 0.1.76
-  #     url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
-  #     sha256: <sha256 of the zip>
+  # Upstream SCAP content for roles/cis_audit where the release's packages lack the data stream
+  # (Debian 12 has no CIS profile in ssg-debian, Ubuntu 22.04 has no ssg packages, Ubuntu 24.04 has
+  # no ubuntu2404 content). SHA-256 of the release zip; its SHA-512 matches the .sha512 published
+  # next to it on the release page.
+  scap_security_guide:
+    version: 0.1.76
+    url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
+    sha256: 5a30a4bf868859c5130378d99cc09027ad1d9a7b4988d21751e84a597bb01627
+
+  # Not pinned yet (tools/pins.py requires a SHA-256, which nobody has recorded from the release page):
+  # roles/docker_bench refuses to run until this entry exists with its sha256. To pin, copy it
+  # uncommented with the SHA-256 of the archive and list it under the "OpenSCAP and
+  # docker-bench-security" tool in compliance/tools.yml (versions: [tools/...]).
   #   docker_bench_security:
   #     version: 1.6.0
   #     url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
