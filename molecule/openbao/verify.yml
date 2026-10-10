@@ -25,7 +25,8 @@
       ansible.builtin.assert:
         that:
           - verify_container.container.State.Running
-          - verify_container.container.Config.User == 'openbao'
+          # The role runs it as the image's openbao user by uid:gid (openbao_container_uid, 100).
+          - verify_container.container.Config.User is match('^100(:|$)')
           - "'ALL' in verify_container.container.HostConfig.CapDrop"
           - verify_container.container.HostConfig.CapAdd is none
           - "'no-new-privileges:true' in verify_container.container.HostConfig.SecurityOpt"
