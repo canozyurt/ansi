@@ -9,7 +9,7 @@ driver:
   name: docker
 platforms:
   - name: access-vpn
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -20,7 +20,7 @@ platforms:
       - name: molecule-access
     groups: [vpn]
   - name: access-bastion
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -31,7 +31,7 @@ platforms:
       - name: molecule-access
     groups: [bastion]
   - name: access-dns
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     cgroupns_mode: host
@@ -42,7 +42,7 @@ platforms:
       - name: molecule-access
     groups: [dns]
   - name: access-audit
-    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2404}-ansible:latest"
     pre_build_image: true
     privileged: true
     pid_mode: host
