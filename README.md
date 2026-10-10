@@ -8,10 +8,10 @@ default with **SOC 2** (Security, Availability, Confidentiality), **ISO/IEC 2700
 Every role ships hardened defaults and the evidence an auditor asks for, so compliance is a side effect
 of deploying instead of a separate project.
 
-> Status: every service in the catalog is written. Most roles have passed a single-node Molecule run
-> on Ubuntu 24.04. Multi-node HA, Debian 12 and Ubuntu 22.04, end-to-end SSO, and the RabbitMQ, Garage
-> and registry scenarios have not been tested yet. The [checklist](compliance/checklist.yml) shows each
-> requirement's honest status.
+> Status: every service in the catalog and every checklist requirement is written (54 of 54 at
+> "implemented"). Most service roles have passed a single-node Molecule run on Ubuntu 24.04; the newer
+> audit, identity, resilience and supply-chain work, multi-node HA, Debian 12 and Ubuntu 22.04 have not
+> been run yet. Nothing is "verified" until its tests pass. See the [checklist](compliance/checklist.yml).
 
 ## Supported platforms
 
