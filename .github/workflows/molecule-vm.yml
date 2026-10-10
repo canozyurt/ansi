@@ -130,12 +130,17 @@ jobs:
               docker exec "$c" journalctl -u "$unit" --no-pager -n 40 2>/dev/null || true
             done
             # Service containers inside the test container: their recent errors.
+            docker exec "$c" sh -c 'command -v docker' >/dev/null 2>&1 || { echo "::endgroup::"; continue; }
             for s in $(docker exec "$c" docker ps -a --format '{{.Names}}' 2>/dev/null); do
               echo "--- container $s"
               docker exec "$c" docker logs --tail 300 "$s" 2>&1 | grep -iE 'error|fatal|panic|fail' | tail -n 15 || true
             done
             echo "::endgroup::"
           done
+          # Mandatory access control denials on the runner host (its profiles also apply in the containers).
+          echo "::group::AppArmor denials on the runner"
+          journalctl -k --since "-30 min" --no-pager 2>/dev/null | grep 'apparmor="DENIED"' | tail -n 20 || true
+          echo "::endgroup::"
 
       - name: Clean up leftover containers
         if: always()
