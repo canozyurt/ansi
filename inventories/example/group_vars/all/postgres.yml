@@ -13,7 +13,7 @@ postgres_clusters:
     rewind_password: "{{ vault_pg_main_rewind_password }}"
     patroni_api_password: "{{ vault_pg_main_patroni_api_password }}"
     exporter_password: "{{ vault_pg_main_exporter_password }}"
-    client_cidrs: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"]
+    client_cidrs: "{{ [network_zones.app] + network_mgmt_datastore_client_cidrs + firewall_mgmt_cidrs }}"
     resources: { memory: 8g, shm_size: 1g }
     parameters:
       max_connections: 300

@@ -179,6 +179,35 @@ forgejo_branch_protection_template:
   apply_to_admins: true
   enable_merge_whitelist: false
   enable_approvals_whitelist: false
+# --------------------------------------------------------------------------- incident tracker (INC-01)
+# A private repository in one of forgejo_orgs where incidents and postmortems are issues
+# (docs/incident-response.md). org_setup creates it with the branch protection above, the labels below
+# and the issue templates from docs/templates in .forgejo/ISSUE_TEMPLATE. Once main is protected,
+# template changes arrive as a pull request from forgejo_incident_template_branch.
+forgejo_incident_tracker_enabled: false
+forgejo_incident_tracker_org: "{{ (forgejo_orgs | first).name if forgejo_orgs | length > 0 else '' }}"
+forgejo_incident_tracker_repo: incidents
+forgejo_incident_tracker_description: Incident records and postmortems (INC-01, kept at least 12 months)
+forgejo_incident_labels:
+  - { name: incident, color: "d73a4a", description: "Incident record (docs/incident-response.md)" }
+  - { name: sev1, color: "b60205", description: "SEV1: critical, customer-facing outage or data at risk" }
+  - { name: sev2, color: "d93f0b", description: "SEV2: major degradation or a security incident under investigation" }
+  - { name: sev3, color: "fbca04", description: "SEV3: minor impact, workaround available" }
+  - { name: sev4, color: "0e8a16", description: "SEV4: no customer impact" }
+  - { name: postmortem-needed, color: "5319e7", description: "SEV1/SEV2: postmortem due within 5 working days" }
+  - { name: postmortem, color: "1d76db", description: "Postmortem (docs/templates/postmortem.md)" }
+  - { name: security, color: "000000", description: "Security incident: the security lead joins" }
+# Issue templates copied from the repository's docs/templates into .forgejo/ISSUE_TEMPLATE.
+forgejo_incident_template_dir: "{{ role_path }}/../../docs/templates"
+forgejo_incident_templates: [incident.md, postmortem.md]
+forgejo_incident_template_branch: incident-templates-sync
+# Monthly export of every incident issue with its comments to the evidence store, kept by the
+# append-only backup; node_exporter metrics feed the retention alerts (group_vars/monitoring/incidents.yml).
+forgejo_incident_export_dir: /var/lib/compliance-evidence/incidents
+forgejo_incident_export_schedule: "*-*-01 04:30:00"
+# Local copies older than this are pruned; the backup keeps its own retention. At least 400 days.
+forgejo_incident_export_keep_days: 400
+
 # Evidence (CHG-01): branch protection settings exported as JSON on the controller.
 forgejo_evidence_dir: "{{ lookup('ansible.builtin.env', 'EVIDENCE_DIR') | default(playbook_dir ~ '/../evidence', true) }}/forgejo"
 

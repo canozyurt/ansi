@@ -25,14 +25,19 @@ grafana_admin_password: "{{ vault_grafana_admin_password }}"
 grafana_secret_key: "{{ vault_grafana_secret_key }}"
 grafana_oidc_client_secret: "{{ vault_grafana_oidc_client_secret }}"
 
-# Prometheus and Alertmanager UIs/APIs from management networks (VPN, bastion) and the other
-# monitoring hosts; Grafana also from the edge proxy (app zone); gossip only between members.
+# Prometheus and Alertmanager UIs/APIs only from the VPN/bastion ranges and the monitoring hosts
+# (Grafana, peers, scrapes), never the whole mgmt zone; Grafana also from the edge proxy (app zone);
+# gossip only between members (NET-02, NET-03). If Wazuh sends to Alertmanager
+# (monitoring_alertmanager_url), add network_siem_host_cidrs to alertmanager-https.
 firewall_rules_prometheus:
-  - { name: prometheus-https, port: 9090, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: prometheus-https, port: 9090, class: admin, sources: "{{ firewall_mgmt_cidrs + monitoring_source_cidrs }}" }
 firewall_rules_alertmanager:
-  - { name: alertmanager-https, port: 9093, sources: ["{{ network_zones.mgmt }}"] }
-  - { name: alertmanager-cluster, port: 9094, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: alertmanager-https, port: 9093, class: admin, sources: "{{ firewall_mgmt_cidrs + monitoring_source_cidrs }}" }
+  - { name: alertmanager-cluster, port: 9094, class: cluster, sources: "{{ monitoring_source_cidrs }}" }
 firewall_rules_blackbox_exporter:
-  - { name: blackbox-exporter, port: 9115, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: blackbox-exporter, port: 9115, class: metrics, sources: "{{ monitoring_source_cidrs }}" }
 firewall_rules_grafana:
-  - { name: grafana-https, port: 3000, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }
+  - name: grafana-https
+    port: 3000
+    class: admin
+    sources: "{{ [network_zones.app] + firewall_mgmt_cidrs + monitoring_source_cidrs }}"

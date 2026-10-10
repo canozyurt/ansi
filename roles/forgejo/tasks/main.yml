@@ -94,3 +94,9 @@
 
 - name: Declare the backup
   ansible.builtin.import_tasks: backup.yml
+
+- name: Export incident records to the evidence store (INC-01)
+  ansible.builtin.import_tasks: incident_export.yml
+  when:
+    - forgejo_incident_tracker_enabled | bool
+    - forgejo_incident_tracker_org | length > 0

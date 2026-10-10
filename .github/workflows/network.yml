@@ -1,0 +1,40 @@
+---
+# Network zone and admin-port audit (NET-02, NET-03). Renders every host's firewall rules from the
+# example inventory and checks them against compliance/zone-flows.yml; the unit tests prove the audit
+# catches undeclared inter-zone rules and admin/database ports open to "any" or the whole mgmt zone.
+name: Network audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firewall-audit:
+    name: Firewall rules against declared zone flows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install tools
+        run: pip install -r requirements-dev.txt
+
+      - name: Audit tests (fixture inventory with known violations)
+        run: python3 -m unittest discover -s tools/tests -v
+
+      - name: Audit the example inventory; docs/network.md must be current (NET-02, NET-03)
+        run: python3 tools/firewall_audit.py --check-doc docs/network.md
+
+      - name: Port matrix
+        if: always()
+        run: python3 tools/firewall_audit.py --markdown >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Export every incident issue of the incident tracker to the evidence store (INC-01).
+
+Runs monthly from forgejo-incident-export.timer on every Forgejo node; only the node where Forgejo
+answers locally (the active node) exports. Writes:
+  <export_dir>/incidents-<YYYY-MM-DD>.json   every issue (open and closed) with labels and comments
+  <textfile_dir>/forgejo_incidents.prom      metrics for the retention alerts
+and prunes local exports older than keep_days (the append-only backup keeps its own copies).
+
+Retention check: an issue present in the previous export that is missing now and was closed less than
+retention_days ago has been deleted inside its retention period (forgejo_incident_records_missing).
+The yearly retention review is recorded by touching <export_dir>/retention-review.done after the
+review (docs/incident-response.md); its age is exported too.
+"""
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONFIG = Path(os.environ.get("FORGEJO_INCIDENT_EXPORT_CONFIG", "/etc/forgejo-incident-export.json"))
+
+
+def api(cfg, token, path):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False  # 127.0.0.1 with the node's own certificate
+    ctx.verify_mode = ssl.CERT_NONE
+    req = urllib.request.Request(cfg["api"] + path, headers={"Authorization": "token " + token,
+                                                              "Accept": "application/json"})
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+        return json.load(resp)
+
+
+def paged(cfg, token, path):
+    page, out = 1, []
+    sep = "&" if "?" in path else "?"
+    while True:
+        batch = api(cfg, token, f"{path}{sep}limit=50&page={page}")
+        out.extend(batch)
+        if len(batch) < 50:
+            return out
+        page += 1
+
+
+def parse_time(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else None
+
+
+def write_metrics(cfg, metrics):
+    textfile = Path(cfg["textfile_dir"]) / "forgejo_incidents.prom"
+    tmp = textfile.with_suffix(".prom.tmp")
+    lines = []
+    for name, (help_text, value) in metrics.items():
+        lines += [f"# HELP {name} {help_text}", f"# TYPE {name} gauge", f"{name} {value}"]
+    tmp.write_text("\n".join(lines) + "\n")
+    tmp.chmod(0o644)
+    tmp.replace(textfile)
+
+
+def main():
+    cfg = json.loads(CONFIG.read_text())
+    token = Path(cfg["token_file"]).read_text().strip()
+    export_dir = Path(cfg["export_dir"])
+    repo = f"/repos/{cfg['org']}/{cfg['repo']}"
+    try:
+        api(cfg, token, "/version")
+    except (urllib.error.URLError, OSError):
+        print("Forgejo does not answer on this node (passive); nothing to export")
+        return 0
+
+    issues = paged(cfg, token, f"{repo}/issues?state=all&type=issues")
+    for issue in issues:
+        issue["comments_list"] = paged(cfg, token, f"{repo}/issues/{issue['number']}/comments") if issue.get("comments") else []
+    now = time.time()
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    previous = sorted(export_dir.glob("incidents-*.json"))
+    record = {"source": cfg["root_url"] + cfg["org"] + "/" + cfg["repo"], "exported_at": int(now),
+              "issues": issues}
+    target = export_dir / f"incidents-{stamp}.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=1, sort_keys=True))
+    tmp.chmod(0o640)
+    tmp.replace(target)
+
+    # Records deleted inside the retention period: compared with every earlier export still kept, so a
+    # deletion stays visible until its retention period has passed.
+    current = {i["number"] for i in issues}
+    seen = {}
+    for path in previous:
+        if path != target:
+            for issue in json.loads(path.read_text()).get("issues", []):
+                seen[issue["number"]] = issue
+    horizon = now - cfg["retention_days"] * 86400
+    missing = 0
+    for number, issue in sorted(seen.items()):
+        closed = parse_time(issue.get("closed_at")) or now
+        if number not in current and closed > horizon:
+            missing += 1
+            print(f"incident #{number} ({issue.get('title')}) is gone inside its retention period", file=sys.stderr)
+
+    for path in export_dir.glob("incidents-*.json"):
+        if path != target and now - path.stat().st_mtime > cfg["keep_days"] * 86400:
+            path.unlink()
+
+    labels = lambda i: {lbl["name"] for lbl in i.get("labels", [])}  # noqa: E731
+    incidents = [i for i in issues if "incident" in labels(i)]
+    review = export_dir / "retention-review.done"
+    write_metrics(cfg, {
+        "forgejo_incident_export_last_success_timestamp_seconds": ("Time of the last incident export", int(now)),
+        "forgejo_incident_export_issues": ("Issues in the incident tracker (all states)", len(issues)),
+        "forgejo_incident_open": ("Open incident issues", sum(1 for i in incidents if i["state"] == "open")),
+        "forgejo_incident_postmortem_needed_open": (
+            "Issues still labelled postmortem-needed", sum(1 for i in issues if "postmortem-needed" in labels(i))),
+        "forgejo_incident_records_missing": ("Incident issues deleted inside their retention period", missing),
+        "forgejo_incident_retention_review_timestamp_seconds": (
+            "Time of the last recorded yearly retention review (0: never)",
+            int(review.stat().st_mtime) if review.exists() else 0),
+    })
+    print(f"exported {len(issues)} issues to {target}; {missing} missing inside retention")
+    return 1 if missing else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -4,8 +4,8 @@ about: Record an incident (docs/incident-response.md)
 title: "[SEVx] <short description>"
 labels: [incident]
 ---
-<!-- Copy to .forgejo/issue_template/incident.md in your incidents repository.
-     Add a severity/sev1..sev4 label, and "security" for security incidents. -->
+<!-- Provisioned to .forgejo/ISSUE_TEMPLATE/incident.md in the incident tracker by roles/forgejo (org_setup).
+     Add a sev1..sev4 label, postmortem-needed for SEV1/SEV2, and "security" for security incidents. -->
 
 ## Summary
 

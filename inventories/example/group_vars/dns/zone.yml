@@ -1,0 +1,3 @@
+---
+# These hosts sit in the mgmt network but not in the mgmt group (no containers): zone mgmt (NET-03).
+network_zone: mgmt

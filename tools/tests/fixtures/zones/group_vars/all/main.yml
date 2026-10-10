@@ -1,0 +1,13 @@
+---
+network_zones: { mgmt: 10.10.0.0/24, app: 10.20.0.0/24, data: 10.30.0.0/24 }
+access_vpn_cidr: 10.99.0.0/24
+access_bastion_cidrs: [10.10.0.31/32]
+access_vpn_gateway_cidrs: []
+access_automation_cidrs: []
+firewall_mgmt_cidrs: "{{ access_bastion_cidrs + [access_vpn_cidr] }}"
+network_host_addresses:
+  mgmt-1.test: 10.10.0.11
+  app-1.test: 10.20.0.11
+  data-1.test: 10.30.0.11
+  # Wrong zone on purpose.
+  data-2.test: 10.20.0.99

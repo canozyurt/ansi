@@ -18,4 +18,5 @@ backup_server_keep_monthly: 12
 firewall_rules_backup_server:
   - name: restic-rest-server
     port: 8000
+    class: service
     sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}", "{{ network_zones.data }}"]

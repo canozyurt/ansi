@@ -1,0 +1,34 @@
+---
+# Image provenance before a container is created (CHG-08). Container-creating roles list this role as a
+# meta dependency with the images they run, so it runs before their tasks:
+#
+#   dependencies:
+#     - role: versions
+#     - { role: image_verify, image_verify_images: ["{{ keycloak_image }}"] }
+#
+# With image_signature_policy "enforce" every image must come from image_registry_mirror and carry a
+# trusted cosign/notation signature in the internal Zot registry; the check is the registry role's
+# registry-check-signature (roles/registry/templates), installed here on the container host.
+image_verify_images: []
+
+# off | warn | enforce. Global setting: image_signature_policy in the inventory (group_vars/all/images.yml).
+image_verify_policy: "{{ image_signature_policy | default('off') }}"
+image_verify_mirror: "{{ image_registry_mirror | default('') | regex_replace('/+$', '') }}"
+# Zot API base for the signature check: the mirror's host over HTTPS.
+image_verify_registry_url: "https://{{ image_verify_mirror.split('/') | first }}"
+
+# Read-only robot (registry_robots, e.g. "puller") for pulls and the signature check. From the vault.
+image_verify_pull_user: "{{ image_registry_pull_user | default('') }}"
+image_verify_pull_password: "{{ image_registry_pull_password | default('') }}"
+
+# Images built on the host from verified base images (localhost/...) and the registry's own image
+# (versions_mirror_exclude: it cannot come from itself) are not checked.
+image_verify_skip_patterns: ['^localhost/']
+image_verify_skip_images: >-
+  {{ (versions_images_upstream | default(versions_images)) | dict2items
+     | selectattr('key', 'in', versions_mirror_exclude | default([])) | map(attribute='value') | list }}
+
+image_verify_script: /usr/local/sbin/registry-check-signature
+image_verify_auth_file: /etc/compliant-infra/registry-auth
+# Signature check results (JSON per image) kept as evidence and backed up.
+image_verify_evidence_dir: /var/lib/compliance-evidence/image-signatures

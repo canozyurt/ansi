@@ -1,0 +1,192 @@
+---
+# Incident tracker repository (INC-01), imported by org_setup inside its API block (forgejo_api,
+# forgejo_api_headers). org_setup has already created the repository; its branch protection is applied
+# by org_setup's protection tasks after these.
+- name: Check the incident tracker settings (INC-01)
+  ansible.builtin.assert:
+    that:
+      - forgejo_incident_tracker_org in forgejo_orgs | map(attribute='name') | list
+      - forgejo_incident_tracker_repo | length > 0
+      - forgejo_incident_labels | map(attribute='name') | list is superset(['incident', 'sev1', 'sev2', 'sev3', 'sev4', 'postmortem-needed'])
+    fail_msg: >-
+      forgejo_incident_tracker_org must be one of forgejo_orgs, and forgejo_incident_labels must include
+      incident, sev1..sev4 and postmortem-needed.
+    quiet: true
+  tags: [chk_inc_01]
+
+- name: Look up the incident tracker labels
+  ansible.builtin.uri:
+    url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/labels?limit=50"
+    headers: "{{ forgejo_api_headers }}"
+    validate_certs: false
+  register: forgejo_incident_label_lookup
+
+- name: Create the missing incident labels (INC-01)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/labels"
+    method: POST
+    headers: "{{ forgejo_api_headers }}"
+    body_format: json
+    body: { name: "{{ item.name }}", color: "#{{ item.color }}", description: "{{ item.description }}" }
+    validate_certs: false
+    status_code: 201
+  loop: "{{ forgejo_incident_labels | rejectattr('name', 'in', forgejo_incident_label_lookup.json | map(attribute='name') | list) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  tags: [chk_inc_01]
+
+- name: Correct incident labels whose colour or description differ (INC-01)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/labels/{{ current.id }}"
+    method: PATCH
+    headers: "{{ forgejo_api_headers }}"
+    body_format: json
+    body: { color: "#{{ item.color }}", description: "{{ item.description }}" }
+    validate_certs: false
+    status_code: 200
+  vars:
+    current: "{{ forgejo_incident_label_lookup.json | selectattr('name', 'equalto', item.name) | first | default({}) }}"
+  loop: "{{ forgejo_incident_labels }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - current | length > 0
+    - (current.color | lower | regex_replace('^#', '')) != (item.color | lower) or current.description | default('') != item.description
+  changed_when: true
+  tags: [chk_inc_01]
+
+# Issue templates: the files in docs/templates are the source of truth.
+- name: Look up the incident tracker's main branch protection
+  ansible.builtin.uri:
+    url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/branch_protections/main"
+    headers: "{{ forgejo_api_headers }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: forgejo_incident_main_protection
+
+- name: Read the issue templates in the incident tracker
+  ansible.builtin.uri:
+    url: >-
+      {{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/contents/.forgejo/ISSUE_TEMPLATE/{{
+      item }}?ref=main
+    headers: "{{ forgejo_api_headers }}"
+    validate_certs: false
+    status_code: [200, 404]
+  loop: "{{ forgejo_incident_templates }}"
+  register: forgejo_incident_template_lookup
+
+- name: Compare the issue templates with docs/templates
+  ansible.builtin.set_fact:
+    forgejo_incident_template_changes: >-
+      {%- set out = [] -%}
+      {%- for res in forgejo_incident_template_lookup.results -%}
+      {%-   set wanted = lookup('ansible.builtin.file', forgejo_incident_template_dir ~ '/' ~ res.item, rstrip=false) -%}
+      {%-   set current = (res.json.content | b64decode) if res.status == 200 else none -%}
+      {%-   if current != wanted -%}
+      {%-     set change = {'operation': 'update' if res.status == 200 else 'create',
+                            'path': '.forgejo/ISSUE_TEMPLATE/' ~ res.item, 'content': wanted | b64encode} -%}
+      {%-     set _ = out.append(change | combine({'sha': res.json.sha}) if res.status == 200 else change) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Write the issue templates to main (first run, before main is protected) (INC-01)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/contents"
+    method: POST
+    headers: "{{ forgejo_api_headers }}"
+    body_format: json
+    body:
+      branch: main
+      message: "Add the incident and postmortem issue templates (INC-01)"
+      files: "{{ forgejo_incident_template_changes }}"
+    validate_certs: false
+    status_code: 201
+  when:
+    - forgejo_incident_template_changes | length > 0
+    - forgejo_incident_main_protection.status == 404
+  changed_when: true
+  tags: [chk_inc_01]
+
+# main is protected (no direct pushes, CHG-01): a template change goes through a reviewed pull request.
+- name: Propose template changes through a pull request
+  when:
+    - forgejo_incident_template_changes | length > 0
+    - forgejo_incident_main_protection.status == 200
+  block:
+    - name: Look up a pending template branch
+      ansible.builtin.uri:
+        url: >-
+          {{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/branches/{{
+          forgejo_incident_template_branch | urlencode }}
+        headers: "{{ forgejo_api_headers }}"
+        validate_certs: false
+        status_code: [200, 404]
+      register: forgejo_incident_template_branch_lookup
+
+    - name: Commit the template changes to a new branch (INC-01)
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/contents"
+        method: POST
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body:
+          branch: main
+          new_branch: "{{ forgejo_incident_template_branch }}"
+          message: "Update the incident issue templates from docs/templates (INC-01)"
+          files: "{{ forgejo_incident_template_changes }}"
+        validate_certs: false
+        status_code: 201
+      when: forgejo_incident_template_branch_lookup.status == 404
+      changed_when: true
+      tags: [chk_inc_01]
+
+    - name: Open the pull request for review (INC-01)
+      ansible.builtin.uri:
+        url: "{{ forgejo_api }}/repos/{{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}/pulls"
+        method: POST
+        headers: "{{ forgejo_api_headers }}"
+        body_format: json
+        body:
+          head: "{{ forgejo_incident_template_branch }}"
+          base: main
+          title: Update the incident issue templates
+          body: >-
+            The issue templates differ from docs/templates in the infrastructure repository. Generated by the
+            forgejo role (org_setup); review and merge to apply them.
+        validate_certs: false
+        status_code: 201
+      when: forgejo_incident_template_branch_lookup.status == 404
+      changed_when: true
+      tags: [chk_inc_01]
+
+    - name: Report a template update that is still waiting for review
+      ansible.builtin.debug:
+        msg: >-
+          {{ forgejo_incident_tracker_org }}/{{ forgejo_incident_tracker_repo }}: branch
+          {{ forgejo_incident_template_branch }} with template changes is still open; merge or delete it.
+      when: forgejo_incident_template_branch_lookup.status == 200
+
+- name: Create the evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ forgejo_evidence_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false
+
+- name: Export the incident tracker settings as evidence (INC-01)
+  ansible.builtin.copy:
+    content: >-
+      {{ {'repository': forgejo_incident_tracker_org ~ '/' ~ forgejo_incident_tracker_repo,
+          'labels': forgejo_incident_labels,
+          'templates': forgejo_incident_templates | map('regex_replace', '^', '.forgejo/ISSUE_TEMPLATE/') | list,
+          'pending_template_changes': forgejo_incident_template_changes | map(attribute='path') | list,
+          'export_dir': forgejo_incident_export_dir,
+          'export_schedule': forgejo_incident_export_schedule} | to_nice_json(sort_keys=true) }}
+    dest: "{{ forgejo_evidence_dir }}/incident-tracker.json"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  tags: [chk_inc_01]

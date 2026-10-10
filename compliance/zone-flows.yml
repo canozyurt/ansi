@@ -1,0 +1,103 @@
+---
+# Network zones and the traffic allowed between them (NET-03), as data.
+#
+# tools/firewall_audit.py renders every host's firewall rules from the inventory (the same variables
+# roles/firewall uses) and checks them against this file:
+#   * a rule whose source lies in another zone than the host must match a flow below
+#     (from-zone, to-zone, port, protocol);
+#   * admin and database rules (class admin/database, NET-02) may allow only firewall_mgmt_cidrs
+#     (VPN, bastion) plus sources that match a flow below, never "any" and never the whole mgmt zone.
+# docs/network.md is generated from this file and the inventory: tools/firewall_audit.py --markdown.
+#
+# zones: name -> CIDRs (Jinja over the inventory variables, rendered for each host). A source belongs
+# to the zone with the most specific CIDR that contains it, so the VPN and bastion addresses (access)
+# win over the mgmt zone they sit in. Hosts take their zone from network_zone (group_vars/<zone>/zone.yml).
+zones:
+  mgmt:
+    description: Control plane (IdP, secrets, monitoring, SIEM, source control) and the admin entry hosts
+    cidrs: "{{ [network_zones.mgmt] }}"
+  app:
+    description: Edge proxies, application services, registry, CI runners
+    cidrs: "{{ [network_zones.app] }}"
+  data:
+    description: Databases, queues, object storage, backup servers
+    cidrs: "{{ [network_zones.data] }}"
+  access:
+    description: Admin entry points (VPN clients, VPN gateway NAT addresses, bastions, automation); never holds hosts
+    cidrs: "{{ [access_vpn_cidr] + access_bastion_cidrs + access_vpn_gateway_cidrs + access_automation_cidrs }}"
+  internet:
+    description: Anything else ("any" in a rule)
+    cidrs: [any]
+
+# Rule classes (the "class" key of each firewall_rules_<role> entry; the built-in SSH rule is admin).
+classes:
+  admin: Admin UI, admin API or remote shell (NET-02)
+  database: Database, queue, cache or object store client or replication port (NET-02)
+  service: Service used by clients in other zones
+  cluster: Peer traffic between members of one cluster
+  metrics: Metrics and health endpoints for Prometheus
+  public: Public service ("any")
+
+# flows: service, port (number or "start-end"), proto (tcp default, udp, vrrp), from and to (zone or list).
+# Flows inside one zone are listed only where an admin or database port needs them.
+flows:
+  # Administration (NET-02): SSH and admin UIs/APIs only from the access zone.
+  - { service: ssh, port: 22, from: access, to: [mgmt, app, data] }
+  - { service: prometheus-ui, port: 9090, from: access, to: mgmt }
+  - { service: alertmanager-ui, port: 9093, from: access, to: mgmt }
+  - { service: grafana, port: 3000, from: [access, app], to: mgmt }
+  - { service: keycloak, port: 8443, from: [access, app], to: mgmt }
+  - { service: grc, port: 8443, from: [access, app], to: mgmt }
+  - { service: forgejo, port: 3443, from: [access, app], to: mgmt }
+  - { service: wazuh-api, port: 55000, from: access, to: mgmt }
+  - { service: wazuh-dashboard, port: 5601, from: [access, app], to: mgmt }
+  - { service: wazuh-dashboard-direct, port: 443, from: [access, app], to: mgmt }
+  - { service: rabbitmq-management, port: 15671, from: access, to: data }
+  - { service: patroni-api, port: 8008, from: [access, mgmt, data], to: data }
+  - { service: postgres-psql-admin, port: 5000-5001, from: access, to: data }
+
+  # Monitoring hosts (mgmt) to the UIs and alert receivers they use, inside the mgmt zone.
+  - { service: prometheus-api, port: 9090, from: mgmt, to: mgmt }
+  - { service: alertmanager-api, port: 9093, from: mgmt, to: mgmt }
+  - { service: grafana-metrics, port: 3000, from: mgmt, to: mgmt }
+  - { service: grc-metrics, port: 8443, from: mgmt, to: mgmt }
+  - { service: wazuh-api-dashboard, port: 55000, from: mgmt, to: mgmt }
+  - { service: wazuh-indexer, port: 9200, from: mgmt, to: mgmt }
+
+  # Shared platform services every zone uses.
+  - { service: dns, port: 53, proto: udp, from: [app, data, access], to: mgmt }
+  - { service: dns-tcp, port: 53, from: [app, data, access], to: mgmt }
+  - { service: dns-over-tls, port: 853, from: [app, data, access], to: mgmt }
+  - { service: openbao-api, port: 8200, from: [app, data], to: mgmt }
+  - { service: mail-relay, port: 587, from: app, to: mgmt }
+  - { service: wazuh-agents, port: 1514, from: [app, data, access], to: mgmt }
+  - { service: wazuh-enrollment, port: 1515, from: [app, data, access], to: mgmt }
+  - { service: backup-rest-server, port: 8000, from: [mgmt, app], to: data }
+
+  # Monitoring (mgmt) scrapes every zone.
+  - { service: node-exporter, port: 9100, from: mgmt, to: [app, data] }
+  - { service: edge-metrics, port: 8405, from: mgmt, to: app }
+  - { service: registry-metrics, port: 5000, from: mgmt, to: app }
+  - { service: status-page-metrics, port: 8444, from: mgmt, to: app }
+  - { service: postgres-exporter, port: 9187, from: mgmt, to: data }
+  - { service: redis-exporter, port: 9121, from: mgmt, to: data }
+  - { service: rabbitmq-metrics, port: 15691, from: mgmt, to: data }
+  - { service: garage-metrics, port: 3904, from: mgmt, to: data }
+
+  # Public entry points.
+  - { service: edge-http, port: 80, from: internet, to: app }
+  - { service: edge-https, port: 443, from: internet, to: app }
+  - { service: wireguard, port: 51820, proto: udp, from: internet, to: mgmt }
+
+  # Application traffic: the edge proxies and applications (app) to their backends.
+  - { service: registry, port: 5000, from: app, to: app }
+  - { service: status-page, port: 8444, from: app, to: app }
+  - { service: postgres-haproxy, port: 5000-5001, from: [app, mgmt], to: data }
+  - { service: valkey, port: 6379, from: [app, mgmt, data], to: data }
+  - { service: valkey-sentinel, port: 26379, from: [app, mgmt, data], to: data }
+  - { service: rabbitmq-amqps, port: 5671, from: app, to: data }
+  - { service: garage-s3, port: 3900, from: [app, mgmt, data], to: data }
+
+  # Replication inside the data zone (database ports of the cluster members).
+  - { service: postgres-replication, port: 5432, from: data, to: data }
+  - { service: etcd, port: 2379-2380, from: data, to: data }

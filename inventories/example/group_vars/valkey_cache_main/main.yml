@@ -1,7 +1,14 @@
 ---
 # Valkey instance cache-main (NET-01, NET-03): applications reach Valkey and Sentinel; members reach each
-# other on the same ports; Prometheus reaches redis_exporter.
+# other on the same ports; the control-plane services that use it (Forgejo's cache) by host address,
+# never the whole mgmt zone (NET-02); Prometheus reaches redis_exporter.
 firewall_rules_valkey_cache_main:
-  - { name: valkey-cache-main, port: 6379, sources: ["{{ network_zones.app }}", "{{ network_zones.data }}"] }
-  - { name: valkey-cache-main-sentinel, port: 26379, sources: ["{{ network_zones.app }}", "{{ network_zones.data }}"] }
-  - { name: valkey-cache-main-exporter, port: 9121, sources: "{{ monitoring_source_cidrs }}" }
+  - name: valkey-cache-main
+    port: 6379
+    class: database
+    sources: "{{ [network_zones.app, network_zones.data] + network_mgmt_datastore_client_cidrs }}"
+  - name: valkey-cache-main-sentinel
+    port: 26379
+    class: database
+    sources: "{{ [network_zones.app, network_zones.data] + network_mgmt_datastore_client_cidrs }}"
+  - { name: valkey-cache-main-exporter, port: 9121, class: metrics, sources: "{{ monitoring_source_cidrs }}" }

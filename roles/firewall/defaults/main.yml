@@ -8,8 +8,12 @@ firewall_ssh_port: 22
 #   port:    number or "start-end" (tcp and udp only)
 #   proto:   tcp | udp | vrrp (default tcp; vrrp is IP protocol 112 and takes no port)
 #   sources: list of CIDRs, or ["any"] for public services
+#   class:   admin | database | service | cluster | metrics | public (NET-02, NET-03). Admin and database
+#            rules may not allow "any" or the whole mgmt zone; tools/firewall_audit.py checks every rule
+#            of the example inventory against compliance/zone-flows.yml and requires a class.
 # Roles add their own rules through variables named firewall_rules_<role> (collected automatically).
 firewall_rules: []
+firewall_rule_classes: [admin, database, service, cluster, metrics, public]
 
 # Container ports published through Docker bypass the input chain; only these may be reached via DNAT.
 firewall_published_container_ports: []

@@ -15,3 +15,6 @@ galaxy_info:
       versions: [jammy, noble]
 dependencies:
   - role: versions
+  # Signature check before any container is created (CHG-08).
+  - role: image_verify
+    image_verify_images: ["{{ garage_cluster_image }}", "{{ garage_cluster_proxy_image }}"]

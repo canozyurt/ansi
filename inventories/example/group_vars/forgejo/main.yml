@@ -56,9 +56,13 @@ forgejo_orgs:
       - name: infra
         description: This repository's inventory and playbooks (deployed only from CI, CHG-02)
 
-# HTTPS from the edge proxies, the runners (app zone) and management networks (Prometheus, admins);
-# VRRP only between the Forgejo nodes (NET-01, NET-03).
+# HTTPS from the edge proxies and the runners (app zone), the VPN/bastion ranges and the monitoring
+# hosts, not the whole mgmt zone; VRRP only between the Forgejo nodes (NET-01, NET-02, NET-03).
+# class (admin, database, service, cluster, metrics, public) is read by tools/firewall_audit.py.
 firewall_rules_forgejo:
-  - { name: forgejo-https, port: 3443, sources: ["{{ network_zones.mgmt }}", "{{ network_zones.app }}"] }
+  - name: forgejo-https
+    port: 3443
+    class: service
+    sources: "{{ [network_zones.app] + firewall_mgmt_cidrs + monitoring_source_cidrs }}"
 firewall_rules_keepalived:
-  - { name: forgejo-vrrp, proto: vrrp, sources: ["{{ network_zones.mgmt }}"] }
+  - { name: forgejo-vrrp, proto: vrrp, class: cluster, sources: ["{{ network_zones.mgmt }}"] }

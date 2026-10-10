@@ -9,7 +9,10 @@ grc_admin_email: grc-break-glass@example.com
 grc_admin_password: "{{ vault_grc_admin_password }}"
 grc_oidc_client_secret: "{{ vault_grc_oidc_client_secret }}"
 
-# The edge proxy (app zone) and management networks reach the TLS terminator (NET-01, NET-03);
-# /metrics/ is limited to the monitoring networks inside it.
+# The edge proxy (app zone), the VPN/bastion ranges and the monitoring hosts reach the TLS terminator
+# (NET-01, NET-02, NET-03); /metrics/ is limited to the monitoring networks inside it.
 firewall_rules_grc:
-  - { name: grc-https, port: 8443, sources: ["{{ network_zones.app }}", "{{ network_zones.mgmt }}"] }
+  - name: grc-https
+    port: 8443
+    class: admin
+    sources: "{{ [network_zones.app] + firewall_mgmt_cidrs + monitoring_source_cidrs }}"

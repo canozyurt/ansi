@@ -67,6 +67,18 @@ rule against that policy, corrects drift, and exports the rules to
 artifact). Signed commits are verified (GPG and SSH keys, trust model `collaboratorcommitter`);
 set `require_signed_commits: true` in the template or per repository to require them.
 
+## Incident tracker (INC-01)
+
+With `forgejo_incident_tracker_enabled`, org_setup also creates `forgejo_incident_tracker_org`/
+`forgejo_incident_tracker_repo` (protected like the other repositories), the labels in
+`forgejo_incident_labels` (incident, sev1..sev4, postmortem-needed, postmortem, security) and the issue
+templates from `docs/templates` in `.forgejo/ISSUE_TEMPLATE/`. The templates go straight to `main` on the
+first run, before it is protected; later changes are proposed as a pull request from
+`forgejo_incident_template_branch`. The settings are exported to `forgejo_evidence_dir/incident-tracker.json`.
+Every node also gets `forgejo-incident-export.timer`: monthly, the active node exports all incident issues
+with their comments to `forgejo_incident_export_dir` (append-only backup) and writes retention metrics for
+the alerts in `group_vars/monitoring/incidents.yml` (docs/incident-response.md).
+
 ## Backup and recovery (BCK-01, BCK-04)
 
 `/usr/local/sbin/forgejo-backup-dump` (the backup `pre_command`) runs `forgejo dump` on the active

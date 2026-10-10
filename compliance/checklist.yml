@@ -292,8 +292,8 @@ requirements:
       iso27001: ["8.20", "8.22"]
       iso27017: ["CLD.13.1.4"]
     check: "Port scan from the internet finds no management ports"
-    status: designed
-    progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Remaining: admin UIs and databases of each service restricted to the same sources (several still allow the whole mgmt zone). Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested)."
+    status: implemented
+    progress: "SSH on every host only from bastion + VPN (+ gateway NAT addresses, automation runner); bastion SSH from the VPN only; the VPN routes into the mgmt zone only; tested in molecule/access. Edge: non-public services and Keycloak admin paths answer only edge_admin_cidrs (tested). Every firewall rule now carries a class; admin UIs/APIs and data stores allow only firewall_mgmt_cidrs plus named client hosts (group_vars/all/network.yml: monitoring, SIEM, control-plane data store clients) or declared client zones, never any or the whole mgmt zone (fixed: Prometheus, Alertmanager, Grafana, Keycloak, GRC, Wazuh indexer/API, Patroni API, PostgreSQL/Valkey/Garage clients, registry, status page, metrics ports). roles/firewall refuses admin/database rules open to any or the mgmt zone; tools/firewall_audit.py checks the rendered rule set of the example inventory in CI (.github/workflows/network.yml) and generates docs/network.md. Audit run locally on the example inventory; its unit tests (tools/tests) are written, not run; firewall changes not tested on hosts (not tested)."
   - id: NET-03
     requirement: "Management, application and data networks are separated; traffic between them is allowed by explicit rule"
     controls:
@@ -301,8 +301,8 @@ requirements:
       iso27001: ["8.22"]
       iso27017: ["CLD.9.5.1"]
     check: "Firewall rule test between zones"
-    status: designed
-    progress: "Zones defined in the inventory; inter-zone rules come with the service roles."
+    status: implemented
+    progress: "Zones as data: inventory groups mgmt/app/data (network_zone in group_vars/<zone>/zone.yml; vpn, bastion, dns in mgmt), CIDRs in network_zones, host addresses in group_vars/all/network.yml, allowed flows (service, port, from, to) in compliance/zone-flows.yml. tools/firewall_audit.py renders every host rule from the example inventory and fails on a source in another zone without a declared flow, on sources outside or spanning zones and on hosts outside their zone; port matrix in docs/network.md. CI job .github/workflows/network.yml runs the audit and tools/tests (fixture inventory with known violations); the audit was run locally, the tests are written but not run, no host-level firewall test between zones yet (not tested)."
   - id: NET-04
     requirement: "Public endpoints sit behind the reverse proxy with security headers, rate limits and WAF rules"
     controls:
@@ -433,8 +433,8 @@ requirements:
       iso27001: ["8.8", "8.19", "8.32"]
       iso27017: []
     check: "Registry trust store holds the CI signing keys; registry-check-signature fails under enforce for an unsigned image"
-    status: designed
-    progress: "roles/registry: Zot with Trivy CVE scanning, cosign/notation trust stores and registry-check-signature (registry_signature_policy off/warn/enforce); the unsigned-image refusal passed in molecule/registry. Remaining: CI signing step, roles pulling from the internal registry and calling the check before deploy."
+    status: implemented
+    progress: "roles/registry: Zot with Trivy CVE scanning, cosign/notation trust stores and registry-check-signature; the unsigned-image refusal passed in molecule/registry. CI: .github/workflows/images.yml and .forgejo/workflows/images.yml run tools/image_mirror.py (crane copy into <mirror>/<upstream path>, digest pins enforced, syft SPDX SBOM as a signed cosign attestation, cosign signature with an OpenBao transit key via hashivault:// or a CI secret key; pinned crane/cosign/syft via go install). image_registry_mirror (group_vars/all/images.yml) is applied once in roles/versions (tasks rewrite versions_images, so no service role changed); roles/image_verify (meta dependency of every container role) logs in to the mirror and runs registry-check-signature for each image before containers are created when image_signature_policy is enforce, keeping results under /var/lib/compliance-evidence/image-signatures. Mirror dry run checked locally; workflows, mirror pulls and the check on hosts not run (not tested). Not covered: Forgejo Actions job images pulled by the runner."
   - id: DAT-01
     requirement: "Each product instance gets its own database or bucket and credentials"
     controls:
@@ -504,5 +504,5 @@ requirements:
       iso27001: ["5.24", "5.25", "5.26", "5.27"]
       iso27017: []
     check: "Incident issues carry severity, timeline and a linked postmortem; tracker retention reviewed yearly"
-    status: designed
-    progress: "docs/incident-response.md: severities, roles, alert-to-incident flow, Forgejo issue and postmortem templates, status page comms (roles/status_page), 12-month retention. Remaining: Forgejo labels/templates provisioned by the Forgejo role; retention check."
+    status: implemented
+    progress: "docs/incident-response.md: severities, roles, alert-to-incident flow, templates, status page comms, 12-month retention. roles/forgejo org_setup provisions the incident tracker (forgejo_incident_tracker_*: platform/incidents in the example) with branch protection, labels incident, sev1-sev4, postmortem-needed, postmortem, security, and the docs/templates issue templates in .forgejo/ISSUE_TEMPLATE (later changes as a pull request); settings exported as evidence. forgejo-incident-export.timer exports all incident issues monthly to /var/lib/compliance-evidence/incidents (append-only backup) with metrics; alerts for stale export, records deleted inside retention, overdue postmortems and the yearly retention review (group_vars/monitoring/incidents.yml). Export script checked against a stub API locally; role tasks and alerts not run (not tested)."

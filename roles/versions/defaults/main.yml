@@ -107,3 +107,7 @@ versions_upgrade_from:
   wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.7
   wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.7
   wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.7
+
+# Images that keep their upstream reference when image_registry_mirror is set (CHG-08, roles/versions
+# tasks): the registry cannot serve its own first pull. Pin them by digest if you can.
+versions_mirror_exclude: [zot, zot_build_base]

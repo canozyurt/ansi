@@ -1,0 +1,96 @@
+---
+# Mirror every pinned image into the internal Zot registry, sign it with cosign and attach its SBOM
+# (CHG-08). Hosts then pull <mirror>/<upstream reference> (image_registry_mirror, roles/versions) and
+# refuse unsigned images (image_signature_policy: enforce, roles/image_verify). The same job for
+# GitHub Actions is .github/workflows/images.yml; tools/image_mirror.py does the work.
+#
+# Needs a runner that reaches the internal registry (repository variable IMAGE_MIRROR_RUNNER, e.g.
+# a runner label; the default "docker" label of roles/forgejo_runner) and these settings:
+#   vars.IMAGE_MIRROR                 e.g. registry.example.internal
+#   secrets.REGISTRY_USER / _PASSWORD robot "ci-mirror" (registry_robots in group_vars/registry)
+#   signing key, one of:
+#     OpenBao transit (preferred, the key never leaves OpenBao): vars.COSIGN_KEY = hashivault://ci-image-signing,
+#       secrets.VAULT_ADDR and secrets.VAULT_TOKEN (a token limited to transit/sign/ci-image-signing)
+#     key pair in CI secrets: secrets.COSIGN_PRIVATE_KEY and secrets.COSIGN_PASSWORD
+# The public key goes into registry_trust_cosign_keys.ci (cosign public-key --key <same reference>).
+name: Mirror and sign images
+
+on:
+  push:
+    branches: [main]
+    paths: [roles/versions/defaults/main.yml, tools/image_mirror.py, .forgejo/workflows/images.yml]
+  schedule:
+    - cron: "41 3 * * *"  # daily: re-mirror is a no-op unless an upstream tag moved (digest pins fail loudly)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-mirror
+  cancel-in-progress: false
+
+env:
+  # CI tool versions (CHG-05). go install verifies each module against the Go checksum database.
+  GO_VERSION: "1.24.6"
+  CRANE_VERSION: v0.20.6
+  COSIGN_VERSION: v2.5.3
+  SYFT_VERSION: v1.31.0
+
+jobs:
+  mirror:
+    name: Mirror, SBOM and sign
+    runs-on: ${{ vars.IMAGE_MIRROR_RUNNER || 'docker' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Install pinned crane, cosign and syft
+        run: |
+          go install "github.com/google/go-containerregistry/cmd/crane@${CRANE_VERSION}"
+          go install "github.com/sigstore/cosign/v2/cmd/cosign@${COSIGN_VERSION}"
+          go install "github.com/anchore/syft/cmd/syft@${SYFT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          pip install PyYAML==6.0.2
+
+      - name: Write the signing key from CI secrets (when not using OpenBao transit)
+        if: ${{ vars.COSIGN_KEY == '' }}
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$COSIGN_PRIVATE_KEY" > "$RUNNER_TEMP/cosign.key"
+          echo "COSIGN_KEY=$RUNNER_TEMP/cosign.key" >> "$GITHUB_ENV"
+
+      - name: Mirror, attach SBOMs and sign (CHG-08)
+        env:
+          IMAGE_MIRROR: ${{ vars.IMAGE_MIRROR }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+        run: |
+          if [ -n "${{ vars.COSIGN_KEY }}" ]; then export COSIGN_KEY="${{ vars.COSIGN_KEY }}"; fi
+          python3 tools/image_mirror.py --report image-mirror-report.json
+
+      - name: Remove the key file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/cosign.key"
+
+      - name: Keep the report as evidence
+        if: always()
+        uses: actions/upload-artifact@v3  # Forgejo supports the v3 artifact protocol
+        with:
+          name: image-mirror-report
+          path: image-mirror-report.json
+          retention-days: 90

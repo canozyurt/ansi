@@ -4,7 +4,8 @@ about: Blameless review of a SEV1/SEV2 incident (docs/incident-response.md)
 title: "Postmortem: <incident title>"
 labels: [postmortem]
 ---
-<!-- Copy to .forgejo/issue_template/postmortem.md. Due within 5 working days of resolution.
+<!-- Provisioned to .forgejo/ISSUE_TEMPLATE/postmortem.md by roles/forgejo. Due within 5 working days of resolution;
+     remove postmortem-needed from the incident when this is merged.
      Blameless: describe systems and decisions, not people. -->
 
 - **Incident:** #<issue>

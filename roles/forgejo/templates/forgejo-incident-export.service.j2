@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Export incident issues to the evidence store (INC-01)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/forgejo-incident-export
+SyslogIdentifier=forgejo-incident-export
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{ forgejo_incident_export_dir }} {{ forgejo_textfile_dir }}

@@ -13,9 +13,22 @@
     forgejo_api: "https://127.0.0.1:{{ forgejo_https_port }}/api/v1"
     forgejo_api_headers:
       Authorization: "token {{ forgejo_api_token }}"
-    forgejo_repo_list: >-
+    # forgejo_orgs plus the incident tracker repository (INC-01) when it is enabled and not listed.
+    forgejo_orgs_effective: >-
       {%- set out = [] -%}
       {%- for org in forgejo_orgs -%}
+      {%-   set repos = org.repos | default([]) -%}
+      {%-   if forgejo_incident_tracker_enabled | bool and org.name == forgejo_incident_tracker_org
+              and forgejo_incident_tracker_repo not in repos | map(attribute='name') | list -%}
+      {%-     set repos = repos + [{'name': forgejo_incident_tracker_repo,
+                                    'description': forgejo_incident_tracker_description}] -%}
+      {%-   endif -%}
+      {%-   set _ = out.append(org | combine({'repos': repos})) -%}
+      {%- endfor -%}
+      {{ out }}
+    forgejo_repo_list: >-
+      {%- set out = [] -%}
+      {%- for org in forgejo_orgs_effective -%}
       {%-   for repo in org.repos | default([]) -%}
       {%-     set _ = out.append({'org': org.name, 'name': repo.name, 'description': repo.description | default(''),
                                   'private': repo.private | default(true)}) -%}
@@ -24,7 +37,7 @@
       {{ out }}
     forgejo_protection_list: >-
       {%- set out = [] -%}
-      {%- for org in forgejo_orgs -%}
+      {%- for org in forgejo_orgs_effective -%}
       {%-   for repo in org.repos | default([]) -%}
       {%-     for branch in repo.protected_branches | default(['main']) -%}
       {%-       set _ = out.append({'org': org.name, 'repo': repo.name, 'branch': branch,
@@ -114,6 +127,11 @@
       when: item.status == 404
       changed_when: true
       tags: [chk_chg_01]
+
+    # Before the protection rules below: on the first run the templates go straight to main.
+    - name: Set up the incident tracker (INC-01)
+      ansible.builtin.import_tasks: incident_tracker.yml
+      when: forgejo_incident_tracker_enabled | bool
 
     - name: Look up the branch protection rules
       ansible.builtin.uri:

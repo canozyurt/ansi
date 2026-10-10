@@ -1,10 +1,10 @@
 ---
 # RabbitMQ cluster mq-main (NET-01, NET-03).
 firewall_rules_rabbitmq_mq_main:
-  - { name: rabbitmq-mq-main-amqps, port: 5671, sources: ["{{ network_zones.app }}"] }
+  - { name: rabbitmq-mq-main-amqps, port: 5671, class: database, sources: ["{{ network_zones.app }}"] }
   # Management UI and HTTP API: administrators through the VPN or bastion.
-  - { name: rabbitmq-mq-main-management, port: 15671, sources: "{{ firewall_mgmt_cidrs }}" }
-  - { name: rabbitmq-mq-main-metrics, port: 15691, sources: "{{ monitoring_source_cidrs }}" }
+  - { name: rabbitmq-mq-main-management, port: 15671, class: admin, sources: "{{ firewall_mgmt_cidrs }}" }
+  - { name: rabbitmq-mq-main-metrics, port: 15691, class: metrics, sources: "{{ monitoring_source_cidrs }}" }
   # Erlang port mapper and distribution between the members (and CLI tools on the members).
-  - { name: rabbitmq-mq-main-epmd, port: 4369, sources: ["{{ network_zones.data }}"] }
-  - { name: rabbitmq-mq-main-dist, port: 25672, sources: ["{{ network_zones.data }}"] }
+  - { name: rabbitmq-mq-main-epmd, port: 4369, class: cluster, sources: ["{{ network_zones.data }}"] }
+  - { name: rabbitmq-mq-main-dist, port: 25672, class: cluster, sources: ["{{ network_zones.data }}"] }

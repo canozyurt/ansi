@@ -1,0 +1,92 @@
+---
+# Monthly export of the incident tracker to the evidence store with retention metrics (INC-01).
+# Every Forgejo node gets the timer; only the active node (Forgejo answering on 127.0.0.1) exports.
+- name: Keep incident exports for at least the 12-month retention (INC-01)
+  ansible.builtin.assert:
+    that: forgejo_incident_export_keep_days | int >= 400
+    fail_msg: forgejo_incident_export_keep_days must be at least 400 (12 months plus the monthly schedule).
+    quiet: true
+  tags: [chk_inc_01]
+
+- name: Create the incident evidence and textfile directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ forgejo_incident_export_dir }}", mode: "0750" }
+    - { path: "{{ forgejo_textfile_dir }}", mode: "0755" }
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [chk_inc_01]
+
+- name: Store the API token for the export (0600 root)
+  ansible.builtin.copy:
+    content: "{{ forgejo_automation_token }}\n"
+    dest: "{{ forgejo_config_dir }}/secrets/incident-export.token"
+    owner: root
+    group: root
+    mode: "0600"
+  when: forgejo_automation_token | length > 0
+  no_log: true
+  tags: [chk_sec_02]
+
+- name: Write the export settings
+  ansible.builtin.copy:
+    content: "{{ forgejo_incident_export_config | to_nice_json }}\n"
+    dest: /etc/forgejo-incident-export.json
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    forgejo_incident_export_config:
+      api: "https://127.0.0.1:{{ forgejo_https_port }}/api/v1"
+      root_url: "{{ forgejo_root_url }}"
+      org: "{{ forgejo_incident_tracker_org }}"
+      repo: "{{ forgejo_incident_tracker_repo }}"
+      token_file: >-
+        {{ forgejo_config_dir }}/secrets/{{ 'incident-export.token' if forgejo_automation_token | length > 0 else 'automation.token' }}
+      export_dir: "{{ forgejo_incident_export_dir }}"
+      textfile_dir: "{{ forgejo_textfile_dir }}"
+      keep_days: "{{ forgejo_incident_export_keep_days | int }}"
+      retention_days: 365
+  tags: [chk_inc_01]
+
+- name: Install the export script
+  ansible.builtin.copy:
+    src: forgejo-incident-export
+    dest: /usr/local/sbin/forgejo-incident-export
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [chk_inc_01]
+
+- name: Install the export service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [forgejo-incident-export.service, forgejo-incident-export.timer]
+  tags: [chk_inc_01]
+
+- name: Enable the monthly export
+  ansible.builtin.systemd_service:
+    name: forgejo-incident-export.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [chk_inc_01]
+
+- name: Keep the incident exports in the append-only backup (INC-01, EVD-02)
+  ansible.builtin.include_role:
+    name: backup_register
+  vars:
+    backup_register_name: incident-records
+    backup_register_paths: ["{{ forgejo_incident_export_dir }}"]
+    backup_register_rpo_hours: 24
+    backup_register_rto_hours: 24
+  tags: [chk_inc_01]

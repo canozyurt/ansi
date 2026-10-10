@@ -1,0 +1,114 @@
+---
+- name: Check the image provenance settings
+  ansible.builtin.assert:
+    that:
+      - image_verify_policy in ['off', 'warn', 'enforce']
+      - image_verify_policy != 'enforce' or image_verify_mirror | length > 0
+    fail_msg: >-
+      image_signature_policy must be off, warn or enforce; enforce needs image_registry_mirror (deployed images
+      come from the internal registry).
+    quiet: true
+  tags: [chk_chg_08]
+
+- name: Select the images to verify
+  ansible.builtin.set_fact:
+    image_verify_checked: >-
+      {{ image_verify_images | select | reject('in', image_verify_skip_images)
+         | reject('search', image_verify_skip_patterns | join('|')) | unique | list }}
+
+- name: Refuse images that do not come from the internal registry (CHG-08)
+  ansible.builtin.assert:
+    that: item.startswith(image_verify_mirror ~ '/')
+    fail_msg: "{{ item }} does not come from {{ image_verify_mirror }} (image_signature_policy: enforce)."
+    quiet: true
+  loop: "{{ image_verify_checked }}"
+  when: image_verify_policy == 'enforce'
+  tags: [chk_chg_08]
+
+- name: Log in to the internal registry mirror
+  community.docker.docker_login:
+    registry_url: "{{ image_verify_mirror.split('/') | first }}"
+    username: "{{ image_verify_pull_user }}"
+    password: "{{ image_verify_pull_password }}"
+  when:
+    - image_verify_mirror | length > 0
+    - image_verify_pull_user | length > 0
+  no_log: true
+  tags: [chk_chg_08]
+
+- name: Verify signatures
+  when:
+    - image_verify_policy != 'off'
+    - image_verify_checked | length > 0
+  block:
+    - name: Create the configuration and evidence directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop:
+        - "{{ image_verify_auth_file | dirname }}"
+        - "{{ image_verify_evidence_dir }}"
+
+    # One implementation of the check: the registry role's template, rendered for this host.
+    - name: Install registry-check-signature
+      ansible.builtin.template:
+        src: "{{ role_path }}/../registry/templates/registry-check-signature.j2"
+        dest: "{{ image_verify_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      vars:
+        registry_signature_policy: "{{ image_verify_policy }}"
+        registry_hostname: "{{ image_verify_registry_url }}"
+      tags: [chk_chg_08]
+
+    - name: Store the login the check uses (0600 root)
+      ansible.builtin.copy:
+        content: "{{ image_verify_pull_user }}:{{ image_verify_pull_password }}\n"
+        dest: "{{ image_verify_auth_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: image_verify_pull_user | length > 0
+      no_log: true
+      tags: [chk_sec_02]
+
+    # The script exits 1 only under enforce; under warn it reports and exits 0. The Zot repository name
+    # is the reference without the mirror host; a tag@digest reference is checked by digest.
+    - name: Check each image for a trusted signature before any container is created (CHG-08)
+      ansible.builtin.command:
+        argv:
+          - "{{ image_verify_script }}"
+          - "{{ item.split('/', 1) | last | regex_replace(':[^/@]+@', '@') }}"
+      environment:
+        REGISTRY_SIGNATURE_POLICY: "{{ image_verify_policy }}"
+        REGISTRY_URL: "{{ image_verify_registry_url }}"
+        REGISTRY_AUTH_FILE: "{{ image_verify_auth_file }}"
+      loop: "{{ image_verify_checked }}"
+      register: image_verify_results
+      changed_when: false
+      tags: [chk_chg_08]
+
+    - name: Keep the check results as evidence
+      ansible.builtin.copy:
+        content: "{{ item.stdout_lines | last | default('{}') }}\n"
+        dest: "{{ image_verify_evidence_dir }}/{{ item.item | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+        owner: root
+        group: root
+        mode: "0640"
+      loop: "{{ image_verify_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags: [chk_chg_08]
+
+    - name: Register the signature evidence with the backup role
+      ansible.builtin.include_role:
+        name: backup_register
+      vars:
+        backup_register_name: image-signatures
+        backup_register_paths: ["{{ image_verify_evidence_dir }}"]
+        backup_register_rpo_hours: 24
+        backup_register_rto_hours: 24
