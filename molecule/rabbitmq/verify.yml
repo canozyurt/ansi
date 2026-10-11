@@ -153,20 +153,28 @@
           - "'rabbitmq_alarms_memory_used_watermark' in rmq_metrics.content"
       tags: [chk_log_05]
 
+    # RabbitMQ 4.x has no /api/auth; the UI reads its login settings from the bootstrap script,
+    # which embeds them as set_oauth_settings(<json>).
     - name: Read the management UI login settings
       ansible.builtin.uri:
-        url: "{{ rmq_api }}/auth"
+        url: "{{ rmq_api | regex_replace('/api$', '') }}/js/oidc-oauth/bootstrap.js"
         ca_path: "{{ rmq_ca }}"
-      register: rmq_auth
+        return_content: true
+      register: rmq_bootstrap
+      tags: [chk_iam_01]
+
+    - name: Extract the login settings
+      ansible.builtin.set_fact:
+        rmq_auth_settings: "{{ rmq_bootstrap.content | regex_search('set_oauth_settings\\((.*?)\\);', '\\1', multiline=true) | first | from_json }}"
       tags: [chk_iam_01]
 
     - name: Check that the management UI logs in through Keycloak only
       ansible.builtin.assert:
         that:
-          - rmq_auth.json.oauth_enabled | bool
-          - rmq_auth.json.oauth_disable_basic_auth | default(true) | bool
-          - rmq_auth.json.oauth_client_id | default(rmq_auth.json.oauth_resource_servers | default({}) | string) is search('rabbitmq-mq-lab')
-        fail_msg: "{{ rmq_auth.json | to_json }}"
+          - rmq_auth_settings.oauth_enabled | bool
+          - rmq_auth_settings.oauth_disable_basic_auth | default(true) | bool
+          - rmq_auth_settings.oauth_client_id | default(rmq_auth_settings.oauth_resource_servers | default({}) | string) is search('rabbitmq-mq-lab')
+        fail_msg: "{{ rmq_auth_settings | to_json }}"
       tags: [chk_iam_01]
 
     - name: Read the role mapping in the configuration
