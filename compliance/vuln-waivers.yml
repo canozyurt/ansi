@@ -15,4 +15,428 @@
 #     reason: "Only reachable through the X feature, which this repo disables (roles/edge)."
 #     expires: 2026-12-31
 #     approved_by: security-admin
-waivers: []
+waivers:
+  - id: CVE-2026-42216
+    image: docker.io/library/node
+    package: libopenexr-3-1-30
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-42216
+    image: docker.io/library/node
+    package: libopenexr-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-42217
+    image: docker.io/library/node
+    package: libopenexr-3-1-30
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-42217
+    image: docker.io/library/node
+    package: libopenexr-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-43185
+    image: docker.io/library/node
+    package: linux-libc-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-44172
+    image: docker.io/library/node
+    package: libmariadb-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-44172
+    image: docker.io/library/node
+    package: libmariadb-dev-compat
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-44172
+    image: docker.io/library/node
+    package: libmariadb3
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-44172
+    image: docker.io/library/node
+    package: mariadb-common
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-49261
+    image: docker.io/library/node
+    package: libmariadb-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-49261
+    image: docker.io/library/node
+    package: libmariadb-dev-compat
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-49261
+    image: docker.io/library/node
+    package: libmariadb3
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-49261
+    image: docker.io/library/node
+    package: mariadb-common
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-60002
+    image: docker.io/library/node
+    package: openssh-client
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-6653
+    image: docker.io/library/node
+    package: libxml2
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-6653
+    image: docker.io/library/node
+    package: libxml2-dev
+    reason: >-
+      No fixed Debian trixie package as of 2026-10-11; 24.21.0-trixie is the newest Node 24 image (Forgejo Actions
+      job container, not a deployed service). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-68121
+    image: docker.io/library/postgres
+    package: stdlib
+    reason: >-
+      Go stdlib in the gosu helper binary; 18.6-alpine is the newest PostgreSQL 18 image as of 2026-10-11 (used only
+      as the pg_dump client). No fixed upstream image yet; tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-68121
+    image: docker.io/rclone/rclone
+    package: stdlib
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-31789
+    image: docker.io/rclone/rclone
+    package: libcrypto3
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-31789
+    image: docker.io/rclone/rclone
+    package: libssl3
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-33186
+    image: docker.io/rclone/rclone
+    package: google.golang.org/grpc
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-41176
+    image: docker.io/rclone/rclone
+    package: github.com/rclone/rclone
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-41179
+    image: docker.io/rclone/rclone
+    package: github.com/rclone/rclone
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-49980
+    image: docker.io/rclone/rclone
+    package: github.com/rclone/rclone
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-88018
+    image: docker.io/rclone/rclone
+    package: github.com/rclone/rclone
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-88044
+    image: docker.io/rclone/rclone
+    package: github.com/rclone/rclone
+    reason: >-
+      Fixed only in rclone 1.73.5/1.74.3/1.75.1, several minors ahead; 1.71.2 (patch) and 1.72.0 (next minor) were
+      rescanned as of 2026-10-11 with the same CRITICALs. Tracked for a planned rclone minor upgrade.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-68121
+    image: docker.io/restic/rest-server
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 0.14.0 is the newest rest-server release as of 2026-10-11. Tracked for the next
+      upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-31789
+    image: docker.io/restic/rest-server
+    package: libcrypto3
+    reason: >-
+      No fixed upstream image yet: 0.14.0 is the newest rest-server release as of 2026-10-11. Tracked for the next
+      upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-31789
+    image: docker.io/restic/rest-server
+    package: libssl3
+    reason: >-
+      No fixed upstream image yet: 0.14.0 is the newest rest-server release as of 2026-10-11. Tracked for the next
+      upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-7783
+    image: docker.io/wazuh/wazuh-dashboard
+    package: form-data
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-106445
+    image: docker.io/wazuh/wazuh-dashboard
+    package: handlebars
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-106446
+    image: docker.io/wazuh/wazuh-dashboard
+    package: handlebars
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-59873
+    image: docker.io/wazuh/wazuh-dashboard
+    package: tar
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-85061
+    image: docker.io/wazuh/wazuh-dashboard
+    package: maplibre-gl
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-90711
+    image: docker.io/wazuh/wazuh-dashboard
+    package: proxy-addr
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-14813
+    image: docker.io/wazuh/wazuh-indexer
+    package: org.bouncycastle:bcprov-jdk15to18
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-75595
+    image: docker.io/wazuh/wazuh-indexer
+    package: io.netty:netty-handler
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-8763
+    image: docker.io/wazuh/wazuh-indexer
+    package: org.bouncycastle:bc-fips
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-8763
+    image: docker.io/wazuh/wazuh-indexer
+    package: org.bouncycastle:bcprov-jdk15to18
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-8763
+    image: docker.io/wazuh/wazuh-indexer
+    package: org.bouncycastle:bcprov-jdk18on
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2022-23806
+    image: docker.io/wazuh/wazuh-manager
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2023-24538
+    image: docker.io/wazuh/wazuh-manager
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2023-24540
+    image: docker.io/wazuh/wazuh-manager
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2024-24790
+    image: docker.io/wazuh/wazuh-manager
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-68121
+    image: docker.io/wazuh/wazuh-manager
+    package: stdlib
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-102268
+    image: docker.io/wazuh/wazuh-manager
+    package: PyJWT
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-33186
+    image: docker.io/wazuh/wazuh-manager
+    package: google.golang.org/grpc
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-63374
+    image: docker.io/wazuh/wazuh-manager
+    package: anyio
+    reason: >-
+      No fixed upstream image yet: 4.14.8 is the newest Wazuh release as of 2026-10-11 (manager, indexer and
+      dashboard share one version). Tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-43185
+    image: ghcr.io/intuitem/ciso-assistant-community/backend
+    package: linux-libc-dev
+    reason: >-
+      No fixed Debian package as of 2026-10-11; linux-libc-dev only ships kernel headers, the container runs on the
+      host kernel. No fixed upstream image yet; tracked for the next upstream release.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2025-68121
+    image: quay.io/oauth2-proxy/oauth2-proxy
+    package: stdlib
+    reason: >-
+      Trivy lists the oauth2-proxy fix in v7.15.2, three minors ahead of the pinned v7.12 line (CI scan of
+      2026-10-11). Tracked for a planned oauth2-proxy minor upgrade, re-scanned then.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-33186
+    image: quay.io/oauth2-proxy/oauth2-proxy
+    package: google.golang.org/grpc
+    reason: >-
+      Trivy lists the oauth2-proxy fix in v7.15.2, three minors ahead of the pinned v7.12 line (CI scan of
+      2026-10-11). Tracked for a planned oauth2-proxy minor upgrade, re-scanned then.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-34457
+    image: quay.io/oauth2-proxy/oauth2-proxy
+    package: github.com/oauth2-proxy/oauth2-proxy/v7
+    reason: >-
+      Trivy lists the oauth2-proxy fix in v7.15.2, three minors ahead of the pinned v7.12 line (CI scan of
+      2026-10-11). Tracked for a planned oauth2-proxy minor upgrade, re-scanned then.
+    expires: 2027-01-09
+    approved_by: security-admin
+  - id: CVE-2026-40575
+    image: quay.io/oauth2-proxy/oauth2-proxy
+    package: github.com/oauth2-proxy/oauth2-proxy/v7
+    reason: >-
+      Trivy lists the oauth2-proxy fix in v7.15.2, three minors ahead of the pinned v7.12 line (CI scan of
+      2026-10-11). Tracked for a planned oauth2-proxy minor upgrade, re-scanned then.
+    expires: 2027-01-09
+    approved_by: security-admin
