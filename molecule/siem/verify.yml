@@ -220,7 +220,10 @@
 
     - name: The inventory knows the host's operating system
       ansible.builtin.assert:
-        that: "'Ubuntu' in verify_os.json.data.affected_items[0].os.name"
+        that: verify_os_expected in verify_os.json.data.affected_items[0].os.name
+      vars:
+        # The scenario runs on every supported distro (MOLECULE_DISTRO), under one instance name.
+        verify_os_expected: "{{ 'Debian' if lookup('env', 'MOLECULE_DISTRO') is match('debian') else 'Ubuntu' }}"
       tags: [chk_evd_03]
 
     - name: Read the agent's active file integrity and rootcheck configuration
