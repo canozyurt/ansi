@@ -118,8 +118,10 @@ ha_drill_openbao:
   # The health tasks unseal the restarted node (Shamir keys from the inventory) and wait for it to rejoin.
   health: { role: openbao, tasks_from: health }
   probes:
-    - name: A new active node answers through the service name
-      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/health"
+    # The service name may reach a standby (DNS round robin, or a balancer that does not check for the
+    # active node), which answers 429 to a plain health check; the write below proves the new active node.
+    - name: An unsealed node answers through the service name
+      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/health?standbyok=true"
       status: [200]
     - name: A write reaches the new active node (response wrapping stores a token in Raft)
       url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/wrapping/wrap"
