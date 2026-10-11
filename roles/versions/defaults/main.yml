@@ -99,14 +99,12 @@ versions_tools:
     url: https://github.com/ComplianceAsCode/content/releases/download/v0.1.76/scap-security-guide-0.1.76.zip
     sha256: 5a30a4bf868859c5130378d99cc09027ad1d9a7b4988d21751e84a597bb01627
 
-  # Not pinned yet (tools/pins.py requires a SHA-256, which nobody has recorded from the release page):
-  # roles/docker_bench refuses to run until this entry exists with its sha256. To pin, copy it
-  # uncommented with the SHA-256 of the archive and list it under the "OpenSCAP and
-  # docker-bench-security" tool in compliance/tools.yml (versions: [tools/...]).
-  #   docker_bench_security:
-  #     version: 1.6.0
-  #     url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
-  #     sha256: <sha256 of the archive>
+  # CIS Docker Benchmark checks for roles/docker_bench. SHA-256 of the tag archive, recorded on the
+  # test runner on 2026-10-11.
+  docker_bench_security:
+    version: 1.6.0
+    url: https://github.com/docker/docker-bench-security/archive/refs/tags/v1.6.0.tar.gz
+    sha256: 7ff647e773c02fceec8d82d83aeccb68d7bcb9cd49ef1dfeb577ba3f1c135d4e
 
 # PostgreSQL server image recipe (roles/postgres_cluster): Ubuntu archive packages pinned to exact
 # versions (PostgreSQL 18 is in main, with Canonical security maintenance) and Patroni from PyPI,
