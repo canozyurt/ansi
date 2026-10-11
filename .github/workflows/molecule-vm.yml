@@ -129,6 +129,12 @@ jobs:
               echo "--- $unit"
               docker exec "$c" journalctl -u "$unit" --no-pager -n 40 2>/dev/null || true
             done
+            # Certificates the services present and the bundles they trust (fingerprints only).
+            docker exec "$c" sh -c 'command -v openssl >/dev/null || exit 0
+              for f in $(find /opt /etc/compliant-infra -name tls.crt -o -name ca-bundle.crt 2>/dev/null); do
+                echo "--- $f"
+                awk "/BEGIN/{c=\"openssl x509 -noout -subject -fingerprint -sha256\"} {print | c} /END/{close(c)}" "$f"
+              done' 2>/dev/null || true
             # Service containers inside the test container: their recent errors.
             docker exec "$c" sh -c 'command -v docker' >/dev/null 2>&1 || { echo "::endgroup::"; continue; }
             for s in $(docker exec "$c" docker ps -a --format '{{.Names}}' 2>/dev/null); do
