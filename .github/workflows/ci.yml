@@ -225,6 +225,13 @@ jobs:
           - garage
           - garage-upgrade
     steps:
+      # The Wazuh images do not fit next to the toolchains preinstalled on the hosted runner.
+      - name: Free disk space for the SIEM images
+        if: startsWith(matrix.scenario, 'siem')
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
