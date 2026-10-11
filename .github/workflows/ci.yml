@@ -121,12 +121,13 @@ jobs:
 
       - name: SBOM of every pinned image and of the repository (syft) [chk_chg_05]
         run: |
-          mkdir -p sbom
-          docker run --rm --user "$(id -u):$(id -g)" --tmpfs=/tmp --env=HOME=/tmp -v "$PWD:/work" -w /work "$SYFT_IMAGE" \
-            dir:/work --exclude ./sbom --exclude ./trivy -o spdx-json=/work/sbom/repository.spdx.json
+          # Syft runs as the runner user, which cannot write the image's /tmp: give it a scratch dir.
+          mkdir -p sbom .syft-tmp
+          docker run --rm --user "$(id -u):$(id -g)" --env=TMPDIR=/work/.syft-tmp --env=HOME=/work/.syft-tmp -v "$PWD:/work" -w /work "$SYFT_IMAGE" \
+            dir:/work --exclude ./sbom --exclude ./trivy --exclude ./.syft-tmp -o spdx-json=/work/sbom/repository.spdx.json
           while read -r image; do
             out="sbom/$(echo "$image" | tr '/:@' '___').spdx.json"
-            docker run --rm --user "$(id -u):$(id -g)" --tmpfs=/tmp --env=HOME=/tmp -v "$PWD:/work" "$SYFT_IMAGE" \
+            docker run --rm --user "$(id -u):$(id -g)" --env=TMPDIR=/work/.syft-tmp --env=HOME=/work/.syft-tmp -v "$PWD:/work" "$SYFT_IMAGE" \
               "registry:$image" -o "spdx-json=/work/$out"
           done < images.txt
 
