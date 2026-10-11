@@ -1,0 +1,24 @@
+# Findings of the gitleaks history scan (SEC-01) that are Molecule throwaway credentials and test keys,
+# committed before the test-only- naming rule in .gitleaks.toml covered them. Fingerprints are
+# commit:path:rule:line, so they match only these exact historical lines; new findings still fail CI.
+# Never add a real secret here: rotate it and remove it from history instead.
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/garage-upgrade/prepare.yml:generic-api-key:33
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/garage-upgrade/verify.yml:generic-api-key:40
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/garage-upgrade/molecule.yml:generic-api-key:38
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/garage-upgrade/molecule.yml:generic-api-key:45
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/garage-upgrade/molecule.yml:generic-api-key:48
+b52c383e9b4fa63c898352a5f3e612e1f309053b:molecule/siem-upgrade/molecule.yml:generic-api-key:54
+a701d6bd7470d4d166f73aa496a2f2bfa1918261:molecule/forgejo-upgrade/molecule.yml:generic-api-key:47
+a701d6bd7470d4d166f73aa496a2f2bfa1918261:molecule/forgejo-upgrade/molecule.yml:generic-api-key:48
+a701d6bd7470d4d166f73aa496a2f2bfa1918261:molecule/forgejo-upgrade/molecule.yml:generic-api-key:63
+3b31b3ca4627242a7867e21b88315da53023d4cb:molecule/garage/molecule.yml:generic-api-key:34
+3b31b3ca4627242a7867e21b88315da53023d4cb:molecule/garage/molecule.yml:generic-api-key:41
+3b31b3ca4627242a7867e21b88315da53023d4cb:molecule/garage/molecule.yml:generic-api-key:44
+3b31b3ca4627242a7867e21b88315da53023d4cb:molecule/garage/verify.yml:generic-api-key:11
+3b31b3ca4627242a7867e21b88315da53023d4cb:molecule/garage/verify.yml:generic-api-key:12
+4fb8dfcff263eb02bf35f2698f115a515e4842b6:molecule/siem/molecule.yml:generic-api-key:51
+64e9f56cff1559d331e22cbd286b06a917a45622:molecule/forgejo/molecule.yml:generic-api-key:47
+64e9f56cff1559d331e22cbd286b06a917a45622:molecule/forgejo/molecule.yml:generic-api-key:48
+64e9f56cff1559d331e22cbd286b06a917a45622:molecule/forgejo/molecule.yml:generic-api-key:63
+de0e516700c9256499f90427204f77d51aef0082:molecule/access/verify.yml:generic-api-key:8
+de0e516700c9256499f90427204f77d51aef0082:molecule/access/verify.yml:generic-api-key:9
