@@ -119,14 +119,15 @@ jobs:
           echo "TRIVY_IMAGE=$trivy" >> "$GITHUB_ENV"
           cat images.txt
 
+      # syft runs as the runner's uid, which cannot write the image's /tmp: give it a private one.
       - name: SBOM of every pinned image and of the repository (syft) [chk_chg_05]
         run: |
           mkdir -p sbom
-          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work "$SYFT_IMAGE" \
+          docker run --rm --user "$(id -u):$(id -g)" --tmpfs=/tmp:rw,exec,mode=1777 -v "$PWD:/work" -w /work "$SYFT_IMAGE" \
             dir:/work --exclude ./sbom --exclude ./trivy -o spdx-json=/work/sbom/repository.spdx.json
           while read -r image; do
             out="sbom/$(echo "$image" | tr '/:@' '___').spdx.json"
-            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" "$SYFT_IMAGE" \
+            docker run --rm --user "$(id -u):$(id -g)" --tmpfs=/tmp:rw,exec,mode=1777 -v "$PWD:/work" "$SYFT_IMAGE" \
               "registry:$image" -o "spdx-json=/work/$out"
           done < images.txt
 
