@@ -116,7 +116,10 @@ jobs:
 
       - name: molecule test -s ${{ matrix.scenario }}
         if: steps.upgrade_path.outputs.skip != 'true'
-        run: molecule test -s ${{ matrix.scenario }} --destroy never
+        # --destroy never also skips the initial destroy: clear state a cancelled job may have left behind.
+        run: |
+          molecule destroy -s ${{ matrix.scenario }}
+          molecule test -s ${{ matrix.scenario }} --destroy never
 
       # Containers are kept on failure so the failed units can be read before the cleanup step.
       - name: Failed systemd units in the test containers
