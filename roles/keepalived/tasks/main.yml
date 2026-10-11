@@ -55,6 +55,15 @@
   loop: [check_edge, notify_state]
   notify: Reload keepalived
 
+# keepalived 2.2.7 (Debian 12) dies from SIGTERM during --config-test inside the test containers, with no
+# output, while 2.2.4 (Ubuntu 22.04) and 2.2.8 (Ubuntu 24.04) check the same file fine. Validate with
+# every other version; on 2.2.7 the service start and its health check catch a broken file.
+- name: Read the installed keepalived version
+  ansible.builtin.command: keepalived --version
+  register: keepalived_version_out
+  changed_when: false
+  check_mode: false
+
 - name: Write the keepalived configuration (contains the VRRP password when set)
   ansible.builtin.template:
     src: keepalived.conf.j2
@@ -62,7 +71,9 @@
     owner: root
     group: root
     mode: "0600"
-    validate: keepalived --config-test --use-file %s
+    validate: >-
+      {{ omit if (keepalived_version_out.stdout ~ keepalived_version_out.stderr) is search('Keepalived v2[.]2[.]7 ')
+         else 'keepalived --config-test --use-file %s' }}
   no_log: "{{ keepalived_auth_pass | length > 0 }}"
   notify: Reload keepalived
   tags: [chk_ha_01]
