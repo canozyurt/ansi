@@ -1,8 +1,8 @@
 ---
 # Vhosts, users and permissions through the HTTP API of the first node (the cluster shares them).
-# Application users get permissions on their own vhost only and no management tags (DAT-01); users
-# that are not declared are removed, guest included. Passwords are sent as salted SHA-256 hashes
-# (rabbitmq_password_hash), so a run only changes what differs.
+# Application users get permissions on their own vhost only and no management tags (DAT-01); the
+# scrape user gets only the monitoring tag. Users that are not declared are removed, guest included.
+# Passwords are sent as salted SHA-256 hashes (rabbitmq_password_hash), so a run only changes what differs.
 - name: Declare vhosts, users and permissions
   when: inventory_hostname == (rabbitmq_cluster_hosts | select('in', ansible_play_hosts) | first)
   tags: [chk_dat_01]
@@ -58,7 +58,7 @@
       changed_when: true
       tags: [chk_ha_01]
 
-    - name: Create or update users (password hash, no tags)
+    - name: Create or update users (password hash and tags)
       ansible.builtin.uri:
         url: "{{ rabbitmq_cluster_api }}/users/{{ item.name }}"
         method: PUT
@@ -66,14 +66,14 @@
         body:
           password_hash: "{{ item.password_hash }}"
           hashing_algorithm: rabbit_password_hashing_sha256
-          tags: ""
+          tags: "{{ item.tags | join(',') }}"
         status_code: [201, 204]
       loop: "{{ rabbitmq_cluster_want_users }}"
       loop_control:
         label: "{{ item.name }}"
       when: >-
         rabbitmq_cluster_have_users | selectattr('name', 'equalto', item.name)
-        | selectattr('password_hash', 'equalto', item.password_hash) | rejectattr('tags') | list | length == 0
+        | selectattr('password_hash', 'equalto', item.password_hash) | selectattr('tags', 'equalto', item.tags) | list | length == 0
       changed_when: true
       no_log: true
 
