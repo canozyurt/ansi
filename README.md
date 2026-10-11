@@ -45,8 +45,10 @@ Before the first run, set at least:
   disabled, and the role refuses to continue if that would lock you out.
 - `rbac_model_group_assignments`: which IdP groups get which default role.
 
-In production, run playbooks only from CI (checklist item CHG-02) and schedule a weekly
-`--check --diff` run to detect drift (CHG-03).
+In production, run playbooks only from CI (checklist item CHG-02) and schedule a daily
+`--check --diff` run to detect drift (CHG-03). [docs/ci.md](docs/ci.md) has deploy, drift and image
+mirror pipelines for GitHub and Forgejo Actions to copy into the private repository that holds your
+inventories.
 
 ## What is in the repo
 

@@ -249,7 +249,9 @@ def docker_run_image(args: str) -> str:
 
 
 def check_workflows(root: Path, report: Report, image_vars: set[str]) -> None:
-    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+    # The repository's own CI and the pipeline examples users copy (examples/ci, docs/ci.md).
+    paths = list((root / ".github" / "workflows").glob("*.y*ml")) + list((root / "examples" / "ci").glob("*/*.y*ml"))
+    for path in sorted(paths):
         rel = str(path.relative_to(root))
         lines = path.read_text().splitlines()
         for i, line in enumerate(lines):
