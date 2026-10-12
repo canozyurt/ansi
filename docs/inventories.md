@@ -5,23 +5,31 @@ the others. `tools/inventory_lint.py` enforces the parts that can be checked sta
 
 ## Layout
 
-Keep real inventories out of this repository (`.gitignore` ignores everything under `inventories/`
-except `example`). Use a private repository with one directory per environment:
+Real inventories never live in this repository (`.gitignore` ignores everything under `inventories/`
+except `example`). They live in your private **deployment repository**, which also holds your CI
+pipelines and pins the release of this project it deploys. It has one directory per environment:
 
 ```
-infra-inventories/
-  production/
-    hosts.yml
-    group_vars/all/environment.yml   # inventory_environment: production
-    group_vars/all/vault.yml         # ansible-vault encrypted
-    group_vars/<group>/main.yml
-    host_vars/
-  staging/   ...                     # inventory_environment: staging
-  test/      ...                     # inventory_environment: test
-  dev/       ...                     # inventory_environment: dev
+infra-deploy/
+  compliant-infra.ref                # commit SHA of the compliant-infra-ansible release to deploy
+  inventories/
+    production/
+      hosts.yml
+      group_vars/all/environment.yml   # inventory_environment: production
+      group_vars/all/vault.yml         # ansible-vault encrypted
+      group_vars/<group>/main.yml
+      host_vars/
+    staging/   ...                     # inventory_environment: staging
+    test/      ...                     # inventory_environment: test
+    dev/       ...                     # inventory_environment: dev
+  .platform/                         # this repository at compliant-infra.ref (git-ignored)
 ```
 
-Start each one from `inventories/example` and run playbooks with `-i <repo>/<environment>`. Production
+Playbooks and tools run from the `.platform/` checkout, where `ansible.cfg` applies, against
+`../inventories/<env>`. CI does the same: it clones the pinned release into `.platform/` and runs
+from there. Moving to a new release is a reviewed change to `compliant-infra.ref`.
+
+Start each one from `inventories/example`. Production
 should be deployed only from CI on the protected branch (CHG-02, designed); test and dev may be deployed
 from feature branches.
 
@@ -40,12 +48,12 @@ from feature branches.
    non-production one. Test data comes from synthetic or anonymised data, never from a production
    restore.
 
-Run it against the private repository in its own CI and before every change:
+Run it in the deployment repository's CI and before every change, from `.platform/`:
 
 ```bash
-python3 tools/inventory_lint.py ../infra-inventories/production ../infra-inventories/staging \
-  ../infra-inventories/test ../infra-inventories/dev
-python3 tools/vault_check.py ../infra-inventories
+python3 tools/inventory_lint.py ../inventories/production ../inventories/staging \
+  ../inventories/test ../inventories/dev
+python3 tools/vault_check.py ../inventories
 ```
 
 `inventories/example` is a template, not an environment: it is checked for rule 1 only (it declares

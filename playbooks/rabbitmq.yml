@@ -4,7 +4,7 @@
 # the hosts of its own inventory group, with its own Erlang cookie, certificates, ports, data directories,
 # vhosts, users and backups (DAT-01). A host belongs to at most one RabbitMQ cluster.
 #
-#   ansible-playbook -i inventories/<company> playbooks/rabbitmq.yml [-e rabbitmq_only=mq-main]
+#   ansible-playbook -i ../inventories/<env> playbooks/rabbitmq.yml [-e rabbitmq_only=mq-main]
 #
 # The "rabbitmq" group must contain every cluster group (see inventories/example/hosts.yml).
 # Version changes are refused here; they go through playbooks/upgrade.yml.

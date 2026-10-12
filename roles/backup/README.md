@@ -43,7 +43,7 @@ restic (BSD-2) client on every host. Backs up every declaration in
 `playbooks/restore.yml` restores one declaration on one host:
 
 1. List the snapshots:
-   `ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=<host> -e restore_name=<name> -e restore_list=true`
+   `ansible-playbook -i ../inventories/<env> playbooks/restore.yml -e restore_host=<host> -e restore_name=<name> -e restore_list=true`
 2. Restore the latest (or `-e restore_snapshot=<id>`, optionally `-e restore_repo=<backup server>`):
    `... -e restore_host=<host> -e restore_name=<name> -e restore_confirm=<name>`.
    Files land in `/var/restore/<name>-<UTC timestamp>/` with their original absolute paths below it.

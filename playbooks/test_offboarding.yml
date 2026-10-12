@@ -2,7 +2,7 @@
 # IAM-04 integration test (written, not yet run): disabling a user in Keycloak removes every kind of access.
 # Runs against a deployed environment (staging first):
 #
-#   ansible-playbook -i inventories/<env> playbooks/test_offboarding.yml
+#   ansible-playbook -i ../inventories/<env> playbooks/test_offboarding.yml
 #
 #   1. A throwaway user with role operator (through group iam-test-operator, TOTP second factor) signs in to
 #      Grafana and Prometheus (browser sessions kept), OpenBao (token kept) and gets a refresh token.
