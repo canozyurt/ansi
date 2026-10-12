@@ -118,8 +118,10 @@ See `roles/rbac_model/defaults/main.yml` and [docs/architecture.md](docs/archite
 ## Upgrades
 
 Each release tag is a tested bundle of pinned versions (`roles/versions`). Move to a new tag and run
-`playbooks/upgrade.yml`: it backs up, then upgrades one node at a time with health checks. Versions are
-bumped by maintainers by hand once an upstream release is judged stable. See [docs/upgrades.md](docs/upgrades.md).
+`playbooks/upgrade.yml`: it backs up, then upgrades one node at a time with health checks. When it
+succeeds, run `playbooks/site.yml` from the same tag to apply the rest of the release (hardening,
+configuration, new roles). Versions are bumped by maintainers by hand once an upstream release is
+judged stable. See [docs/upgrades.md](docs/upgrades.md).
 
 ## Testing
 
