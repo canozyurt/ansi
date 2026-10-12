@@ -31,7 +31,8 @@ jobs:
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          ansible-galaxy collection install -r requirements.yml
+          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
+          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
 
       # SEC-01: whole git history, with the allowlist for placeholders in .gitleaks.toml.
       - name: Secret scan of the git history (gitleaks) [chk_sec_01]
@@ -176,7 +177,8 @@ jobs:
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          ansible-galaxy collection install -r requirements.yml
+          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
+          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
 
       - name: Converge, idempotence and verify (CHG-06)
         run: molecule test --platform-name ${{ matrix.platform }}
@@ -243,7 +245,8 @@ jobs:
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          ansible-galaxy collection install -r requirements.yml
+          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
+          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
 
       # An upgrade scenario needs the previous release in versions_upgrade_from (CHG-07); until the
       # first release that includes the service, there is nothing to upgrade from.
