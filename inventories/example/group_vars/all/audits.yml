@@ -6,8 +6,12 @@
 # (principal ci-deploy, signed through the OpenBao ci-deploy AppRole) and may use sudo only in such
 # a session; people keep read-only logins, and the break-glass account (principal break-glass,
 # admin policy only) has sudo and alerts on every login.
+# Runs from anywhere but CI only stage this (CIOnlyDeploysNotEnforced fires); the first run that logs in
+# with the CI's certificate enforces it, so a run from your machine cannot lock you out.
 ci_only_deploys: true
-ci_deploy_user: "{{ ansible_user | default('deploy') }}"
+# Same as ansible_user (all/main.yml), but not derived from it: a break-glass run
+# (-e ansible_user=break-glass) must not retarget the CI-only settings to the break-glass account.
+ci_deploy_user: deploy
 
 # EVD-02: every host appends /var/lib/compliance-evidence weekly to the evidence repository on the
 # backup servers (roles/evidence_store; credentials derive from backup_password_seed).
