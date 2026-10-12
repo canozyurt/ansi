@@ -445,6 +445,8 @@ ha_drill_postgres:
       json_min_items: 1
     # The application entry point (HAProxy primary port on a surviving node) reaches a writable
     # primary: txid_current() needs a read-write primary. Uses the first owner login of the first database.
+    # verify-ca, not verify-full: HAProxy passes TLS through, so the new leader presents its own name,
+    # not the name of the node the probe connects to.
     - name: Writes through the HAProxy primary port reach the new leader
       enabled: "{{ (ha_drill_instance.databases | default([])) | length > 0 }}"
       argv:
@@ -460,7 +462,7 @@ ha_drill_postgres:
           host={{ ha_drill_prober }} port={{ ha_drill_instance.ports.primary | default(5000) }}
           dbname={{ (ha_drill_instance.databases | default([{}]) | first).name | default('postgres') }}
           user={{ ha_drill_postgres_probe_user.name | default('') }}
-          sslmode=verify-full sslrootcert=/etc/patroni/tls/ca-bundle.crt connect_timeout=5
+          sslmode=verify-ca sslrootcert=/etc/patroni/tls/ca-bundle.crt connect_timeout=5
         - -c
         - SELECT pg_is_in_recovery(), txid_current() > 0
       env:
