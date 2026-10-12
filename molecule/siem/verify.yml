@@ -263,9 +263,11 @@
       delay: 10
       tags: [chk_hrd_06]
 
-    - name: The CIS Ubuntu policy ran
+    - name: The CIS policy for the host's distribution ran
       ansible.builtin.assert:
-        that: verify_sca.json.data.affected_items | map(attribute='policy_id') | select('match', '^cis_ubuntu') | list | length > 0
+        that: verify_sca.json.data.affected_items | map(attribute='policy_id') | select('match', '^cis_' ~ verify_cis_prefix) | list | length > 0
+      vars:
+        verify_cis_prefix: "{{ 'debian' if lookup('env', 'MOLECULE_DISTRO') is match('debian') else 'ubuntu' }}"
       tags: [chk_hrd_06]
 
     # ---------------------------------------------------------------- events end to end
