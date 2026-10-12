@@ -22,6 +22,8 @@ Commands:
         Pre-flight for tagging VERSION: a clean tree, a version newer than the last tag (the first
         release must be v0.1.0), HEAD not tagged yet, the document and upgrade-coverage checks. Writes
         the notes and prints the signed-tag and follow-up commands. It never creates or pushes a tag.
+    tools/release.py changelog VERSION [--date YYYY-MM-DD]
+        Release commit: turn the Unreleased section of CHANGELOG.md into the VERSION section.
     tools/release.py bump-upgrade-from TAG [--dry-run]
         After tagging TAG: copy the versions TAG deployed into versions_upgrade_from and
         versions_postgres_upgrade_from, so the next release is tested against TAG.
@@ -31,6 +33,10 @@ Commands:
         CLD control and every checklist item that maps to one (DAT-03), every *-upgrade
         scenario runs in CI, and every role that deploys a pinned service has a play in
         playbooks/upgrade.yml and an upgrade scenario, or is listed as exempt with a reason (CHG-07).
+        Inventory changes: inventory-changes.yml is valid and keeps every entry the last tag holds,
+        every role default removed since the last tag has a renamed or removed entry, no role reads
+        a removed variable, inventories/example passes tools/inventory_check.py, and CHANGELOG.md
+        names every new entry under "Inventory changes".
 
 Options: --root DIR checks another tree (self-tests).
 """
@@ -45,6 +51,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import inventory_check  # noqa: E402  (tools/inventory_check.py)
+
 VERSIONS = Path("roles/versions/defaults/main.yml")
 SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 KEYS_RE = re.compile(r"check_upgrade_from_keys:\s*\[([^\]]*)\]")
@@ -52,6 +61,9 @@ VARS_RE = re.compile(r"check_upgrade_from_vars:\s*\[([^\]]*)\]")
 REF_RE = re.compile(r"versions_upgrade_from\.([a-z0-9_]+)")
 
 FIRST_RELEASE = "v0.1.0"
+CHANGELOG = Path("CHANGELOG.md")
+SECTION_RE = re.compile(r"^## \[([^\]]+)\][^\n]*\n", re.M)
+INVENTORY_HEADING_RE = re.compile(r"^### Inventory changes\s*$", re.M)
 
 # CHG-07: every role that deploys a pinned, long-running service is upgraded by playbooks/upgrade.yml
 # (one node at a time, backup first) and has a Molecule scenario that installs the previous release
@@ -226,6 +238,7 @@ def cmd_notes(root: Path, args) -> int:
             out.append(f"| {key} | {old.get(key, '(new)')} | {new.get(key, '(removed)')} |")
     if not changed:
         out.append("| (none) | | |")
+    out += inventory_notes(root, args.version, since)
     out += ["", "## Upgrade paths tested in CI", ""]
     for scenario in upgrade_scenarios(root):
         missing = missing_for(root, scenario) or []
@@ -249,11 +262,165 @@ def cmd_notes(root: Path, args) -> int:
         "- [ ] `tools/release.py check` passes; docs/shared-responsibility.md reviewed for this release (DAT-03)",
         "- [ ] DR runbooks in docs/dr/ still match the roles (HA-02)",
         "- [ ] Notes above completed (recreate updates, manual steps)",
+        f"- [ ] CHANGELOG.md has a [{args.version}] section; every inventory change has an entry in inventory-changes.yml",
         f"- [ ] Tag signed: `git tag -s {args.version}`",
         f"- [ ] Follow-up pull request: `tools/release.py bump-upgrade-from {args.version}`",
         "",
     ]
     print("\n".join(out))
+    return 0
+
+
+# ---------------------------------------------------------------- changelog and inventory changes
+
+def changelog_sections(root: Path) -> dict[str, str]:
+    """CHANGELOG.md section name (Unreleased, vX.Y.Z) -> body, in file order."""
+    path = root / CHANGELOG
+    text = path.read_text() if path.is_file() else ""
+    matches = list(SECTION_RE.finditer(text))
+    return {m.group(1): text[m.end():(matches[i + 1].start() if i + 1 < len(matches) else len(text))]
+            for i, m in enumerate(matches)}
+
+
+def has_entries(body: str) -> bool:
+    return bool(re.search(r"^\s*[-*] ", body, re.M))
+
+
+def inventory_section(body: str) -> str:
+    match = INVENTORY_HEADING_RE.search(body)
+    if not match:
+        return ""
+    rest = body[match.end():]
+    end = re.search(r"^#{2,3} ", rest, re.M)
+    return rest[:end.start()] if end else rest
+
+
+def new_inventory_changes(root: Path, since: str | None) -> list[dict]:
+    old = inventory_check.load_changes(root, since) if since else []
+    return [e for e in inventory_check.load_changes(root) if e not in old]
+
+
+def describe_change(entry: dict) -> str:
+    kind, var, note = entry["kind"], entry["var"], str(entry.get("note", "")).strip()
+    if kind == "renamed":
+        until = entry.get("removal_planned", "a later major release")
+        head = f"`{var}` renamed to `{entry['new']}`; the old name works until {until}"
+    elif kind == "removed":
+        head = f"`{var}` removed; delete it from the inventory"
+    elif kind == "required":
+        head = f"`{var}` is now required for {', '.join(entry.get('groups') or ['all hosts'])}"
+    else:
+        head = f"default of `{var}` changed from `{entry['old']}` to `{entry['new']}`"
+    return f"- {head}. {note}".rstrip()
+
+
+def inventory_notes(root: Path, version: str, since: str | None) -> list[str]:
+    sections = changelog_sections(root)
+    body = sections.get(version) or sections.get("Unreleased") or ""
+    out = ["", "## Changes", "", body.strip() or f"(CHANGELOG.md has no [{version}] section yet)"]
+    out += ["", "## Inventory changes", ""]
+    changes = new_inventory_changes(root, since)
+    out += [describe_change(e) for e in changes] or ["None: inventories need no edits for this release."]
+    out += ["", "Check each inventory before upgrading; errors must be fixed first:", "", "```sh",
+            f"git fetch --tags && python3 tools/inventory_check.py <inventory> --release {version}", "```"]
+    return out
+
+
+def role_defaults(root: Path, ref: str | None = None) -> set[str]:
+    """Top-level variables of every roles/*/defaults/main.yml, in the tree or at a git ref."""
+    if ref is None:
+        texts = [p.read_text() for p in sorted(root.glob("roles/*/defaults/main.yml"))]
+    else:
+        names = git(root, "ls-tree", "-r", "--name-only", ref, "roles").split()
+        texts = [git(root, "show", f"{ref}:{n}") for n in names if re.fullmatch(r"roles/[^/]+/defaults/main\.yml", n)]
+    found: set[str] = set()
+    for text in texts:
+        data = yaml.load(text, Loader=inventory_check.Loader)  # noqa: S506 (SafeLoader subclass)
+        if isinstance(data, dict):
+            found |= set(data)
+    return found
+
+
+def code_text(root: Path) -> str:
+    """Everything roles and playbooks can read a variable from (not the inventory check itself)."""
+    paths = [p for pattern in ("roles/**/*", "playbooks/**/*") for p in root.glob(pattern)
+             if p.is_file() and p.suffix in (".yml", ".yaml", ".j2", ".py") and p.name != "inventory_check.yml"]
+    return "\n".join(p.read_text(errors="replace") for p in paths)
+
+
+def check_inventory_changes(root: Path) -> list[str]:
+    if not (root / inventory_check.MANIFEST).is_file():
+        return [f"{inventory_check.MANIFEST} is missing (docs/upgrades.md#inventory-changes-between-releases)"]
+    changes = inventory_check.load_changes(root)
+    errors = inventory_check.validate(changes)
+    if errors:
+        return errors
+    known = tags(root)
+    previous = known[-1] if known else None
+    if previous:
+        for entry in inventory_check.load_changes(root, previous):
+            if entry not in changes:
+                errors.append(f"{inventory_check.MANIFEST}: the {entry.get('kind')} entry for {entry.get('var')} is "
+                              f"part of {previous}; entries a release holds are never edited or deleted")
+        covered = {e["var"] for e in changes if e["kind"] in ("renamed", "removed")}
+        for var in sorted(role_defaults(root, previous) - role_defaults(root) - covered):
+            errors.append(f"{var} was a role default in {previous} and is gone: add a renamed or removed entry to "
+                          f"{inventory_check.MANIFEST} (docs/upgrades.md#variable-deprecation-policy)")
+    code = code_text(root)
+    for entry in changes:
+        if entry["kind"] == "removed" and re.search(rf"\b{entry['var']}\b", code):
+            errors.append(f"{entry['var']} is listed as removed in {inventory_check.MANIFEST} but roles or playbooks "
+                          "still read it")
+        if entry["kind"] == "renamed" and not re.search(rf"\b{entry['new']}\b", code):
+            errors.append(f"{entry['var']} is renamed to {entry['new']}, which no role or playbook reads")
+    example = root / "inventories" / "example"
+    if (example / "hosts.yml").is_file():
+        for f in inventory_check.evaluate(changes, inventory_check.load_inventory(example)):
+            if f.level in ("ERROR", "WARN"):
+                errors.append(f"inventories/example: {f.var}: {f.message}")
+    sections = changelog_sections(root)
+    if not sections:
+        errors.append(f"{CHANGELOG} is missing or has no '## [Unreleased]' section")
+        return errors
+    unreleased = "".join(inventory_section(body) for name, body in sections.items()
+                         if name == "Unreleased" or (SEMVER_RE.match(name) and (
+                             previous is None or version_key(name) > version_key(previous))))
+    for entry in new_inventory_changes(root, previous):
+        if not re.search(rf"\b{entry['var']}\b", unreleased):
+            errors.append(f"{CHANGELOG} does not name {entry['var']} under '### Inventory changes' "
+                          f"(new {entry['kind']} entry in {inventory_check.MANIFEST})")
+    return errors
+
+
+def check_changelog_release(root: Path, version: str) -> list[str]:
+    sections = changelog_sections(root)
+    errors = []
+    if not has_entries(sections.get(version, "")):
+        errors.append(f"{CHANGELOG} has no [{version}] section with entries: run tools/release.py changelog {version} "
+                      "and commit it")
+    if has_entries(sections.get("Unreleased", "")):
+        errors.append(f"{CHANGELOG}: [Unreleased] still has entries that {version} would leave out")
+    return errors
+
+
+def cmd_changelog(root: Path, args) -> int:
+    if not SEMVER_RE.match(args.version):
+        print(f"{args.version} is not vMAJOR.MINOR.PATCH", file=sys.stderr)
+        return 2
+    path = root / CHANGELOG
+    text = path.read_text() if path.is_file() else ""
+    sections = changelog_sections(root)
+    if args.version in sections:
+        print(f"{CHANGELOG} already has a [{args.version}] section", file=sys.stderr)
+        return 2
+    if not has_entries(sections.get("Unreleased", "")):
+        print(f"{CHANGELOG}: [Unreleased] has no entries to release", file=sys.stderr)
+        return 2
+    date = args.date or __import__("datetime").date.today().isoformat()
+    text = re.sub(r"^## \[Unreleased\][^\n]*\n", f"## [Unreleased]\n\n## [{args.version}] - {date}\n",
+                  text, count=1, flags=re.M)
+    path.write_text(text)
+    print(f"{CHANGELOG}: [Unreleased] is now [{args.version}] - {date}; commit it, then run cut {args.version}")
     return 0
 
 
@@ -331,6 +498,7 @@ def check_docs(root: Path) -> list[str]:
         if not re.search(rf"^\s*-\s*{re.escape(scenario)}\s*$", ci, re.M):
             errors.append(f".github/workflows/ci.yml does not run molecule/{scenario}")
     errors += check_upgrade_coverage(root)
+    errors += check_inventory_changes(root)
     return errors
 
 
@@ -397,6 +565,7 @@ def cmd_cut(root: Path, args) -> int:
     if not args.allow_dirty and git(root, "status", "--porcelain").strip():
         problems.append("the working tree has uncommitted changes")
     problems += check_docs(root)
+    problems += check_changelog_release(root, args.version)
     for problem in problems:
         print(f"ERROR {problem}")
     if problems:
@@ -448,6 +617,9 @@ def main() -> int:
     p.add_argument("--notes-out")
     p.add_argument("--allow-dirty", action="store_true")
     sub.add_parser("check")
+    p = sub.add_parser("changelog")
+    p.add_argument("version")
+    p.add_argument("--date")
     args = parser.parse_args()
     handler = {
         "has-upgrade-path": cmd_has_upgrade_path,
@@ -456,6 +628,7 @@ def main() -> int:
         "bump-upgrade-from": cmd_bump_upgrade_from,
         "check": cmd_check,
         "cut": cmd_cut,
+        "changelog": cmd_changelog,
     }[args.command]
     return handler(args.root, args)
 

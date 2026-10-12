@@ -7,6 +7,9 @@
 # Every service is upgraded one node at a time; the run stops at the first node that
 # does not come back healthy. Services back up their data before a version change.
 
+- name: Check the inventory against this release's variable changes
+  ansible.builtin.import_playbook: inventory_check.yml
+
 - name: Check OpenBao is healthy and order its nodes for the upgrade
   hosts: openbao
   become: true

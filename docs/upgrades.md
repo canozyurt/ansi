@@ -9,26 +9,85 @@ they move to a new tag and run one playbook.
 
 1. Read the release notes for the new tag, especially any line marked
    **recreate**. That service has a short outage while all its nodes restart on
-   the new version.
-2. Check out the tag and run the upgrade in a maintenance window:
+   the new version, and the **Inventory changes** section, which lists every
+   variable you may need to edit.
+2. Check each inventory against the new tag before you check it out, and fix every
+   error (see [Inventory changes between releases](#inventory-changes-between-releases)):
 
    ```sh
-   git fetch --tags && git checkout vX.Y.Z
+   git fetch --tags
+   python3 tools/inventory_check.py ../infra-inventories/production --release vX.Y.Z
+   ```
+
+3. Check out the tag and run the upgrade in a maintenance window:
+
+   ```sh
+   git checkout vX.Y.Z
    ansible-galaxy collection install -r requirements.yml
    ansible-playbook -i inventories/<company> playbooks/upgrade.yml
    ```
 
-3. The playbook:
+4. The playbook:
+   - refuses to start when the inventory still sets a removed variable or lacks a
+     required one (the same checks as step 2);
    - checks that every node is healthy before it changes anything;
    - backs up each service's data before a version change (Keycloak: a
      `pg_dump` in `/var/backups/keycloak`, the newest 5 kept; the table in
      [releasing.md](releasing.md#upgrade-coverage) lists the backup of every service);
    - upgrades one node at a time and waits for it to be healthy;
    - stops at the first node that fails, leaving the rest on the old version.
-4. Keep the run log as change evidence (`ansible.log`, or the CI job log).
+5. Keep the run log as change evidence (`ansible.log`, or the CI job log).
 
 Running `site.yml` against a cluster whose versions differ from the release
 fails on purpose; version changes go through `upgrade.yml`.
+
+## Inventory changes between releases
+
+A release can rename a variable, remove one, make one required, or change a default.
+Each such change is an entry in [inventory-changes.yml](../inventory-changes.yml),
+added in the pull request that makes it, and a line under **Inventory changes** in
+[CHANGELOG.md](../CHANGELOG.md) and the release notes. Three things read that file:
+
+| Where | What it does |
+| --- | --- |
+| `tools/inventory_check.py <inventory> --release vX.Y.Z` | Before an upgrade, without touching hosts: reads the entries of the tag and reports what the inventory must change. Run it in the inventory repository's CI against the next release too. |
+| `playbooks/inventory_check.yml` (first play of `site.yml` and `upgrade.yml`) | At run time: fails before any change when a removed variable is set, both names of a renamed variable are set, or a required variable is missing for a host. Copies deprecated names to their new names, so they keep working. |
+| `tools/release.py check` (CI) | For maintainers: a role default that disappears without an entry, an entry that was edited after its release, or a missing changelog line fails the build. |
+
+What the checker reports:
+
+| Level | Meaning | What to do |
+| --- | --- | --- |
+| ERROR | A removed variable is still set; both names of a renamed variable are set; a required variable is missing for a host | Fix before upgrading; the playbooks refuse to run |
+| WARN | A deprecated name is still set (it still works); a required variable may sit in a fully encrypted vars file the checker cannot read | Rename it before the release named in the message; check the encrypted file yourself |
+| NOTE | A default changed and the inventory does not set the variable | Nothing, unless you want the old behaviour: set the variable to the old value |
+
+The checker reads variable names only, so `!vault` values are fine. Vars files that
+are encrypted as a whole hide their names; prefer inline `!vault` values (as
+`tools/vault_check.py` expects) so the check sees them. `--strict` turns warnings
+into failures, for inventory CI that wants no deprecated names.
+
+## Variable deprecation policy
+
+Variables are part of this repository's interface. Changing one follows these rules:
+
+1. **Renaming** keeps the old name working for at least one minor release, and until
+   the next major release at the earliest. The pull request adds a `renamed` entry
+   with `removal_planned` set to that major release. The roles read only the new
+   name; the run-time check copies the old one over and prints a deprecation notice.
+2. **Removing** a variable, or dropping a deprecated name, happens only in a major
+   release. The pull request adds a `removed` entry, so an inventory that still sets
+   it fails the check instead of having its value silently ignored.
+3. **Making a variable required** (no default) happens only in a minor or major
+   release and needs a `required` entry naming the groups it applies to.
+   `inventories/example` must set it, which `tools/release.py check` verifies.
+4. **Changing a default** that changes behaviour on existing hosts gets a `default`
+   entry with the old and new values, so organisations can pin the old one.
+5. Entries are never edited or deleted once a release contains them. A mistake is
+   corrected with a new entry.
+
+A release that removes a variable or adds a required one without a default is a
+**major** release if organisations must act before upgrading ([releasing.md](releasing.md#cutting-a-release)).
 
 ### Rolling or recreate
 

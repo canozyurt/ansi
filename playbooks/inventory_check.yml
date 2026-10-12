@@ -1,0 +1,79 @@
+---
+# Applies inventory-changes.yml to this run (docs/upgrades.md#inventory-changes-between-releases).
+# Imported first by site.yml and upgrade.yml, so no run silently ignores an inventory variable:
+# - fails when a removed variable is still set, when both names of a renamed variable are set, or
+#   when a required variable is missing for a host;
+# - copies a deprecated (renamed) variable to its new name, so it keeps working until it is removed.
+# tools/inventory_check.py runs the same checks without hosts, before checking out a release.
+- name: Check the inventory against this release's variable changes
+  hosts: all
+  gather_facts: false
+  tags: [always]
+  vars:
+    inventory_check_changes: "{{ (lookup('ansible.builtin.file', '../inventory-changes.yml') | from_yaml).changes | default([], true) }}"
+    inventory_check_defined: "{{ query('ansible.builtin.varnames', '.+') }}"
+    inventory_check_removed: "{{ inventory_check_changes | selectattr('kind', 'eq', 'removed') | map(attribute='var') | list }}"
+    # Renames whose old name still works and is set on this host.
+    inventory_check_renames: >-
+      {{ inventory_check_changes | selectattr('kind', 'eq', 'renamed')
+         | rejectattr('var', 'in', inventory_check_removed) | selectattr('var', 'in', inventory_check_defined) | list }}
+  tasks:
+    - name: No removed variable is still set
+      ansible.builtin.assert:
+        that: inventory_check_set | length == 0
+        quiet: true
+        fail_msg: >-
+          {% for e in inventory_check_set %}{{ e.var }} was removed and its value is ignored: {{ e.note | trim }}
+          {% endfor %}See inventory-changes.yml and run tools/inventory_check.py.
+      vars:
+        inventory_check_set: >-
+          {{ inventory_check_changes | selectattr('kind', 'eq', 'removed')
+             | selectattr('var', 'in', inventory_check_defined) | list }}
+      tags: [chk_chg_07]
+
+    - name: No renamed variable is set under both names
+      ansible.builtin.assert:
+        that: inventory_check_both | length == 0
+        quiet: true
+        fail_msg: >-
+          {% for e in inventory_check_both %}{{ e.var }} was renamed to {{ e.new }} and both are set; delete {{ e.var }}.
+          {% endfor %}See inventory-changes.yml and run tools/inventory_check.py.
+      vars:
+        inventory_check_both: "{{ inventory_check_renames | selectattr('new', 'in', inventory_check_defined) | list }}"
+      tags: [chk_chg_07]
+
+    - name: Every required variable is set
+      ansible.builtin.assert:
+        that: inventory_check_missing | length == 0
+        quiet: true
+        fail_msg: >-
+          {% for e in inventory_check_missing %}{{ e.var }} is required for this host: {{ e.note | trim }}
+          {% endfor %}See inventory-changes.yml and run tools/inventory_check.py.
+      vars:
+        inventory_check_aliased: "{{ inventory_check_renames | map(attribute='new') | list }}"
+        inventory_check_missing: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for e in inventory_check_changes | selectattr('kind', 'eq', 'required') -%}
+          {%- if e.var not in inventory_check_defined and e.var not in inventory_check_aliased
+                and (e.groups is not defined or e.groups | intersect(group_names + ['all']) | length > 0) -%}
+          {%- set ns.out = ns.out + [e] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
+      tags: [chk_chg_07]
+
+    - name: Report deprecated variable names
+      ansible.builtin.debug:
+        msg: >-
+          DEPRECATED {{ item.var }}: renamed to {{ item.new }}; it still works until
+          {{ item.removal_planned | default('a later major release') }}. {{ item.note | trim }}
+      loop: "{{ inventory_check_renames }}"
+      loop_control:
+        label: "{{ item.var }}"
+
+    - name: Deprecated names keep working under their new names
+      ansible.builtin.set_fact:
+        "{{ item.new }}": "{{ lookup('ansible.builtin.vars', item.var) }}"  # noqa: var-naming[no-jinja]
+      loop: "{{ inventory_check_renames }}"
+      loop_control:
+        label: "{{ item.var }} -> {{ item.new }}"

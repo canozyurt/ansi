@@ -51,6 +51,17 @@ python3 tools/vault_check.py ../infra-inventories
 `inventories/example` is a template, not an environment: it is checked for rule 1 only (it declares
 `production` because it shows the production layout).
 
+## Before each upgrade
+
+Check every inventory against the release you are moving to; see
+[upgrades.md](upgrades.md#inventory-changes-between-releases):
+
+```bash
+git fetch --tags
+python3 tools/inventory_check.py ../infra-inventories/production ../infra-inventories/staging \
+  ../infra-inventories/test ../infra-inventories/dev --release vX.Y.Z
+```
+
 ## What the lint cannot see
 
 - Credentials: use different vault passwords and OpenBao mounts per environment, so a test operator
