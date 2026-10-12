@@ -132,6 +132,8 @@ ha_drill_openbao:
         - |
           import json, os, ssl, urllib.request as u
           ctx = ssl.create_default_context(cafile=os.environ["CA"] or None)
+          if os.environ.get("VERIFY") == "no":  # lab certificates (ha_drill_validate_certs: false)
+              ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
           get = u.build_opener(u.ProxyHandler({}), u.HTTPSHandler(context=ctx))
           leader = json.load(get.open(os.environ["ADDR"] + "/v1/sys/leader", timeout=10))["leader_address"]
           req = u.Request(leader + "/v1/sys/wrapping/wrap", method="POST",
@@ -144,6 +146,7 @@ ha_drill_openbao:
         CA: "{{ ha_drill_ca_file }}"
         TOKEN: "{{ openbao_admin_token | default('') }}"
         RUN: "{{ ha_drill_run_id }}"
+        VERIFY: "{{ 'yes' if ha_drill_validate_certs | bool else 'no' }}"
       write: true
       no_log: true
 
