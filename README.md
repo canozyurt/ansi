@@ -33,9 +33,14 @@ ansible-galaxy collection install -r requirements.yml
 cp -r inventories/example inventories/prod     # inventories other than example/ are git-ignored
 $EDITOR inventories/prod/hosts.yml inventories/prod/group_vars/all/main.yml
 
+# New hosts: stage 1, then put the SSH CA key and OpenBao outputs into the inventory (docs/first-deploy.md)
+ansible-playbook -i inventories/prod/hosts.yml playbooks/bootstrap.yml
 ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml --check --diff   # preview
 ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml
 ```
+
+A first deploy runs in stages because the bastion needs the SSH CA that OpenBao creates; see
+[docs/first-deploy.md](docs/first-deploy.md).
 
 Before the first run, set at least:
 

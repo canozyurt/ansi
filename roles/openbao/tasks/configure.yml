@@ -138,7 +138,9 @@
 
 - name: Connect Keycloak (OIDC) and map the default roles to policies
   ansible.builtin.include_tasks: oidc.yml
-  when: openbao_oidc_enabled | bool
+  when:
+    - openbao_oidc_enabled | bool
+    - not openbao_oidc_deferred | bool
 
 - name: Publish the AppRole role_id and the SSH CA key
   ansible.builtin.import_tasks: publish.yml

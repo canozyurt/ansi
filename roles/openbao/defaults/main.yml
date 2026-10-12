@@ -123,6 +123,9 @@ openbao_transit_rotate_period: 2160h  # 90 days
 
 # ------------------------------------------------------------------ identity (IAM-01, IAM-09)
 openbao_oidc_enabled: "{{ oidc_clients_enabled | default(true) }}"
+# true: skip the Keycloak connection in this run because Keycloak may not exist yet (site.yml, bootstrap.yml).
+# playbooks/identity.yml connects it once Keycloak is up (tasks_from: sso).
+openbao_oidc_deferred: false
 openbao_oidc_client_id: openbao
 openbao_oidc_client_secret: ""
 openbao_oidc_discovery_url: "{{ (keycloak_hostname | default('')) ~ '/realms/' ~ (keycloak_realm | default('org')) }}"

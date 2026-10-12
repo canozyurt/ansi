@@ -1,0 +1,17 @@
+---
+# Entry point for playbooks/identity.yml (include_role tasks_from: sso). secrets.yml runs before Keycloak
+# exists in site.yml and bootstrap.yml (openbao_oidc_deferred), so the Keycloak connection is made here.
+- name: Use the configuration token
+  ansible.builtin.set_fact:
+    openbao_token: "{{ openbao_token | default(openbao_admin_token, true) }}"
+  no_log: true
+
+- name: Check a configuration token is available
+  ansible.builtin.assert:
+    that: openbao_token | length > 0
+    fail_msg: Set openbao_admin_token (Ansible Vault) to the admin_token from the init output file.
+    quiet: true
+  run_once: true
+
+- name: Connect Keycloak (OIDC) and map the default roles to policies
+  ansible.builtin.include_tasks: oidc.yml

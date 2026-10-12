@@ -15,7 +15,8 @@
       - bastion_login_principals | length > 0
     fail_msg: >-
       The bastion accepts only SSH CA certificates: set ssh_hardening_trusted_user_ca_keys to the public key of
-      the OpenBao SSH CA (bao read -field=public_key ssh-client-signer/config/ca) and apply roles/ssh_hardening first.
+      the OpenBao SSH CA and apply roles/ssh_hardening first. On new hosts, playbooks/bootstrap.yml creates the CA
+      and writes the key to .openbao-init/ (docs/first-deploy.md).
     quiet: true
   tags: [chk_iam_06]
 

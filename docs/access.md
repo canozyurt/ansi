@@ -2,7 +2,8 @@
 
 Playbook: `playbooks/access.yml` (roles `session_audit`, `admin_login`, `wireguard_gateway`, `bastion`,
 `dns_resolver`, `dns_client`). Run it after `secrets.yml`: the bastion refuses to deploy until
-`ssh_hardening_trusted_user_ca_keys` holds the OpenBao SSH CA key.
+`ssh_hardening_trusted_user_ca_keys` holds the OpenBao SSH CA key. On new hosts, `playbooks/bootstrap.yml`
+creates the CA and writes the key to `.openbao-init/` ([first-deploy.md](first-deploy.md)).
 
 ## What the VPN does and does not do
 
