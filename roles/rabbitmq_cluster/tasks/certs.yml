@@ -51,9 +51,8 @@
 
 - name: Write the CA bundle
   ansible.builtin.copy:
-    content: >-
-      {{ (rabbitmq_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
-         if rabbitmq_cluster_cert_source == 'selfsigned' else (rabbitmq_cluster_ca_cert.content | b64decode | trim) }}
+    content: "{{ (rabbitmq_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
+      if rabbitmq_cluster_cert_source == 'selfsigned' else (rabbitmq_cluster_ca_cert.content | b64decode | trim) }}\n"
     dest: "{{ rabbitmq_cluster_dir }}/tls/ca-bundle.crt"
     owner: "{{ rabbitmq_cluster_uid }}"
     group: "{{ rabbitmq_cluster_gid }}"

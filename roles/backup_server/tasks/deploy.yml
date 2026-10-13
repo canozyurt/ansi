@@ -107,9 +107,8 @@
     owner: "{{ backup_server_user }}"
     group: "{{ backup_server_user }}"
     mode: "0600"
-  loop: >-
-    {{ backup_server_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
-       | difference(backup_server_accounts | map(attribute='user')) | difference(['metrics']) }}
+  loop: "{{ backup_server_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
+    | difference(backup_server_accounts | map(attribute='user')) | difference(['metrics']) }}"
   notify: Reload rest-server logins
   tags: [chk_iam_05]
 
