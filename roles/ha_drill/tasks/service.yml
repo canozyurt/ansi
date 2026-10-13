@@ -152,7 +152,13 @@
   rescue:
     - name: Record the failure
       ansible.builtin.set_fact:
-        ha_drill_error: "{{ inventory_hostname }}: {{ ansible_failed_task.name | default('unknown task') }}"
+        # The probe's own error (stderr or HTTP message, never its environment) makes the report actionable
+        # although the probe ran with no_log.
+        ha_drill_error: >-
+          {{ inventory_hostname }}: {{ ansible_failed_task.name | default('unknown task') }}{{
+             (': ' ~ (ha_drill_probe_cmd.stderr | default(ha_drill_probe_http.msg | default('', true), true)
+                      | string | trim)[-300:])
+             if ha_drill_probe_cmd is defined or ha_drill_probe_http is defined else '' }}
   always:
     - name: Restore the node
       when:

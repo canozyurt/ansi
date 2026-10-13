@@ -61,7 +61,7 @@ provisioner:
         registry_build_proxy: ${MOLECULE_HTTPS_PROXY}
         # The CVE database download goes through the test proxy (it may be blocked there).
         registry_env:
-          HTTPS_PROXY: ${MOLECULE_HTTPS_PROXY}
+          HTTPS_PROXY: "${MOLECULE_HTTPS_PROXY}"
           NO_PROXY: 127.0.0.1,localhost,registry.test.internal
         container_runtime_registry_mirrors: [https://mirror.gcr.io]
         container_runtime_daemon_extra:
