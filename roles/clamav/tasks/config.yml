@@ -1,4 +1,16 @@
 ---
+# Some clamd.conf options exist only in newer releases, and clamd refuses unknown options.
+# From the package: clamd --version fails until clamd.conf exists, which this role writes below.
+- name: Read the installed clamd version
+  ansible.builtin.command: dpkg-query --showformat=${Version} --show clamav-daemon
+  register: clamav_clamd_version_out
+  changed_when: false
+  check_mode: false
+
+- name: Note the clamd version
+  ansible.builtin.set_fact:
+    clamav_clamd_version: "{{ clamav_clamd_version_out.stdout | regex_search('^(?:[0-9]+:)?([0-9.]+)', '\\1') | first }}"
+
 - name: Write clamd.conf
   ansible.builtin.template:
     src: clamd.conf.j2

@@ -30,6 +30,23 @@
   notify: Load WireGuard forwarding rules
   tags: [chk_net_02, chk_net_03]
 
+- name: Create the drop-in directory for the tunnel unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/wg-quick@{{ wireguard_gateway_interface }}.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Load the forwarding rules and run the peer check when the tunnel starts
+  ansible.builtin.template:
+    src: wg-quick-gateway.conf.j2
+    dest: /etc/systemd/system/wg-quick@{{ wireguard_gateway_interface }}.service.d/gateway.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [chk_net_02, chk_net_03]
+
 - name: Install the expiry and metrics script
   ansible.builtin.template:
     src: wireguard-gateway-check.sh.j2

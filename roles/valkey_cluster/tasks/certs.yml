@@ -65,9 +65,8 @@
 
 - name: Write the CA bundle
   ansible.builtin.copy:
-    content: >-
-      {{ (valkey_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
-         if valkey_cluster_cert_source == 'selfsigned' else (valkey_cluster_ca_cert.content | b64decode | trim) }}
+    content: "{{ (valkey_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
+      if valkey_cluster_cert_source == 'selfsigned' else (valkey_cluster_ca_cert.content | b64decode | trim) }}\n"
     dest: "{{ valkey_cluster_dir }}/tls/ca-bundle.crt"
     owner: "{{ valkey_cluster_uid }}"
     group: "{{ valkey_cluster_gid }}"
