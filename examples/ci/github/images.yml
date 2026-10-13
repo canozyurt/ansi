@@ -1,8 +1,12 @@
 ---
+# Example: copy to .github/workflows/images.yml in YOUR deployment repository (the private repository
+# that holds your inventories, see docs/inventories.md), not in compliant-infra-ansible itself.
+# Setup, runners, variables and secrets: docs/ci.md. Forgejo Actions version: examples/ci/forgejo/images.yml.
+#
 # Mirror every pinned image into the internal Zot registry, sign it with cosign and attach its SBOM
 # (CHG-08). Hosts then pull <mirror>/<upstream reference> (image_registry_mirror, roles/versions) and
-# refuse unsigned images (image_signature_policy: enforce, roles/image_verify). The same job for
-# Forgejo Actions is .forgejo/workflows/images.yml; tools/image_mirror.py does the work.
+# refuse unsigned images (image_signature_policy: enforce, roles/image_verify). tools/image_mirror.py
+# of the compliant-infra-ansible release pinned in compliant-infra.ref does the work.
 #
 # Needs a runner that reaches the internal registry (repository variable IMAGE_MIRROR_RUNNER, e.g.
 # a self-hosted label) and these settings:
@@ -18,7 +22,7 @@ name: Mirror and sign images
 on:
   push:
     branches: [main]
-    paths: [roles/versions/defaults/main.yml, tools/image_mirror.py, .github/workflows/images.yml]
+    paths: [compliant-infra.ref, .github/workflows/images.yml]  # a new release brings new pins
   schedule:
     - cron: "41 3 * * *"  # daily: re-mirror is a no-op unless an upstream tag moved (digest pins fail loudly)
   workflow_dispatch:
@@ -42,8 +46,18 @@ jobs:
     name: Mirror, SBOM and sign
     runs-on: ${{ vars.IMAGE_MIRROR_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 120
+    env:
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out the pinned compliant-infra-ansible release
+        run: |
+          ref=$(grep -v '^#' compliant-infra.ref | head -n 1 | tr -d '[:space:]')
+          [ -n "$ref" ] || { echo "compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          git -C "$PLATFORM_DIR" -c advice.detachedHead=false checkout "$ref"
 
       - uses: actions/setup-python@v5
         with:
@@ -72,6 +86,7 @@ jobs:
           echo "COSIGN_KEY=$RUNNER_TEMP/cosign.key" >> "$GITHUB_ENV"
 
       - name: Mirror, attach SBOMs and sign [chk_chg_08]
+        working-directory: .platform
         env:
           IMAGE_MIRROR: ${{ vars.IMAGE_MIRROR }}
           REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
@@ -81,7 +96,7 @@ jobs:
           VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
         run: |
           if [ -n "${{ vars.COSIGN_KEY }}" ]; then export COSIGN_KEY="${{ vars.COSIGN_KEY }}"; fi
-          python3 tools/image_mirror.py --report image-mirror-report.json
+          python3 tools/image_mirror.py --report "$GITHUB_WORKSPACE/image-mirror-report.json"
 
       - name: Remove the key file
         if: always()

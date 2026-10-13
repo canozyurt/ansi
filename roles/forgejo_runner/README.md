@@ -34,54 +34,18 @@ Jobs run in containers on the host's Docker Engine, started by the runner, not i
 Jobs that build container images need a builder that works without the socket (for example
 buildah or kaniko in a job container), or a separate runner label on a host set aside for it.
 
-## Deploy pipeline example (CHG-02)
+## Deploy pipeline (CHG-02)
 
-Production changes run only from this workflow after the pull request is approved and merged into
-the protected `main` branch. Store it as `.forgejo/workflows/deploy.yml` in the infrastructure
-repository. The vault password comes from OpenBao with an AppRole whose `secret_id` is a Forgejo
-Actions secret of the repository; bind the AppRole to the runner hosts' addresses
-(`secret_id_bound_cidrs`, `token_bound_cidrs`) and give it read access to that one KV path only.
-
-```yaml
-name: deploy
-on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "0 5 * * 1"          # weekly check-mode drift run (CHG-03)
-jobs:
-  deploy:
-    runs-on: docker
-    # Pin the tool image by digest; it needs ansible-core, the pinned collections, curl and jq.
-    container:
-      image: registry.example.internal/platform/ansible-runner:2026.10@sha256:<digest>
-    steps:
-      - uses: actions/checkout@v4
-      - name: Read the vault password from OpenBao
-        env:
-          BAO_ADDR: https://bao.example.internal
-          ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
-          SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
-        run: |
-          set -euo pipefail
-          token=$(jq -n --arg r "$ROLE_ID" --arg s "$SECRET_ID" '{role_id:$r, secret_id:$s}' |
-            curl -sSf --data @- "$BAO_ADDR/v1/auth/approle/login" | jq -r .auth.client_token)
-          umask 077
-          curl -sSf -H "X-Vault-Token: $token" "$BAO_ADDR/v1/kv/data/ansible/vault" |
-            jq -r .data.data.password > "$RUNNER_TEMP/vault-pass"
-          curl -sSf -X POST -H "X-Vault-Token: $token" "$BAO_ADDR/v1/auth/token/revoke-self"
-      - name: Apply (check mode on the weekly schedule)
-        run: |
-          mode=""; [ "${{ forgejo.event_name }}" = schedule ] && mode="--check"
-          ansible-playbook -i inventories/production playbooks/site.yml $mode --diff \
-            --vault-password-file "$RUNNER_TEMP/vault-pass" | tee "$RUNNER_TEMP/ansible.log"
-      - name: Remove the vault password
-        if: always()
-        run: rm -f "$RUNNER_TEMP/vault-pass"
-```
+Production changes run only from a deploy workflow after the pull request is approved and merged into
+the protected `main` branch of your deployment repository. The maintained workflows are
+`examples/ci/forgejo/deploy.yml` and `drift.yml`; [docs/ci.md](../../docs/ci.md) covers the setup.
+They run on a runner with a `deploy` label, so add one to `forgejo_runner_labels` on the runner hosts
+in `access_automation_cidrs`, for example `deploy:docker://<ansible tool image by digest>`. The vault
+password and a one-hour SSH certificate come from the OpenBao `ci-deploy` AppRole
+(`tools/ci-openbao-login`), whose `secret_id` is a Forgejo Actions secret of the repository.
 
 Every run is logged by Forgejo (who merged, commit, workflow log; Actions logs live in object storage)
-and the runner's container log goes to journald and the SIEM. SSH access for Ansible should use
+and the runner's container log goes to journald and the SIEM. SSH access for Ansible uses
 short-lived certificates from the OpenBao SSH CA rather than a stored key.
 
 Known limit: Forgejo (v15) has no deployment environments with protection rules, so a workflow on any

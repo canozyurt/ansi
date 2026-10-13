@@ -1,4 +1,8 @@
 ---
+# Example: copy to .github/workflows/drift.yml in YOUR deployment repository (the private repository
+# that holds your inventories, see docs/inventories.md), not in compliant-infra-ansible itself.
+# Setup, runners, variables and secrets: docs/ci.md. Forgejo Actions version: examples/ci/forgejo/drift.yml.
+#
 # Drift detection (CHG-03): a check-mode run of site.yml against production every day. Any task that
 # would change counts as drift. Three outputs:
 #   - per-host metric ansible_drift_changed_tasks (playbooks/run_record.yml through tools/ansible-run)
@@ -6,9 +10,9 @@
 #   - the run record logged on the controller and every host (journald, identifier ansible-run,
 #     shipped to the SIEM) and kept as a build artifact (CHG-02, EVD-02);
 #   - this job fails when a host drifted, so the run shows red in the Actions history.
-# Runs on the self-hosted deploy runner (network access to the hosts; access_automation_cidrs) with
+# Runs on a self-hosted deploy runner (network access to the hosts; access_automation_cidrs) with
 # the ci-deploy OpenBao AppRole: vault password plus a one-hour SSH certificate (tools/ci-openbao-login).
-# The same workflow for Forgejo Actions: .forgejo/workflows/drift.yml. Not run yet (not tested).
+# The playbooks come from the compliant-infra-ansible release pinned in compliant-infra.ref.
 name: Drift
 
 on:
@@ -30,23 +34,34 @@ jobs:
     environment: production
     timeout-minutes: 120
     env:
-      INVENTORY: ${{ vars.ANSIBLE_INVENTORY || 'inventories/production' }}
+      INVENTORY: ${{ github.workspace }}/${{ vars.ANSIBLE_INVENTORY || 'inventories/production' }}
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out the pinned compliant-infra-ansible release
+        run: |
+          ref=$(grep -v '^#' compliant-infra.ref | head -n 1 | tr -d '[:space:]')
+          [ -n "$ref" ] || { echo "::error::compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          git -C "$PLATFORM_DIR" -c advice.detachedHead=false checkout "$ref"
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: .platform/requirements-dev.txt
 
       - name: Install tools
+        working-directory: .platform
         run: |
           pip install -r requirements-dev.txt
           ansible-galaxy collection install -r requirements.yml
 
       - name: Log in to OpenBao (vault password, CI SSH certificate) [chk_chg_02]
         id: login
+        working-directory: .platform
         env:
           BAO_ADDR: ${{ vars.BAO_ADDR }}
           BAO_CACERT: ${{ vars.BAO_CACERT }}
@@ -55,15 +70,18 @@ jobs:
         run: echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
 
       - name: Check-mode run of site.yml with a run record [chk_chg_03] [chk_chg_02]
+        working-directory: .platform
         env:
           ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
         run: |
           # shellcheck disable=SC2086
+          set -o pipefail  # the playbook's exit code, not tee's
           tools/ansible-run playbooks/site.yml -i "$INVENTORY" --check --diff ${{ steps.login.outputs.opts }} \
             | tee "$RUNNER_TEMP/drift.log"
 
       - name: Report drift (fails when a host drifted) [chk_chg_03]
         if: always() && steps.login.outcome == 'success'
+        working-directory: .platform
         run: python3 tools/drift_report.py "$(ls -1 "$RUNNER_TEMP"/run-record/*.json | tail -n 1)" --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the run record and log as evidence [chk_evd_02]
