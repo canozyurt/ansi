@@ -27,6 +27,10 @@ they move to a new tag and run one playbook.
    - stops at the first node that fails, leaving the rest on the old version.
 4. Keep the run log as change evidence (`ansible.log`, or the CI job log).
 
+When you deploy from CI, bump `compliant-infra.ref` in your deployment repository instead: the
+`upgrade.yml` pipeline shows the release notes on the pull request, waits for an approval in the
+maintenance window, then runs `upgrade.yml` and `site.yml` ([ci.md](ci.md#upgrades)).
+
 Running `site.yml` against a cluster whose versions differ from the release
 fails on purpose; version changes go through `upgrade.yml`.
 

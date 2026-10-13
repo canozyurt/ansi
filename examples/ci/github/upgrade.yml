@@ -1,0 +1,191 @@
+---
+# Example: copy to .github/workflows/upgrade.yml in YOUR deployment repository (the private repository
+# that holds your inventories, see docs/inventories.md), not in compliant-infra-ansible itself.
+# Setup, runners, variables and secrets: docs/ci.md. Forgejo Actions version: examples/ci/forgejo/upgrade.yml.
+#
+# Release upgrades (CHG-07, docs/upgrades.md). Bumping compliant-infra.ref changes the versions of the
+# running services, and site.yml refuses a version change on purpose, so a bump goes through this
+# workflow instead of deploy.yml (which skips such pushes):
+#   - on the pull request that bumps compliant-infra.ref, the "plan" job lists the version changes
+#     and the release notes (with the services that need a recreate update) for the reviewers; it
+#     needs no credentials and touches no host;
+#   - after the merge, the "upgrade" job waits for an approval of the "production" environment:
+#     approve it when the maintenance window opens. It then runs playbooks/upgrade.yml (health check,
+#     backup, one node at a time, stops at the first node that fails) and playbooks/site.yml (the
+#     new release's configuration and hardening), with a run record for each (CHG-02, EVD-02).
+# To roll back, revert the bump in a pull request; read "Rolling back" in docs/upgrades.md first.
+name: Upgrade
+
+on:
+  pull_request:
+    paths:
+      - compliant-infra.ref
+  push:
+    branches: [main]
+    paths:
+      - compliant-infra.ref
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan the release upgrade
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      upgrade: ${{ steps.plan.outputs.upgrade }}
+    env:
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare the pinned releases; list version changes and release notes [chk_chg_07]
+        id: plan
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          pinned() { git show "$1:compliant-infra.ref" 2>/dev/null | grep -v '^#' | head -n 1 | tr -d '[:space:]'; }
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || BEFORE=HEAD^
+          old=$(pinned "$BEFORE"); new=$(pinned HEAD)
+          # Manual runs always upgrade; a push only when it changed an existing pin (the first pin is
+          # an install, which deploy.yml applies).
+          upgrade=false
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || { [ -n "$old" ] && [ "$old" != "$new" ]; }; then
+            upgrade=true
+          fi
+          echo "upgrade=$upgrade" >> "$GITHUB_OUTPUT"
+          [ -n "$new" ] || { echo "::error::compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          cd "$PLATFORM_DIR"
+          git rev-parse --verify --quiet "$new^{commit}" >/dev/null \
+            || { echo "::error::$new is not a commit or tag of $PLATFORM_REPO"; exit 1; }
+          {
+            echo "## compliant-infra-ansible ${old:-(none)} → $new"
+            echo
+            if [ -z "$old" ]; then
+              echo "First pinned release: install it with deploy.yml (site.yml), not with an upgrade."
+            elif ! git merge-base --is-ancestor "$old" "$new"; then
+              echo "> **$new is not newer than $old.** This is a rollback: read \"Rolling back\" in docs/upgrades.md"
+              echo "> before merging. After a data migration the old version cannot run on the migrated data."
+            fi
+            for tag in $(git tag --points-at "$new^{commit}" --list 'v*'); do
+              echo
+              echo "### Release notes ($tag)"
+              echo
+              git tag --list --format='%(contents:subject)%0a%0a%(contents:body)' "$tag"
+            done
+            if [ -n "$old" ]; then
+              echo
+              echo "### Pinned versions"
+              echo
+              echo '```diff'
+              git diff "$old" "$new" -- roles/versions/defaults/main.yml requirements.yml
+              echo '```'
+            fi
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              echo
+              echo "After the merge the Upgrade workflow waits for approval of the production environment."
+              echo "Approve it when the maintenance window opens."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  upgrade:
+    name: Apply upgrade.yml, then site.yml
+    needs: plan
+    if: github.event_name != 'pull_request' && needs.plan.outputs.upgrade == 'true'
+    runs-on: [self-hosted, deploy]
+    environment: production
+    # Shared with deploy.yml and drift.yml: never two runs against production at once.
+    concurrency:
+      group: production-ansible
+      cancel-in-progress: false
+    timeout-minutes: 360
+    env:
+      INVENTORY: ${{ github.workspace }}/${{ vars.ANSIBLE_INVENTORY || 'inventories/production' }}
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the pinned compliant-infra-ansible release
+        run: |
+          ref=$(grep -v '^#' compliant-infra.ref | head -n 1 | tr -d '[:space:]')
+          [ -n "$ref" ] || { echo "::error::compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          git -C "$PLATFORM_DIR" -c advice.detachedHead=false checkout "$ref"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .platform/requirements-dev.txt
+
+      - name: Install tools
+        working-directory: .platform
+        run: |
+          pip install -r requirements-dev.txt
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Log in to OpenBao (vault password, CI SSH certificate) [chk_chg_02]
+        id: login
+        working-directory: .platform
+        env:
+          BAO_ADDR: ${{ vars.BAO_ADDR }}
+          BAO_CACERT: ${{ vars.BAO_CACERT }}
+          BAO_ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
+          BAO_SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
+        run: echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
+
+      - name: Apply upgrade.yml with a run record [chk_chg_07] [chk_chg_02]
+        working-directory: .platform
+        env:
+          ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
+        run: |
+          # shellcheck disable=SC2086
+          set -o pipefail  # the playbook's exit code, not tee's
+          tools/ansible-run playbooks/upgrade.yml -i "$INVENTORY" --diff ${{ steps.login.outputs.opts }} \
+            | tee "$RUNNER_TEMP/upgrade.log"
+
+      # Runs only when upgrade.yml succeeded on every host. A fresh SSH certificate for site.yml: the
+      # first one may have expired during a long upgrade.yml (ttl of ci-deploy, docs/ci.md).
+      - name: Log in to OpenBao again [chk_chg_02]
+        id: relogin
+        working-directory: .platform
+        env:
+          BAO_ADDR: ${{ vars.BAO_ADDR }}
+          BAO_CACERT: ${{ vars.BAO_CACERT }}
+          BAO_ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
+          BAO_SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
+        run: |
+          rm -rf "$RUNNER_TEMP/ci-auth"
+          echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
+
+      - name: Apply site.yml with a run record [chk_chg_02]
+        working-directory: .platform
+        env:
+          ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
+        run: |
+          # shellcheck disable=SC2086
+          set -o pipefail  # the playbook's exit code, not tee's
+          tools/ansible-run playbooks/site.yml -i "$INVENTORY" --diff ${{ steps.relogin.outputs.opts }} \
+            | tee "$RUNNER_TEMP/site.log"
+
+      - name: Keep the run records and logs as evidence [chk_evd_02]
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/run-record/
+            ${{ runner.temp }}/upgrade.log
+            ${{ runner.temp }}/site.log
+          retention-days: 90
+
+      - name: Remove the credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ci-auth"
