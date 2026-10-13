@@ -21,10 +21,15 @@ SelfCheck 3600
 ReadTimeout 180
 CommandReadTimeout 30
 IdleTimeout 30
+{% if clamav_clamd_version is version('1.5', '>=') %}
 # Disabled clamd commands: shutdown and reload come from systemd, not from socket clients.
 EnableShutdownCommand false
 EnableReloadCommand false
 EnableStatsCommand false
+{% else %}
+# ClamAV {{ clamav_clamd_version }} cannot disable the SHUTDOWN, RELOAD and STATS commands (the options
+# arrived in 1.5); the socket is limited to the clamav group instead.
+{% endif %}
 
 FollowDirectorySymlinks false
 FollowFileSymlinks false

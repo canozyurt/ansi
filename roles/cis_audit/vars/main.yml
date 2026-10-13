@@ -1,10 +1,10 @@
 ---
 # What each supported release provides (checked against the archive metadata on 2026-10-09 for noble;
 # bookworm and jammy from the package lists of those releases, not re-checked here):
-#   Debian 12:    openscap-scanner/libopenscap8 1.3.7 and ssg-debian 0.1.6x: data stream
-#                 ssg-debian12-ds.xml with ANSSI and standard profiles, no CIS profile.
-#   Ubuntu 22.04: libopenscap8 1.2.17 and ssg-debderived 0.1.5x-0.1.6x: ubuntu2204 content where the
-#                 package ships it (checked at run time), with the cis_level1_server profile.
+#   Debian 12:    openscap-scanner/libopenscap8 1.3.7 and ssg-debian 0.1.6x, which does not ship
+#                 ssg-debian12-ds.xml (Molecule run, 2026-10-10): the pinned upstream release is used.
+#   Ubuntu 22.04: libopenscap8 1.2.17 and no ssg packages (Molecule run, 2026-10-10): the pinned
+#                 upstream release supplies ubuntu2204 content with the cis_level1_server profile.
 #   Ubuntu 24.04: openscap-scanner 1.3.9 and ssg-debderived 0.1.71 (universe): no ubuntu2404 data
 #                 stream, so the pinned upstream release is used.
 # The role installs the scanner from the first package name the release knows.
@@ -15,7 +15,7 @@ cis_audit_platforms:
     datastream: ssg-debian12-ds.xml
   Ubuntu-22:
     scanner_packages: [openscap-scanner, libopenscap8]
-    ssg_packages: [ssg-base, ssg-debderived]
+    ssg_packages: []
     datastream: ssg-ubuntu2204-ds.xml
   Ubuntu-24:
     scanner_packages: [openscap-scanner, libopenscap8]
