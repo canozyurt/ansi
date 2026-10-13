@@ -67,7 +67,7 @@ versions_images:
   rclone: docker.io/rclone/rclone:1.71.1
   # Weekly TLS scan of every endpoint (roles/tls_scan, SEC-03). Upstream image of testssl.sh (GPLv2).
   # Not pulled or checked in this repository yet: confirm the tag and append its @sha256 digest.
-  testssl: ghcr.io/testssl/testssl.sh:3.2.1
+  testssl: ghcr.io/testssl/testssl.sh:3.2@sha256:51918b1e954df0acee8c08d3ad5ce306710e4fefe49ed0e0f92728ecf9e7ff34
 
 # Host packages installed from upstream repositories (pinned, held).
 versions_packages:
