@@ -118,18 +118,35 @@ ha_drill_openbao:
   # The health tasks unseal the restarted node (Shamir keys from the inventory) and wait for it to rejoin.
   health: { role: openbao, tasks_from: health }
   probes:
-    - name: A new active node answers through the service name
-      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/health"
+    # The service name may reach a standby (DNS round robin, or a balancer that does not check for the
+    # active node), which answers 429 to a plain health check.
+    - name: An unsealed node answers through the service name
+      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/health?standbyok=true"
       status: [200]
+    # A standby handles sys/wrapping/wrap itself and fails on its read-only storage, so the write goes
+    # to the node the cluster names as leader (sys/leader), which proves a new active node took over.
     - name: A write reaches the new active node (response wrapping stores a token in Raft)
-      url: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}/v1/sys/wrapping/wrap"
-      method: POST
-      headers:
-        X-Vault-Token: "{{ openbao_admin_token | default('') }}"
-        X-Vault-Wrap-TTL: "60"
-      body_format: json
-      body: { ha_drill: "{{ ha_drill_run_id }}" }
-      status: [200]
+      argv:
+        - python3
+        - -c
+        - |
+          import json, os, ssl, urllib.request as u
+          ctx = ssl.create_default_context(cafile=os.environ["CA"] or None)
+          if os.environ.get("VERIFY") == "no":  # lab certificates (ha_drill_validate_certs: false)
+              ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+          get = u.build_opener(u.ProxyHandler({}), u.HTTPSHandler(context=ctx))
+          leader = json.load(get.open(os.environ["ADDR"] + "/v1/sys/leader", timeout=10))["leader_address"]
+          req = u.Request(leader + "/v1/sys/wrapping/wrap", method="POST",
+                          data=json.dumps({"ha_drill": os.environ["RUN"]}).encode(),
+                          headers={"X-Vault-Token": os.environ["TOKEN"], "X-Vault-Wrap-TTL": "60"})
+          get.open(req, timeout=10)
+          print(leader)
+      env:
+        ADDR: "https://{{ openbao_hostname | default('bao.example.internal') }}:{{ openbao_api_port | default(8200) }}"
+        CA: "{{ ha_drill_ca_file }}"
+        TOKEN: "{{ openbao_admin_token | default('') }}"
+        RUN: "{{ ha_drill_run_id }}"
+        VERIFY: "{{ 'yes' if ha_drill_validate_certs | bool else 'no' }}"
       write: true
       no_log: true
 
@@ -428,6 +445,8 @@ ha_drill_postgres:
       json_min_items: 1
     # The application entry point (HAProxy primary port on a surviving node) reaches a writable
     # primary: txid_current() needs a read-write primary. Uses the first owner login of the first database.
+    # verify-ca, not verify-full: HAProxy passes TLS through, so the new leader presents its own name,
+    # not the name of the node the probe connects to.
     - name: Writes through the HAProxy primary port reach the new leader
       enabled: "{{ (ha_drill_instance.databases | default([])) | length > 0 }}"
       argv:
@@ -443,7 +462,7 @@ ha_drill_postgres:
           host={{ ha_drill_prober }} port={{ ha_drill_instance.ports.primary | default(5000) }}
           dbname={{ (ha_drill_instance.databases | default([{}]) | first).name | default('postgres') }}
           user={{ ha_drill_postgres_probe_user.name | default('') }}
-          sslmode=verify-full sslrootcert=/etc/patroni/tls/ca-bundle.crt connect_timeout=5
+          sslmode=verify-ca sslrootcert=/etc/patroni/tls/ca-bundle.crt connect_timeout=5
         - -c
         - SELECT pg_is_in_recovery(), txid_current() > 0
       env:

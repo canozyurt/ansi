@@ -245,12 +245,25 @@
           - "'permitopen *:22' in verify_sshd_jump.stdout_lines"
       tags: [chk_iam_06, chk_net_02]
 
+    # By address: the bastion resolves through the internal resolver, which has no records for the
+    # lab container names (on Debian 12 the lookup stalls past the banner timeout).
+    - name: Read the address of the target host
+      # Docker writes the container's own name and address to its /etc/hosts.
+      ansible.builtin.command: getent ahostsv4 access-dns
+      delegate_to: access-dns
+      register: verify_target_ip
+      changed_when: false
+
+    - name: Keep the target address
+      ansible.builtin.set_fact:
+        verify_target_addr: "{{ verify_target_ip.stdout.split() | first }}"
+
     - name: Log in to a target as operator through the bastion (ssh -J)
       ansible.builtin.command: >-
         {{ verify_ssh }} -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub
         -o ProxyCommand="ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
         -o IdentitiesOnly=yes -i /root/verify_operator -o CertificateFile=/root/verify_operator-cert.pub -W %h:%p jump@127.0.0.1"
-        operator@access-dns id -un
+        operator@{{ verify_target_addr }} id -un
       register: verify_target
       changed_when: false
       tags: [chk_iam_06, chk_iam_09]
@@ -270,7 +283,7 @@
       ansible.builtin.assert:
         that:
           - "'ID alice@example.com' in verify_sshd_log.stdout"
-          - verify_sshd_log.stdout is search('direct-tcpip.*access-dns|target access-dns port 22')
+          - verify_sshd_log.stdout is search('direct-tcpip.*' ~ verify_target_addr ~ '|target ' ~ verify_target_addr ~ ' port 22')
       tags: [chk_iam_07]
 
     - name: Read the bastion firewall

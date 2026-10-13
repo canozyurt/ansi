@@ -21,6 +21,10 @@
     owner: root
     group: root
     mode: "0644"
+  register: container_runtime_key
+  until: container_runtime_key is succeeded
+  retries: 3
+  delay: 10
   tags: [chk_chg_05]
 
 - name: Add the Docker repository

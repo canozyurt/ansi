@@ -1,13 +1,11 @@
 # {{ ansible_managed }}
 # Admin VPN gateway. The private key is generated on this host and loaded from
-# /etc/wireguard/%i.key at start; it is not part of this file.
+# /etc/wireguard/%i.key at start; it is not part of this file. The forwarding rules and the peer
+# check run from the systemd drop-in (wg-quick@%i.service.d/gateway.conf), outside wg-quick.
 [Interface]
 Address = {{ wireguard_gateway_address }}
 ListenPort = {{ wireguard_gateway_port }}
 PostUp = wg set %i private-key /etc/wireguard/%i.key
-PostUp = nft -f /etc/wireguard/%i-nft.conf
-PostUp = /usr/local/sbin/wireguard-gateway-check %i
-PostDown = nft delete table inet wireguard_gateway_%i || true
 
 {% for peer in wireguard_gateway_active_peers %}
 # {{ peer.name }}, owner {{ peer.owner }}, expires {{ peer.expires }}
