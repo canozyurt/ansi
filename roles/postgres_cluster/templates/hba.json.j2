@@ -6,7 +6,9 @@
   'local all postgres peer',
   'hostssl all postgres 127.0.0.1/32 scram-sha-256',
   'host all postgres all reject'] -%}
-{%- for m in members -%}
+{#- Patroni reads the local timeline and LSN over a replication connection to localhost (leader race,
+    rewind checks), so the replicator may also connect over loopback. -#}
+{%- for m in ['127.0.0.1/32'] + members -%}
 {%-   set _ = lines.append('hostssl replication replicator ' ~ m ~ ' scram-sha-256') -%}
 {%- endfor -%}
 {%- set _ = lines.append('host replication all all reject') -%}
