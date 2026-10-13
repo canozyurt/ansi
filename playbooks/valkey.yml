@@ -3,7 +3,7 @@
 # an independent Valkey instance (primary, replicas, 3 Sentinels, redis_exporter) on the hosts of its
 # own inventory group, with its own containers, ports, data directories, ACL users and backups (DAT-01).
 #
-#   ansible-playbook -i inventories/<company> playbooks/valkey.yml [-e valkey_only=cache-main]
+#   ansible-playbook -i ../inventories/<env> playbooks/valkey.yml [-e valkey_only=cache-main]
 #
 # The "valkey" group must contain every instance group (see inventories/example/hosts.yml).
 # Version changes are refused here; they go through playbooks/upgrade.yml.

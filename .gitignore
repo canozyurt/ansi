@@ -5,7 +5,8 @@ __pycache__/
 .venv/
 collections/ansible_collections/
 .ansible/
-# Never commit real inventories or secrets
+# Never commit real inventories or secrets: they belong in your private deployment repository
+# (docs/inventories.md). Ignored here so a local try-out copy of inventories/example stays out of git.
 inventories/*/
 !inventories/example/
 *.vault.yml

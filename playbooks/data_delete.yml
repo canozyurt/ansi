@@ -9,7 +9,7 @@
 # by which the last backup copy expires, to /var/lib/compliance-evidence/data-deletion/ and to the
 # controller.
 #
-#   ansible-playbook -i inventories/<env> playbooks/data_delete.yml \
+#   ansible-playbook -i ../inventories/<env> playbooks/data_delete.yml \
 #     -e data_service=postgres -e data_instance=pg-main -e data_scope=orders -e 'data_delete_roles=[orders_app]' \
 #     -e data_request_reference=REQ-123 -e data_requested_by="Jane Doe, Acme" -e data_delete_approved_by="Security owner" \
 #     -e data_delete_reason="Contract ended" -e data_delete_export_id=export-<run>-postgres-pg-main-orders \

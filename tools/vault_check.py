@@ -15,7 +15,7 @@ Scanned by default: every YAML file in the repository except ``inventories/examp
 collections and caches. Pass paths to scan a private inventory repository instead:
 
     tools/vault_check.py                       # this repository
-    tools/vault_check.py ../infra-inventories  # an operator's inventory checkout
+    tools/vault_check.py ../inventories        # the deployment repository's inventories
 """
 
 from __future__ import annotations

@@ -11,9 +11,9 @@ caches and metadata are excluded, because Zot rebuilds them. The declaration's `
 1. Restore the hosts. Restore the data on the first registry node, then deploy it:
 
    ```sh
-   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=<registry-1> \
+   ansible-playbook -i ../inventories/<env> playbooks/restore.yml -e restore_host=<registry-1> \
      -e restore_name=registry -e restore_confirm=registry -e restore_target=/ -e restore_in_place_confirm=registry
-   ansible-playbook -i inventories/<env> playbooks/registry.yml
+   ansible-playbook -i ../inventories/<env> playbooks/registry.yml
    ```
 
    (Restore in place only while the registry is not running, on a freshly built node.)

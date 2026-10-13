@@ -23,7 +23,7 @@
 #   -e major_upgrade_phase=rollback  source writable again (only before clients moved), subscriptions dropped
 #   -e major_upgrade_phase=finish    after clients moved and checks passed: drop the source publications
 #
-#   ansible-playbook -i inventories/<company> playbooks/postgres_major_upgrade.yml \
+#   ansible-playbook -i ../inventories/<env> playbooks/postgres_major_upgrade.yml \
 #     -e major_upgrade_source=pg-main -e major_upgrade_target=pg-main-19 -e major_upgrade_phase=prepare
 #
 # Limits of logical replication: DDL is not replicated (freeze schema changes until the cut-over),

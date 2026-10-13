@@ -8,7 +8,7 @@ they still fire.
 
 ## Rebuild
 
-1. Restore the hosts. Run `ansible-playbook -i inventories/<env> playbooks/mail_relay.yml`.
+1. Restore the hosts. Run `ansible-playbook -i ../inventories/<env> playbooks/mail_relay.yml`.
 2. Check that the DKIM selector in DNS matches the key the role installed. If the key had to be
    regenerated, publish the new selector before mail leaves.
 

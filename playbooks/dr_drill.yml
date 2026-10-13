@@ -7,11 +7,11 @@
 # a JSON report to /var/lib/compliance-evidence/dr-drill/ (kept by the backups) plus metrics.
 # Definitions: dr_drill_<service> in roles/dr_drill/defaults. Runbooks: docs/dr/.
 #
-#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=all -e dr_drill_confirm=yes
-#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=postgres -e dr_drill_instances=pg-main \
+#   ansible-playbook -i ../inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=all -e dr_drill_confirm=yes
+#   ansible-playbook -i ../inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=postgres -e dr_drill_instances=pg-main \
 #     -e dr_drill_confirm=yes
 #   # prove the second backup server's copy too
-#   ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=forgejo -e dr_drill_repo=backup-2 \
+#   ansible-playbook -i ../inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=forgejo -e dr_drill_repo=backup-2 \
 #     -e dr_drill_confirm=yes
 #
 # The drill needs free space on the node for the largest backup and adds read load on the backup
