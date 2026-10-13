@@ -139,9 +139,8 @@
     owner: "{{ registry_container_uid }}"
     group: "{{ registry_container_uid }}"
     mode: "0600"
-  loop: >-
-    {{ registry_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
-       | difference([registry_admin_user, registry_metrics_user] + registry_robots | map(attribute='name') | list) }}
+  loop: "{{ registry_htpasswd.content | b64decode | split('\n') | select | map('regex_replace', ':.*$', '')
+    | difference([registry_admin_user, registry_metrics_user] + registry_robots | map(attribute='name') | list) }}"
   notify: Restart registry
   tags: [chk_iam_05]
 

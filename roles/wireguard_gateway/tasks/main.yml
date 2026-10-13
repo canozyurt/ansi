@@ -79,6 +79,7 @@
     name: "wg-quick@{{ wireguard_gateway_interface }}"
     enabled: true
     state: started
+    daemon_reload: true
   register: wireguard_gateway_started
   when: wireguard_gateway_manage_service | bool
   tags: [chk_net_02]
