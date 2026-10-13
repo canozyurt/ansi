@@ -3,7 +3,7 @@
 # versions_images.<name>, so rewriting the map here moves every role to the mirror without touching
 # the roles. When image_registry_mirror is set (for example registry.example.internal), each image
 # <registry>/<path>:<tag> is pulled as <mirror>/<registry>/<path>:<tag>, the layout the CI mirror job
-# (.github/workflows/images.yml, .forgejo/workflows/images.yml) pushes and signs. The upstream map
+# (examples/ci/*/images.yml, docs/ci.md) pushes and signs. The upstream map
 # stays available as versions_images_upstream (recipe hashes, release notes).
 #
 # Docker's registry-mirrors setting (container_runtime_registry_mirrors) is not used for this: it only

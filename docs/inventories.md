@@ -22,8 +22,8 @@ infra-inventories/
 ```
 
 Start each one from `inventories/example` and run playbooks with `-i <repo>/<environment>`. Production
-should be deployed only from CI on the protected branch (CHG-02, designed); test and dev may be deployed
-from feature branches.
+should be deployed only from CI on the protected branch (CHG-02; pipelines to copy in [ci.md](ci.md));
+test and dev may be deployed from feature branches.
 
 ## Rules (tools/inventory_lint.py)
 
