@@ -17,7 +17,7 @@ registry_admin_password: "{{ vault_registry_admin_password }}"
 registry_robots:
   # CI pushes application images; developers push to apps/** through SSO and API keys as well.
   - { name: ci-apps, password: "{{ vault_registry_ci_apps_password }}", repositories: ["apps/**"], actions: [read, create, update] }
-  # CI mirrors and signs the pinned upstream images (CHG-08, .github/workflows/images.yml): one namespace per
+  # CI mirrors and signs the pinned upstream images (CHG-08, examples/ci/*/images.yml): one namespace per
   # upstream registry, the layout roles/versions pulls from when image_registry_mirror is set.
   - name: ci-mirror
     password: "{{ vault_registry_ci_mirror_password }}"

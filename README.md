@@ -42,7 +42,7 @@ git init infra-deploy && cd infra-deploy
 echo .platform/ > .gitignore
 git clone https://github.com/canozyurt/ansi.git .platform
 git -C .platform checkout vX.Y.Z && git -C .platform rev-parse HEAD > compliant-infra.ref
-cp -r .platform/inventories/example inventories/production
+mkdir inventories && cp -r .platform/inventories/example inventories/production
 $EDITOR inventories/production/hosts.yml inventories/production/group_vars/all/main.yml
 
 cd .platform                   # playbooks run from here, so ansible.cfg applies
@@ -69,8 +69,10 @@ Before the first run, set at least:
   disabled, and the role refuses to continue if that would lock you out.
 - `rbac_model_group_assignments`: which IdP groups get which default role.
 
-In production, run playbooks only from CI (checklist item CHG-02) and schedule a weekly
-`--check --diff` run to detect drift (CHG-03).
+In production, run playbooks only from CI (checklist item CHG-02) and schedule a daily
+`--check --diff` run to detect drift (CHG-03). [docs/ci.md](docs/ci.md) has deploy, drift and image
+mirror pipelines for GitHub and Forgejo Actions to copy into the private repository that holds your
+inventories.
 
 ## What is in the repo
 

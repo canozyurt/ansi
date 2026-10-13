@@ -84,7 +84,8 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
    The command lists every version change since the last tag and which upgrade paths CI tested.
    Complete the "recreate" section: services whose upgrade play stops all nodes (for example a
    Keycloak minor version, or an OpenBao release that changes the storage format). Note any
-   manual step. Manual steps make it a **major** release.
+   manual step. Manual steps make it a **major** release. List changes to the pipeline examples
+   (`git diff <last tag> -- examples/ci`): users keep copies of them ([ci.md](ci.md)).
 3. **Review the documents** that must be current for each release, and run the pre-flight:
 
    ```sh

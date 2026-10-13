@@ -16,7 +16,7 @@ repos:
         entry: python3 tools/checklist.py check
         language: system
         pass_filenames: false
-        files: ^(compliance/|roles/|playbooks/|molecule/|\.github/)
+        files: ^(compliance/|roles/|playbooks/|molecule/|\.github/|examples/ci/)
       - id: vault-check
         name: vault_* values are encrypted (SEC-01)
         entry: python3 tools/vault_check.py
@@ -28,7 +28,7 @@ repos:
         entry: python3 tools/pins.py --quiet
         language: system
         pass_filenames: false
-        files: ^(roles/|playbooks/|inventories/|requirements|\.github/|\.pre-commit-config\.yaml)
+        files: ^(roles/|playbooks/|inventories/|requirements|\.github/|examples/ci/|\.pre-commit-config\.yaml)
       - id: container-policy
         name: container policy (HRD-02)
         entry: python3 tools/container_policy.py

@@ -27,11 +27,10 @@ infra-deploy/
 
 Playbooks and tools run from the `.platform/` checkout, where `ansible.cfg` applies, against
 `../inventories/<env>`. CI does the same: it clones the pinned release into `.platform/` and runs
-from there. Moving to a new release is a reviewed change to `compliant-infra.ref`.
+from there ([ci.md](ci.md)). Moving to a new release is a reviewed change to `compliant-infra.ref`.
 
-Start each one from `inventories/example`. Production
-should be deployed only from CI on the protected branch (CHG-02, designed); test and dev may be deployed
-from feature branches.
+Start each one from `inventories/example`. Production should be deployed only from CI on the protected
+branch (CHG-02; pipelines to copy in [ci.md](ci.md)); test and dev may be deployed from feature branches.
 
 ## Rules (tools/inventory_lint.py)
 

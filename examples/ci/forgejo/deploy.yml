@@ -1,0 +1,62 @@
+---
+# Example: copy to .forgejo/workflows/deploy.yml in YOUR deployment repository (the private repository
+# that holds your inventories, see docs/inventories.md), not in compliant-infra-ansible itself.
+# Setup, runners, variables and secrets: docs/ci.md. What the job does: examples/ci/github/deploy.yml.
+#
+# Production changes (CHG-02) on Forgejo Actions, after a reviewed pull request is merged into the
+# protected main branch. Forgejo has no deployment environments with required reviewers, so the
+# merge is the approval; see docs/ci.md for the limits. Runs on the deploy runners (roles/forgejo_runner,
+# label "deploy") in the Ansible tool image pinned by digest in ANSIBLE_RUNNER_IMAGE.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - inventories/production/**
+      - compliant-infra.ref
+      - .forgejo/workflows/deploy.yml
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: deploy
+    container:
+      image: ${{ vars.ANSIBLE_RUNNER_IMAGE }}
+    timeout-minutes: 120
+    env:
+      INVENTORY: ${{ github.workspace }}/${{ vars.ANSIBLE_INVENTORY || 'inventories/production' }}
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the pinned compliant-infra-ansible release
+        run: |
+          ref=$(grep -v '^#' compliant-infra.ref | head -n 1 | tr -d '[:space:]')
+          [ -n "$ref" ] || { echo "compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          git -C "$PLATFORM_DIR" -c advice.detachedHead=false checkout "$ref"
+
+      - name: Log in to OpenBao (vault password, CI SSH certificate) [chk_chg_02]
+        id: login
+        working-directory: .platform
+        env:
+          BAO_ADDR: ${{ vars.BAO_ADDR }}
+          BAO_CACERT: ${{ vars.BAO_CACERT }}
+          BAO_ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
+          BAO_SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
+        run: echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
+
+      - name: Apply site.yml with a run record [chk_chg_02]
+        working-directory: .platform
+        env:
+          ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
+        run: |
+          set -o pipefail  # the playbook's exit code, not tee's
+          tools/ansible-run playbooks/site.yml -i "$INVENTORY" --diff ${{ steps.login.outputs.opts }} \
+            | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: Remove the credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ci-auth"
