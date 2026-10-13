@@ -47,8 +47,9 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
           if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
-            ansible-galaxy collection install -r requirements.yml
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
           fi
 
       # SEC-01: whole git history, with the allowlist for placeholders in .gitleaks.toml.
@@ -212,8 +213,9 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
           if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
-            ansible-galaxy collection install -r requirements.yml
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
           fi
 
       - name: Converge, idempotence and verify (CHG-06)
@@ -290,8 +292,9 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
           # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
           if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
-            ansible-galaxy collection install -r requirements.yml
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
           fi
 
       - name: Deploy, idempotence and verify [chk_chg_06]
