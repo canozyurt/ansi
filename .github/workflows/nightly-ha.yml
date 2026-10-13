@@ -36,7 +36,8 @@ jobs:
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          ansible-galaxy collection install -r requirements.yml
+          # Galaxy sometimes cuts a download short or times out, so try three times.
+          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
 
       - name: Deploy 3 nodes, stop one, prove failover (HA-01)
         run: molecule test -s ${{ matrix.scenario }}

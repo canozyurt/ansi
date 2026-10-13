@@ -85,9 +85,8 @@
 
 - name: Write the CA bundle for the server and HAProxy
   ansible.builtin.copy:
-    content: >-
-      {{ (postgres_cluster_member_certs.results | map(attribute='content') | map('b64decode') | join('\n'))
-         if postgres_cluster_server_cert_source == 'selfsigned' else (postgres_cluster_ca_cert.content | b64decode) }}
+    content: "{{ (postgres_cluster_member_certs.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n'))
+      if postgres_cluster_server_cert_source == 'selfsigned' else (postgres_cluster_ca_cert.content | b64decode | trim) }}\n"
     dest: "{{ item.dest }}"
     owner: "{{ item.owner }}"
     group: "{{ item.owner }}"

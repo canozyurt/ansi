@@ -3,7 +3,9 @@
   ansible.builtin.assert:
     that:
       - ansible_facts['distribution'] in common_supported_platforms
-      - ansible_facts['distribution_version'] in common_supported_platforms[ansible_facts['distribution']]
+      # Debian reports point releases (12.15); compare the major version there.
+      - (ansible_facts['distribution_major_version'] if ansible_facts['distribution'] == 'Debian'
+         else ansible_facts['distribution_version']) in common_supported_platforms[ansible_facts['distribution']]
     fail_msg: >-
       {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} is not supported.
       Supported: {{ common_supported_platforms }}

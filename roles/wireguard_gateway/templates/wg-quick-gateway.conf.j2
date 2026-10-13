@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Loads the forwarding rules and runs the peer check once the interface is up. These run from systemd
+# rather than as wg-quick PostUp hooks: the AppArmor profile Ubuntu ships for wg-quick (26.04 onwards)
+# confines its hooks, and its nft child profile cannot read the rules file.
+[Service]
+ExecStartPost=/usr/sbin/nft -f /etc/wireguard/%i-nft.conf
+ExecStartPost=/usr/local/sbin/wireguard-gateway-check %i
+ExecStopPost=-/usr/sbin/nft delete table inet wireguard_gateway_%i
+# If a step above fails, take the interface down again rather than leave it up without its rules.
+ExecStopPost=-/bin/sh -c 'ip link show %i >/dev/null 2>&1 && ip link delete dev %i || true'
