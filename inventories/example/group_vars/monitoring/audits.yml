@@ -153,6 +153,17 @@ prometheus_rules_ci_only_deploys:
             Someone logged in with the break-glass certificate (full sudo outside CI). Confirm it is an approved
             incident, record it, and re-run the drift check afterwards. The session is in the SIEM (rule 100120).
 
+      - alert: CIOnlyDeploysNotEnforced
+        expr: ci_only_deploys_enforced == 0
+        for: 1d
+        labels: { severity: warning, checklist: CHG-02 }
+        annotations:
+          summary: "{% raw %}CI-only deploys are staged but not enforced on {{ $labels.instance }}{% endraw %}"
+          description: >-
+            The deploy account still accepts static keys and sudo outside CI because no run from CI has reached
+            this host since the SSH CA was trusted. Run the deploy pipeline (it enforces CI-only on its first run).
+            See docs/audits.md.
+
 prometheus_rules_evidence:
   - name: evidence-store  # EVD-02
     rules:

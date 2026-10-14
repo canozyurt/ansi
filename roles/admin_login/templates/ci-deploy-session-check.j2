@@ -4,16 +4,24 @@
 # that logged in with a certificate carrying the CI principal, signed by a trusted user CA. sshd
 # writes that certificate to the file named by SSH_USER_AUTH (ExposeAuthInfo); it is read from the
 # environment of sudo, this script's parent. Other accounts are not affected.
+# With --probe (run by Ansible without sudo) it checks the caller's own session and logs nothing:
+# the role enforces CI-only deploys only from a session that passes, so no run locks itself out.
 set -u
+probe=false
+[ "${1:-}" = "--probe" ] && probe=true
 user="${PAM_USER:-}"
-[ "$user" = "{{ admin_login_ci_deploy_user }}" ] || exit 0
+$probe || [ "$user" = "{{ admin_login_ci_deploy_user }}" ] || exit 0
 
 deny() {
-  logger -p auth.warning -t ansible-run-denied "sudo for $user denied: $1 (tty=${PAM_TTY:-none})"
+  $probe || logger -p auth.warning -t ansible-run-denied "sudo for $user denied: $1 (tty=${PAM_TTY:-none})"
   exit 1
 }
 
-auth_file=$(tr '\0' '\n' < "/proc/$PPID/environ" 2>/dev/null | sed -n 's/^SSH_USER_AUTH=//p' | head -n 1)
+if $probe; then
+  auth_file="${SSH_USER_AUTH:-}"
+else
+  auth_file=$(tr '\0' '\n' < "/proc/$PPID/environ" 2>/dev/null | sed -n 's/^SSH_USER_AUTH=//p' | head -n 1)
+fi
 [ -n "$auth_file" ] && [ -f "$auth_file" ] || deny "not an SSH session with exposed authentication info"
 cert=$(grep -m 1 -E '^publickey [a-z0-9-]+-cert-v01@openssh\.com ' "$auth_file") || deny "no certificate login"
 
@@ -29,6 +37,7 @@ ca=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Signing CA: [^ ]* \(SHA256:[
 trusted=$(ssh-keygen -l -f /etc/ssh/trusted_user_ca_keys.pub 2>/dev/null | awk '{print $2}')
 [ -n "$ca" ] && printf '%s\n' "$trusted" | grep -qxF "$ca" || deny "certificate not signed by a trusted CA"
 
+$probe && exit 0
 id=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*Key ID: "\(.*\)"$/\1/p')
 logger -p auth.info -t ansible-run "sudo for $user allowed: CI certificate key_id=$id"
 exit 0
