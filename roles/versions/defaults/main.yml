@@ -127,15 +127,54 @@ versions_postgres:
 # Rewritten by tools/release.py bump-upgrade-from <tag> after each release (docs/releasing.md).
 versions_upgrade_from:
   keycloak: docker.io/keycloak/keycloak:26.7.5
-  openbao: docker.io/openbao/openbao:2.6.4
+  openbao: docker.io/openbao/openbao:2.7.0
+  postgres_client: docker.io/library/postgres:18.6-alpine
+  node_exporter: docker.io/prom/node-exporter:v1.12.0
+  prometheus: docker.io/prom/prometheus:v3.14.0
+  alertmanager: docker.io/prom/alertmanager:v0.34.0
+  blackbox_exporter: docker.io/prom/blackbox-exporter:v0.27.0
+  grafana: docker.io/grafana/grafana:13.2.2
+  oauth2_proxy: quay.io/oauth2-proxy/oauth2-proxy:v7.12.0
+  haproxy: docker.io/library/haproxy:3.4.5-alpine
+  coraza_spoa: ghcr.io/corazawaf/coraza-spoa:0.8.0
+  coraza_spoa_builder: docker.io/library/golang:1.26.8-alpine
+  rest_server: docker.io/restic/rest-server:0.13.0
+  forgejo: codeberg.org/forgejo/forgejo:15.0.8-rootless
+  forgejo_runner: data.forgejo.org/forgejo/runner:12.10.0
+  forgejo_runner_job: docker.io/library/node:24.21.0-trixie
+  gatus: docker.io/twinproduction/gatus:v5.36.0
+  ciso_assistant_backend: ghcr.io/intuitem/ciso-assistant-community/backend:v4.0.9
+  ciso_assistant_frontend: ghcr.io/intuitem/ciso-assistant-community/frontend:v4.0.9
+  trivy: docker.io/aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+  postgres_base: docker.io/library/ubuntu:resolute-20260912
+  etcd: gcr.io/etcd-development/etcd:v3.6.14
+  postgres_exporter: docker.io/prometheuscommunity/postgres-exporter:v0.20.0
   wazuh_indexer: docker.io/wazuh/wazuh-indexer:4.14.7
   wazuh_manager: docker.io/wazuh/wazuh-manager:4.14.7
   wazuh_dashboard: docker.io/wazuh/wazuh-dashboard:4.14.7
+  zot: ghcr.io/project-zot/zot:v2.1.20
+  zot_build_base: docker.io/library/debian:13.7-slim
+  valkey: docker.io/valkey/valkey:9.1.1-alpine
+  redis_exporter: docker.io/oliver006/redis_exporter:v1.92.1
+  rabbitmq: docker.io/library/rabbitmq:4.3.5-alpine
+  garage: docker.io/dxflrs/garage:v2.4.0
+  rclone: docker.io/rclone/rclone:1.71.1
+  testssl: ghcr.io/testssl/testssl.sh:3.2@sha256:51918b1e954df0acee8c08d3ad5ce306710e4fefe49ed0e0f92728ecf9e7ff34
 
 # The PostgreSQL server image recipe of the previous release (same shape as versions_postgres).
 # Empty until the first release that includes the PostgreSQL product playbook; tools/release.py
 # bump-upgrade-from copies versions_postgres here. molecule/postgres-upgrade is skipped while it is empty.
-versions_postgres_upgrade_from: {}
+versions_postgres_upgrade_from:
+  major: 18
+  packages:
+    postgresql-18: 18.6-0ubuntu0.26.04.1
+    postgresql-client-18: 18.6-0ubuntu0.26.04.1
+    postgresql-18-pgaudit: 18.0-2
+    pgbackrest: 2.58.0-1
+  patroni:
+    version: 4.1.5
+    url: https://files.pythonhosted.org/packages/63/cb/0ba365e95d648a0592de0fb1a0168cff26a3cf57930d74d88b188b5f9462/patroni-4.1.5-py3-none-any.whl
+    sha256: 7aad8c1539e6c51c269a8005169dd54ddc7668437b7900fa6099d7894e224c84
 
 # Images that keep their upstream reference when image_registry_mirror is set (CHG-08, roles/versions
 # tasks): the registry cannot serve its own first pull. Pin them by digest if you can.
