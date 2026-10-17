@@ -22,7 +22,11 @@
 
 ## Variable naming
 
-Role variables are prefixed with the role name (`firewall_mgmt_cidrs`). Roles that need inbound ports
+Role variables are prefixed with the role name (`firewall_mgmt_cidrs`). Variables are part of the
+interface organisations' inventories depend on: renaming, removing or newly requiring one follows the
+[variable deprecation policy](docs/upgrades.md#variable-deprecation-policy) (an entry in
+`inventory-changes.yml` and a line under "Inventory changes" in CHANGELOG.md). Every pull request adds
+its lines to the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md). Roles that need inbound ports
 declare them as `firewall_rules_<role>` (a list in the `firewall_rules` format); the firewall role collects
 every variable with that prefix.
 

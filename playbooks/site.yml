@@ -1,6 +1,9 @@
 ---
 # Full deployment. Run from CI only (CHG-02); use --check --diff for the weekly audit run (CHG-03).
 # On new hosts run playbooks/bootstrap.yml first (docs/first-deploy.md).
+- name: Check the inventory against this release's variable changes
+  ansible.builtin.import_playbook: inventory_check.yml
+
 - name: Stop a first deploy that has not run bootstrap.yml
   hosts: bastion
   gather_facts: false

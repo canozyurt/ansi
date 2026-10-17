@@ -13,7 +13,7 @@ tested upgrade from the previous tag (CHG-07). Organisations apply a release as 
 | Upgrade from the previous release: the `*-upgrade` scenarios install `versions_upgrade_from` (and `versions_postgres_upgrade_from`) and run `playbooks/upgrade.yml` | `keycloak-upgrade`, `openbao-upgrade`, `monitoring-upgrade`, `edge-upgrade`, `postgres-upgrade`, `forgejo-upgrade`, `valkey-upgrade`, `rabbitmq-upgrade`, `garage-upgrade`, `siem-upgrade`, `registry-upgrade`, `backup-upgrade`, `governance-upgrade` |
 | Failover with one node stopped (HA-01) | `.github/workflows/nightly-ha.yml`: `keycloak-ha`, `openbao-ha`, `postgres-ha` |
 | Pins, container policy, tool registry, vault, inventories, secrets | lint job |
-| Per-release documents: DR runbooks (HA-02), shared-responsibility matrix (DAT-03), every upgrade scenario in CI, upgrade coverage of every pinned service (below) | `tools/release.py check` |
+| Per-release documents: DR runbooks (HA-02), shared-responsibility matrix (DAT-03), every upgrade scenario in CI, upgrade coverage of every pinned service (below), inventory changes and changelog (below) | `tools/release.py check` |
 
 An upgrade scenario whose service was not in the previous release has nothing to upgrade from. CI
 asks `tools/release.py has-upgrade-path <scenario>`; exit code 3 skips the scenario with a notice.
@@ -50,6 +50,25 @@ same pull request.
 | Edge (HAProxy, WAF) | none: stateless, configuration is in git | `serial: 1`, the VIP moves | `edge-upgrade` |
 | Monitoring | none: Prometheus replicas keep scraping; TSDB stays on disk | `serial: 1` | `monitoring-upgrade` |
 
+### Inventory changes and the changelog
+
+Every pull request adds its lines to the `[Unreleased]` section of [CHANGELOG.md](../CHANGELOG.md).
+A pull request that renames, removes or adds a required variable, or changes a default that
+changes behaviour, also follows the [variable deprecation policy](upgrades.md#variable-deprecation-policy):
+an entry in `inventory-changes.yml` and a line naming the variable under `### Inventory changes`.
+`tools/release.py check` fails when:
+
+- `inventory-changes.yml` is invalid, or an entry that the last tag holds was edited or deleted;
+- a variable in some `roles/*/defaults/main.yml` at the last tag is gone without a `renamed` or
+  `removed` entry;
+- a role or playbook still reads a `removed` variable, or no role reads the new name of a `renamed` one;
+- `inventories/example` fails `tools/inventory_check.py` (it must set every required variable and use
+  no deprecated name);
+- CHANGELOG.md does not name a new entry's variable under `### Inventory changes`.
+
+Required variables and changed defaults cannot be detected from the diff; reviewers check that a new
+variable without a usable default comes with a `required` entry.
+
 The mail relay uses the distribution's Postfix packages, so it follows the nightly security updates
 and `playbooks/rolling_reboot.yml`, not the release bundle.
 
@@ -75,13 +94,17 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
 1. **Freeze.** Merge the version bumps you want (one pull request per upstream change, with the
    upstream release notes read and summarised in the PR). CI must be green on `main`, including the
    latest nightly HA run.
-2. **Write the notes.**
+2. **Write the changelog and the notes.** Turn `[Unreleased]` into the release section and commit
+   it in the release pull request:
 
    ```sh
-   python3 tools/release.py notes v1.4.0 > /tmp/notes-v1.4.0.md
+   python3 tools/release.py changelog v1.4.0
+   git commit -am "Release v1.4.0" && python3 tools/release.py notes v1.4.0 > /tmp/notes-v1.4.0.md
    ```
 
-   The command lists every version change since the last tag and which upgrade paths CI tested.
+   The notes list every version change since the last tag, the changelog section, the inventory
+   changes (from `inventory-changes.yml`, with the `tools/inventory_check.py` command organisations
+   run) and which upgrade paths CI tested.
    Complete the "recreate" section: services whose upgrade play stops all nodes (for example a
    Keycloak minor version, or an OpenBao release that changes the storage format). Note any
    manual step. Manual steps make it a **major** release. List changes to the pipeline examples
@@ -94,7 +117,8 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
    ```
 
    `cut` refuses a dirty tree, a version that is not newer than the last tag, a commit that is
-   already tagged and any failing document or upgrade-coverage check. When everything passes it
+   already tagged, a CHANGELOG.md without a `[v1.4.0]` section (or with entries left under
+   `[Unreleased]`) and any failing document, upgrade-coverage or inventory-change check. When everything passes it
    writes the notes (step 2) and prints the exact `git tag -s` command for the current commit;
    it does not tag.
 
@@ -108,6 +132,7 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
    | Upstream patch releases, fixes | patch |
    | Upstream minor releases, new features or services | minor |
    | Anything an organisation must do by hand, or a data migration with no rolling path back | major |
+   | A removed variable, a dropped deprecated name, or a new required variable organisations must set first | major |
 
    ```sh
    git tag -s --cleanup=verbatim v1.4.0 -F /tmp/notes-v1.4.0.md
