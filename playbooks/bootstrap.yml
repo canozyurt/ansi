@@ -1,0 +1,31 @@
+---
+# First deploy, stage 1 of 2 (docs/first-deploy.md). Brings up the host baseline and OpenBao, which creates
+# the SSH user CA, the internal PKI and the AppRole credentials that the rest of site.yml needs. Put what it
+# writes to .openbao-init/ into the inventory, then run site.yml. Safe to rerun.
+- name: Validate the organization role model
+  ansible.builtin.import_playbook: rbac.yml
+
+- name: Apply the host baseline (no SSH CA yet, so the deploy account still logs in with its key)
+  ansible.builtin.import_playbook: baseline.yml
+
+- name: Prepare container hosts
+  ansible.builtin.import_playbook: container_hosts.yml
+
+- name: Initialise OpenBao and publish the SSH CA key and the PKI AppRole credentials
+  ansible.builtin.import_playbook: secrets.yml
+  vars:
+    openbao_oidc_deferred: true      # Keycloak does not exist yet; identity.yml connects it
+    openbao_pki_issue_secret_id: true
+
+- name: Say what goes into the inventory before site.yml
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show the next steps
+      ansible.builtin.debug:
+        msg:
+          - "Stage 1 done. Files written to {{ playbook_dir }}/../.openbao-init/ (move them to offline storage after use):"
+          - "*-init-*.json: put unseal_keys_b64 into openbao_unseal_keys and admin_token into openbao_admin_token (Ansible Vault)."
+          - "*-ssh-user-ca.pub: put its line into ssh_hardening_trusted_user_ca_keys (group_vars/all)."
+          - "*-pki-approle.json: set pki_openbao_addr, pki_openbao_role_id and pki_openbao_secret_id (Ansible Vault)."
+          - "Then run playbooks/site.yml (stage 2, docs/first-deploy.md)."

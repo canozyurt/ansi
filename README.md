@@ -49,9 +49,14 @@ cd .platform                   # playbooks run from here, so ansible.cfg applies
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 ansible-galaxy collection install -r requirements.yml
+# New hosts: stage 1, then put the SSH CA key and OpenBao outputs into the inventory (docs/first-deploy.md)
+ansible-playbook -i ../inventories/production playbooks/bootstrap.yml
 ansible-playbook -i ../inventories/production playbooks/site.yml --check --diff   # preview
 ansible-playbook -i ../inventories/production playbooks/site.yml
 ```
+
+A first deploy runs in stages because the bastion needs the SSH CA that OpenBao creates; see
+[docs/first-deploy.md](docs/first-deploy.md).
 
 Every command in this repository's docs and playbook headers is written the same way: run from the
 `.platform/` checkout with `-i ../inventories/<env>`.

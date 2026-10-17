@@ -5,6 +5,22 @@
   roles:
     - role: keycloak
 
+# IAM-01, IAM-09: OpenBao logins go through Keycloak. secrets.yml runs before Keycloak exists in site.yml
+# and bootstrap.yml, so OpenBao is connected here.
+- name: Connect OpenBao to Keycloak SSO
+  hosts: openbao
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Configure the OpenBao OIDC login
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: sso
+        apply:
+          tags: [chk_iam_01, chk_iam_09]
+      when: openbao_oidc_enabled | default(oidc_clients_enabled | default(true)) | bool
+      tags: [chk_iam_01, chk_iam_09]
+
 # IAM-04: the VPN gateways check peer owners against Keycloak. On a first install access.yml ran before
 # Keycloak existed, so the sync client is registered here.
 - name: Register the VPN IdP sync client in Keycloak

@@ -1,7 +1,23 @@
 ---
 # Full deployment. Run from CI only (CHG-02); use --check --diff for the weekly audit run (CHG-03).
+# On new hosts run playbooks/bootstrap.yml first (docs/first-deploy.md).
 - name: Check the inventory against this release's variable changes
   ansible.builtin.import_playbook: inventory_check.yml
+
+- name: Stop a first deploy that has not run bootstrap.yml
+  hosts: bastion
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the SSH user CA key in the inventory (IAM-06)
+      ansible.builtin.assert:
+        that: ssh_hardening_trusted_user_ca_keys | default([]) | length > 0
+        fail_msg: >-
+          ssh_hardening_trusted_user_ca_keys is empty, so the bastion cannot be deployed and this run would stop
+          half-way. On new hosts run playbooks/bootstrap.yml first and put the SSH CA key it writes to
+          .openbao-init/ into the inventory (docs/first-deploy.md).
+        quiet: true
+      tags: [always]
 
 - name: Validate the organization role model
   ansible.builtin.import_playbook: rbac.yml
@@ -14,14 +30,16 @@
 
 - name: Deploy secrets management, the internal PKI and the SSH CA
   ansible.builtin.import_playbook: secrets.yml
+  vars:
+    openbao_oidc_deferred: true  # Keycloak SSO is connected by identity.yml, once Keycloak exists
 
-- name: Set up admin access (VPN, bastion, session recording, DNS; needs the SSH CA from secrets.yml)
+- name: Set up admin access (VPN, bastion, session recording, DNS; needs the SSH CA key from bootstrap.yml)
   ansible.builtin.import_playbook: access.yml
 
 - name: Deploy the outbound mail relays (Keycloak and Alertmanager send through them)
   ansible.builtin.import_playbook: mail_relay.yml
 
-- name: Deploy the identity provider
+- name: Deploy the identity provider (and connect OpenBao to it)
   ansible.builtin.import_playbook: identity.yml
 
 - name: Deploy monitoring and alerting
