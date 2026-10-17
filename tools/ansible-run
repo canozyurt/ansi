@@ -2,7 +2,7 @@
 # Run a playbook and record the run (CHG-02, CHG-03). CI pipelines call this instead of
 # ansible-playbook:
 #
-#   tools/ansible-run playbooks/site.yml -i inventories/production [--check --diff] [other options]
+#   tools/ansible-run playbooks/site.yml -i ../inventories/production [--check --diff] [other options]
 #
 # 1. ansible-playbook runs with the run_record callback (ansible.cfg), which logs a JSON record
 #    (who, commit, playbook, hosts, result) to journald on the controller (identifier ansible-run)

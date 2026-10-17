@@ -155,7 +155,7 @@ class Release(unittest.TestCase):
         notes = self.root / "notes.md"
         rc, out = self.run_tool("cut", "v0.1.0", "--notes-out", str(notes))
         self.assertEqual(rc, 0, out)
-        self.assertIn("git tag -s v0.1.0 -F", out)
+        self.assertIn("git tag -s --cleanup=verbatim v0.1.0 -F", out)
         self.assertIn("bump-upgrade-from v0.1.0", out)
         self.assertIn("First release", notes.read_text())
         self.assertEqual(self.git("tag", "--list").strip(), "", "cut must never create a tag")

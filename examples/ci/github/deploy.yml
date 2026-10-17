@@ -10,7 +10,8 @@
 # shipped to the SIEM) and the record is kept as a build artifact (EVD-02). Runs on the self-hosted
 # deploy runner with the ci-deploy OpenBao AppRole (tools/ci-openbao-login); the hosts accept the
 # deploy account only with that certificate (ci_only_deploys). The playbooks come from the
-# compliant-infra-ansible release pinned in compliant-infra.ref; bumping it is a reviewed change.
+# compliant-infra-ansible release pinned in compliant-infra.ref; bumping it is a reviewed change that
+# upgrade.yml applies (site.yml refuses version changes on clusters), so pushes that change it are skipped here.
 name: Deploy
 
 on:
@@ -18,7 +19,6 @@ on:
     branches: [main]
     paths:
       - inventories/production/**
-      - compliant-infra.ref
       - .github/workflows/deploy.yml
   workflow_dispatch:
 
@@ -30,8 +30,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  route:
+    name: Leave release bumps to upgrade.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.route.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # site.yml refuses version changes on clusters, so a push that changes the pinned release is applied by
+      # upgrade.yml (upgrade, then site.yml), not here. The first pin (an install) and manual runs deploy.
+      - name: Did this push change the pinned release?
+        id: route
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          pinned() { git show "$1:compliant-infra.ref" 2>/dev/null | grep -v '^#' | head -n 1 | tr -d '[:space:]'; }
+          deploy=true
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || BEFORE=HEAD^
+            old=$(pinned "$BEFORE"); new=$(pinned HEAD)
+            if [ -n "$old" ] && [ "$old" != "$new" ]; then
+              deploy=false
+              echo "::notice::compliant-infra.ref changed ($old -> $new): the Upgrade workflow applies this push"
+            fi
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Apply site.yml
+    needs: route
+    if: needs.route.outputs.deploy == 'true'
     runs-on: [self-hosted, deploy]
     environment: production
     timeout-minutes: 120

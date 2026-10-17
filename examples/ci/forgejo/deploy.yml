@@ -6,7 +6,8 @@
 # Production changes (CHG-02) on Forgejo Actions, after a reviewed pull request is merged into the
 # protected main branch. Forgejo has no deployment environments with required reviewers, so the
 # merge is the approval; see docs/ci.md for the limits. Runs on the deploy runners (roles/forgejo_runner,
-# label "deploy") in the Ansible tool image pinned by digest in ANSIBLE_RUNNER_IMAGE.
+# label "deploy") in the Ansible tool image pinned by digest in ANSIBLE_RUNNER_IMAGE. Pushes that change
+# compliant-infra.ref are skipped here: upgrade.yml applies them (site.yml refuses version changes on clusters).
 name: deploy
 
 on:
@@ -14,12 +15,42 @@ on:
     branches: [main]
     paths:
       - inventories/production/**
-      - compliant-infra.ref
       - .forgejo/workflows/deploy.yml
   workflow_dispatch:
 
 jobs:
+  route:
+    runs-on: docker
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.route.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # site.yml refuses version changes on clusters, so a push that changes the pinned release is applied by
+      # upgrade.yml (upgrade, then site.yml), not here. The first pin (an install) and manual runs deploy.
+      - name: Did this push change the pinned release?
+        id: route
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          pinned() { git show "$1:compliant-infra.ref" 2>/dev/null | grep -v '^#' | head -n 1 | tr -d '[:space:]'; }
+          deploy=true
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || BEFORE=HEAD^
+            old=$(pinned "$BEFORE"); new=$(pinned HEAD)
+            if [ -n "$old" ] && [ "$old" != "$new" ]; then
+              deploy=false
+              echo "compliant-infra.ref changed ($old -> $new): the upgrade workflow applies this push"
+            fi
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
   deploy:
+    needs: route
+    if: needs.route.outputs.deploy == 'true'
     runs-on: deploy
     container:
       image: ${{ vars.ANSIBLE_RUNNER_IMAGE }}

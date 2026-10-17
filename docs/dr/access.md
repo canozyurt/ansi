@@ -14,8 +14,8 @@ are in the SIEM. `/etc` of every host is in the `host-etc` backup declaration, f
    key or console:
 
    ```sh
-   ansible-playbook -i inventories/<env> playbooks/rbac.yml playbooks/baseline.yml playbooks/container_hosts.yml
-   ansible-playbook -i inventories/<env> playbooks/access.yml
+   ansible-playbook -i ../inventories/<env> playbooks/rbac.yml playbooks/baseline.yml playbooks/container_hosts.yml
+   ansible-playbook -i ../inventories/<env> playbooks/access.yml
    ```
 
 3. Until OpenBao is back (step 3 of the rebuild order), SSH certificates cannot be issued. Use the

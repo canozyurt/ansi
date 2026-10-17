@@ -7,7 +7,7 @@ storage and may be lost). **RTO:** 1 h.
 
 ## Rebuild
 
-1. Restore the hosts. Run `ansible-playbook -i inventories/<env> playbooks/governance.yml` (the
+1. Restore the hosts. Run `ansible-playbook -i ../inventories/<env> playbooks/governance.yml` (the
    status page role).
 2. Host the status page outside the failed site or provider when possible, so customers can still
    read it during the disaster. Post the incident there.

@@ -6,10 +6,10 @@
 # /var/lib/compliance-evidence/ha-drill/ on the probing node (kept by the backups) and the result is
 # exported as metrics (HADrillFailed alert). Definitions: ha_drill_<service> in roles/ha_drill/defaults.
 #
-#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=keycloak -e ha_drill_confirm=yes
-#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=postgres -e ha_drill_instances=pg-main \
+#   ansible-playbook -i ../inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=keycloak -e ha_drill_confirm=yes
+#   ansible-playbook -i ../inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=postgres -e ha_drill_instances=pg-main \
 #     -e ha_drill_node=data-2.example.internal -e ha_drill_confirm=yes
-#   ansible-playbook -i inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=all -e ha_drill_confirm=yes
+#   ansible-playbook -i ../inventories/<env> playbooks/ha_drill.yml -e ha_drill_services=all -e ha_drill_confirm=yes
 #
 # Run it in a maintenance window: clients connected to the stopped node see a failover.
 - name: Check the request

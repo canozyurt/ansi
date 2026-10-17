@@ -3,7 +3,7 @@
 # every service through SSO, and what each one gets is compared with compliance/role-matrix.yml.
 # Runs from the controller against a deployed environment (use staging first):
 #
-#   ansible-playbook -i inventories/<env> playbooks/test_role_matrix.yml
+#   ansible-playbook -i ../inventories/<env> playbooks/test_role_matrix.yml
 #
 # Users get their role through a group iam-test-<role> (no per-user grants, IAM-03) and a real second
 # factor (TOTP, or a software WebAuthn key for privileged roles), so the production MFA flow is exercised.

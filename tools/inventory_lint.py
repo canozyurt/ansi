@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Lint inventories so dev, test and production stay apart (CHG-04).
 
-Layout (docs/inventories.md): one directory per environment under ``inventories/`` (or in a separate
-private repository), each with ``hosts.yml``, ``group_vars/`` and ``host_vars/``. Checks:
+Layout (docs/inventories.md): one directory per environment under ``inventories/`` of the private
+deployment repository, each with ``hosts.yml``, ``group_vars/`` and ``host_vars/``. Checks:
 
 1. every inventory sets ``inventory_environment`` to one of production, staging, test or dev
    (in ``group_vars/all``, or ``all.vars`` in hosts.yml);
@@ -15,8 +15,8 @@ private repository), each with ``hosts.yml``, ``group_vars/`` and ``host_vars/``
 ``--include-example`` is given.
 
 Usage:
-    tools/inventory_lint.py                         # every inventory under inventories/
-    tools/inventory_lint.py path/to/prod path/to/test   # explicit inventories (e.g. a private repo)
+    tools/inventory_lint.py                         # every inventory under inventories/ (local try-out)
+    tools/inventory_lint.py ../inventories/production ../inventories/test   # the deployment repository
 """
 
 from __future__ import annotations

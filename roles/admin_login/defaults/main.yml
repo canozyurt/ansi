@@ -18,7 +18,10 @@ admin_login_group: ssh-users
 admin_login_removed_accounts: []
 
 # ---------------------------------------------------------------- CI-only deploys (CHG-02)
-# With ci_only_deploys (inventory-wide, default true in the example inventory) and a trusted SSH CA:
+# With ci_only_deploys (inventory-wide, default true in the example inventory) and a trusted SSH CA,
+# the role stages CI-only: it maps the CI principal and creates the break-glass account, but enforces
+# the rest only in a run that logged in with the CI's certificate (or on a host already enforced), so
+# a run from another machine cannot lock itself out (tasks/ci_only.yml). Once enforced:
 # - the deploy account (ci_deploy_user) loses its authorized_keys and accepts only certificates with
 #   the CI principal, optionally only from the runner addresses (from= in its principals file);
 # - sudo for the deploy account is allowed only in a session that logged in with such a certificate

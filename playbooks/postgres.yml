@@ -3,7 +3,7 @@
 # each is an independent Patroni cluster on the hosts of its own inventory group, with its own
 # containers, ports, data directories, credentials, certificates, etcd and backups (DAT-01).
 #
-#   ansible-playbook -i inventories/<company> playbooks/postgres.yml [-e postgres_only=pg-main]
+#   ansible-playbook -i ../inventories/<env> playbooks/postgres.yml [-e postgres_only=pg-main]
 #
 # The "postgres" group must contain every cluster group (see inventories/example/hosts.yml).
 # Version changes are refused here; they go through playbooks/upgrade.yml.

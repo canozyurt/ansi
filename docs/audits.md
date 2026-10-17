@@ -94,6 +94,35 @@ secret_id into the CI's variables (`BAO_ADDR`, `BAO_CACERT`, `BAO_DEPLOY_ROLE_ID
 (`BAO_DEPLOY_SECRET_ID`); trust the SSH CA (`ssh_hardening_trusted_user_ca_keys`); then deploy with
 `ci_only_deploys: true`. Until the CA is trusted, the role only reports that CI-only is not enforced.
 
+Enforcement comes in two steps, so no run locks out the machine that runs it:
+
+- **Staged.** A run that trusts the CA from your machine (or any session without the CI's
+  certificate) maps `ci-deploy` to the deploy account, creates the `break-glass` account and takes
+  sudo from people, but leaves the deploy account's static keys and sudo alone. The run says so,
+  each host publishes `ci_only_deploys_enforced 0`, and CIOnlyDeploysNotEnforced fires after a day.
+- **Enforced.** `roles/admin_login` checks the run's own SSH session with the same test sudo will use
+  (`ci-deploy-session-check --probe`). Only when it logged in with a `ci-deploy` certificate from a
+  trusted CA does the role remove the static keys and restrict sudo. Reaching that step proves CI
+  can log in and use sudo on the host. Later runs keep a host enforced whatever session they use.
+
+So the first CI deploy after the CA is trusted is the switch-over. If that deploy fails before it
+reaches `playbooks/access.yml`, the hosts stay staged and you can still deploy from your machine.
+
+### Break-glass deploys
+
+When CI is down and a change cannot wait, sign a `break-glass` certificate (admin policy; it raises
+BreakGlassLogin on every host it touches) and run from your machine as that account:
+
+```sh
+# with the break-glass certificate loaded in your SSH agent
+tools/ansible-run playbooks/site.yml -i inventories/production -e ansible_user=break-glass
+```
+
+`ci_deploy_user` is a fixed value in the example inventory, so the run keeps enforcing CI-only for
+`deploy` and does not lift it. Record the incident and let the next CI run (and the drift check)
+confirm the hosts. If OpenBao is down too, no certificate can be signed: restore it first
+(docs/dr/openbao.md) or use the host console.
+
 ## Drift (CHG-03)
 
 The drift workflow ([ci.md](ci.md)) runs `tools/ansible-run playbooks/site.yml --check --diff` daily as the CI. Any

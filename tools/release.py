@@ -582,7 +582,7 @@ def cmd_cut(root: Path, args) -> int:
     head = git(root, "rev-parse", "--short", "HEAD").strip()
     print(f"{args.version}: ready to tag {head} ({'first release' if previous is None else 'after ' + previous}).")
     print(f"Notes written to {notes_out}; complete the recreate section, then run:")
-    print(f"  git tag -s {args.version} -F {notes_out} {head}")
+    print(f"  git tag -s --cleanup=verbatim {args.version} -F {notes_out} {head}")
     print(f"  git push origin {args.version}")
     print("Then, in the next pull request:")
     print(f"  python3 tools/release.py bump-upgrade-from {args.version}")

@@ -22,7 +22,7 @@ snapshot is encrypted by OpenBao's barrier and is useless without the unseal key
 2. Fetch the snapshot on that node:
 
    ```sh
-   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=<openbao-1> \
+   ansible-playbook -i ../inventories/<env> playbooks/restore.yml -e restore_host=<openbao-1> \
      -e restore_name=openbao -e restore_confirm=openbao
    ```
 
