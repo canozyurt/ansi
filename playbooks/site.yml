@@ -1,5 +1,8 @@
 ---
 # Full deployment. Run from CI only (CHG-02); use --check --diff for the weekly audit run (CHG-03).
+- name: Check the inventory against this release's variable changes
+  ansible.builtin.import_playbook: inventory_check.yml
+
 - name: Validate the organization role model
   ansible.builtin.import_playbook: rbac.yml
 

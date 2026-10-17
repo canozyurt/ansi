@@ -13,6 +13,9 @@
 # site.yml, which refuses to change versions, so it runs second. A release is applied only when both
 # have run from the same tag. CI runs them as two steps of one job (docs/upgrades.md).
 
+- name: Check the inventory against this release's variable changes
+  ansible.builtin.import_playbook: inventory_check.yml
+
 - name: Check OpenBao is healthy and order its nodes for the upgrade
   hosts: openbao
   become: true
