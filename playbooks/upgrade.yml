@@ -3,9 +3,15 @@
 #
 #   git checkout vX.Y.Z
 #   ansible-playbook -i ../inventories/<env> playbooks/upgrade.yml
+#   ansible-playbook -i ../inventories/<env> playbooks/site.yml    # only if upgrade.yml succeeded
 #
 # Every service is upgraded one node at a time; the run stops at the first node that
 # does not come back healthy. Services back up their data before a version change.
+#
+# This playbook changes versions and applies the upgraded services' roles, nothing else. The rest of
+# the release (baseline and hardening, the other roles, roles new in this release) comes from
+# site.yml, which refuses to change versions, so it runs second. A release is applied only when both
+# have run from the same tag. CI runs them as two steps of one job (docs/upgrades.md).
 
 - name: Check the inventory against this release's variable changes
   ansible.builtin.import_playbook: inventory_check.yml
@@ -339,3 +345,13 @@
   serial: "20%"
   roles:
     - role: wazuh_agent
+
+- name: Remind the operator that the release is not fully applied yet
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Next step is site.yml from the same tag
+      ansible.builtin.debug:
+        msg: >-
+          Versions are upgraded. Now run playbooks/site.yml from this tag with the same inventory to
+          apply the rest of the release (baseline, hardening, configuration, new roles). See docs/upgrades.md.
