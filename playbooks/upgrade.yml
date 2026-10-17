@@ -123,6 +123,13 @@
       loop: [alertmanager, prometheus, grafana]
       tags: [chk_chg_07]
 
+# keepalived names every peer by its address facts; a serial play only gathers the facts of its batch.
+- name: Gather the facts of every edge node before the rolling upgrade
+  hosts: edge
+  become: true
+  gather_facts: true
+  tasks: []
+
 - name: Upgrade the edge one node at a time (the VIP moves to the other node meanwhile)
   hosts: edge
   become: true

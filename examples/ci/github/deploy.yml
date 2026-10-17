@@ -1,0 +1,128 @@
+---
+# Example: copy to .github/workflows/deploy.yml in YOUR deployment repository (the private repository
+# that holds your inventories, see docs/inventories.md), not in compliant-infra-ansible itself.
+# Setup, runners, variables and secrets: docs/ci.md. Forgejo Actions version: examples/ci/forgejo/deploy.yml.
+#
+# Production changes (CHG-02): site.yml is applied only from this workflow, after a reviewed pull
+# request is merged into the protected main branch (CHG-01) and, with required reviewers on the
+# "production" environment, after a second approval of the run. Every run is recorded by
+# tools/ansible-run (who, commit, playbook, hosts, result; journald on the controller and every host,
+# shipped to the SIEM) and the record is kept as a build artifact (EVD-02). Runs on the self-hosted
+# deploy runner with the ci-deploy OpenBao AppRole (tools/ci-openbao-login); the hosts accept the
+# deploy account only with that certificate (ci_only_deploys). The playbooks come from the
+# compliant-infra-ansible release pinned in compliant-infra.ref; bumping it is a reviewed change that
+# upgrade.yml applies (site.yml refuses version changes on clusters), so pushes that change it are skipped here.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - inventories/production/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-ansible
+  cancel-in-progress: false
+
+jobs:
+  route:
+    name: Leave release bumps to upgrade.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.route.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # site.yml refuses version changes on clusters, so a push that changes the pinned release is applied by
+      # upgrade.yml (upgrade, then site.yml), not here. The first pin (an install) and manual runs deploy.
+      - name: Did this push change the pinned release?
+        id: route
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          pinned() { git show "$1:compliant-infra.ref" 2>/dev/null | grep -v '^#' | head -n 1 | tr -d '[:space:]'; }
+          deploy=true
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || BEFORE=HEAD^
+            old=$(pinned "$BEFORE"); new=$(pinned HEAD)
+            if [ -n "$old" ] && [ "$old" != "$new" ]; then
+              deploy=false
+              echo "::notice::compliant-infra.ref changed ($old -> $new): the Upgrade workflow applies this push"
+            fi
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Apply site.yml
+    needs: route
+    if: needs.route.outputs.deploy == 'true'
+    runs-on: [self-hosted, deploy]
+    environment: production
+    timeout-minutes: 120
+    env:
+      INVENTORY: ${{ github.workspace }}/${{ vars.ANSIBLE_INVENTORY || 'inventories/production' }}
+      PLATFORM_REPO: ${{ vars.COMPLIANT_INFRA_REPO || 'https://github.com/canozyurt/ansi.git' }}
+      PLATFORM_DIR: ${{ github.workspace }}/.platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the pinned compliant-infra-ansible release
+        run: |
+          ref=$(grep -v '^#' compliant-infra.ref | head -n 1 | tr -d '[:space:]')
+          [ -n "$ref" ] || { echo "::error::compliant-infra.ref names no release"; exit 1; }
+          git clone --quiet --filter=blob:none --no-checkout "$PLATFORM_REPO" "$PLATFORM_DIR"
+          git -C "$PLATFORM_DIR" -c advice.detachedHead=false checkout "$ref"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .platform/requirements-dev.txt
+
+      - name: Install tools
+        working-directory: .platform
+        run: |
+          pip install -r requirements-dev.txt
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Log in to OpenBao (vault password, CI SSH certificate) [chk_chg_02]
+        id: login
+        working-directory: .platform
+        env:
+          BAO_ADDR: ${{ vars.BAO_ADDR }}
+          BAO_CACERT: ${{ vars.BAO_CACERT }}
+          BAO_ROLE_ID: ${{ vars.BAO_DEPLOY_ROLE_ID }}
+          BAO_SECRET_ID: ${{ secrets.BAO_DEPLOY_SECRET_ID }}
+        run: echo "opts=$(tools/ci-openbao-login "$RUNNER_TEMP/ci-auth")" >> "$GITHUB_OUTPUT"
+
+      - name: Apply site.yml with a run record [chk_chg_02]
+        working-directory: .platform
+        env:
+          ANSIBLE_RUN_RECORD_DIR: ${{ runner.temp }}/run-record
+        run: |
+          # shellcheck disable=SC2086
+          set -o pipefail  # the playbook's exit code, not tee's
+          tools/ansible-run playbooks/site.yml -i "$INVENTORY" --diff ${{ steps.login.outputs.opts }} \
+            | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: Keep the run record and log as evidence [chk_evd_02]
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/run-record/
+            ${{ runner.temp }}/deploy.log
+          retention-days: 90
+
+      - name: Remove the credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ci-auth"

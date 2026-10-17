@@ -25,10 +25,10 @@ they move to a new tag and run two playbooks: `upgrade.yml` for the versions, th
      && ansible-playbook -i ../inventories/<env> playbooks/site.yml
    ```
 
-   Production changes run from CI (CHG-02): the upgrade pipeline in your
-   deployment repository runs the same two playbooks as two steps of one job, with
-   the same inventory and credentials, and the second step only runs when the first
-   succeeded.
+   Production changes run from CI (CHG-02): the `upgrade.yml` pipeline in your
+   deployment repository shows the release notes on the pull request, waits for an
+   approval in the maintenance window, then runs the same two playbooks as two steps
+   of one job, the second only when the first succeeded ([ci.md](ci.md#upgrades)).
 
 4. `upgrade.yml`:
    - checks that every node is healthy before it changes anything;

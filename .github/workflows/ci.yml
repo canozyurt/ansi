@@ -13,10 +13,18 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run: public runners allow 20 jobs at a time per
+# account, and a superseded run would otherwise hold them. Runs on main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Lint and checklist
     runs-on: ubuntu-24.04
+    outputs:
+      waiting_upgrades: ${{ steps.upgrade_paths.outputs.waiting }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,11 +36,21 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      - name: Restore the pinned collections
+        id: collections
+        uses: actions/cache@v4
+        with:
+          path: collections
+          key: collections-${{ hashFiles('requirements.yml') }}
+
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
-          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
+          # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
+          if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
+          fi
 
       # SEC-01: whole git history, with the allowlist for placeholders in .gitleaks.toml.
       - name: Secret scan of the git history (gitleaks) [chk_sec_01]
@@ -68,6 +86,16 @@ jobs:
       # shared-responsibility matrix against ISO 27017 (DAT-03), every upgrade scenario in CI (CHG-07).
       - name: Release documents are complete [chk_ha_02] [chk_dat_03] [chk_chg_07]
         run: python3 tools/release.py check
+
+      # CHG-07: an upgrade scenario needs the previous release in versions_upgrade_from; until the
+      # first release that includes the service there is nothing to upgrade from, so the Molecule
+      # matrix leaves it out instead of starting a runner that would only skip.
+      - name: Upgrade scenarios waiting for a release
+        id: upgrade_paths
+        run: |
+          python3 tools/release.py status | tee status.txt
+          awk '/waiting for a release/ {print "::notice::" $1 ": no previous release in versions_upgrade_from yet; skipped"}' status.txt
+          echo "waiting=$(awk '/waiting for a release/ {print $1}' status.txt | jq -Rnc '[inputs | {scenario: .}]')" >> "$GITHUB_OUTPUT"
 
       - name: Self-tests of the CI gates
         run: python3 -m unittest discover -s tools/tests -v
@@ -174,11 +202,21 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      - name: Restore the pinned collections
+        id: collections
+        uses: actions/cache@v4
+        with:
+          path: collections
+          key: collections-${{ hashFiles('requirements.yml') }}
+
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
-          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
+          # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
+          if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
+          fi
 
       - name: Converge, idempotence and verify (CHG-06)
         run: molecule test --platform-name ${{ matrix.platform }}
@@ -195,6 +233,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        exclude: ${{ fromJSON(needs.lint.outputs.waiting_upgrades || '[]') }}
         distro: [debian12, ubuntu2204, ubuntu2404]
         scenario:
           - keycloak
@@ -242,28 +281,23 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      - name: Restore the pinned collections
+        id: collections
+        uses: actions/cache@v4
+        with:
+          path: collections
+          key: collections-${{ hashFiles('requirements.yml') }}
+
       - name: Install tools
         run: |
           pip install -r requirements-dev.txt
-          # Galaxy sometimes cuts a download short (IncompleteRead), so try three times.
-          for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
-
-      # An upgrade scenario needs the previous release in versions_upgrade_from (CHG-07); until the
-      # first release that includes the service, there is nothing to upgrade from.
-      - name: Check the upgrade path exists
-        id: upgrade_path
-        run: |
-          rc=0
-          python3 tools/release.py has-upgrade-path "${{ matrix.scenario }}" || rc=$?
-          case "$rc" in
-            0) echo "skip=false" >> "$GITHUB_OUTPUT" ;;
-            3) echo "::notice::${{ matrix.scenario }}: no previous release in versions_upgrade_from yet; skipped"
-               echo "skip=true" >> "$GITHUB_OUTPUT" ;;
-            *) exit "$rc" ;;
-          esac
+          # Galaxy downloads take about 80 s per job; the cache key changes whenever a pin does.
+          # Galaxy sometimes cuts a download short (IncompleteRead), so a miss tries three times.
+          if [ "${{ steps.collections.outputs.cache-hit }}" != "true" ]; then
+            for i in 1 2 3; do ansible-galaxy collection install -r requirements.yml && break; [ "$i" = 3 ] && exit 1; sleep 20; done
+          fi
 
       - name: Deploy, idempotence and verify [chk_chg_06]
-        if: steps.upgrade_path.outputs.skip != 'true'
         run: molecule test -s ${{ matrix.scenario }}
         env:
           MOLECULE_DISTRO: ${{ matrix.distro }}

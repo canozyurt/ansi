@@ -11,7 +11,7 @@ holds, the rebuild steps, how to verify the result, and what the yearly drill co
 ## Yearly drill (HA-02)
 
 ```sh
-ansible-playbook -i inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=all -e dr_drill_confirm=yes
+ansible-playbook -i ../inventories/<env> playbooks/dr_drill.yml -e dr_drill_services=all -e dr_drill_confirm=yes
 ```
 
 The drill restores each service's latest backup into an isolated scratch directory on one of its
