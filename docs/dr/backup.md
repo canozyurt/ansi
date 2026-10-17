@@ -20,7 +20,7 @@ host (`/srv/restic/<host>`). Optionally a copy goes to S3 with versioning and Ob
 ## Rebuild
 
 1. Create the hosts with the same inventory names, on encrypted volumes (docs/disk-encryption.md).
-2. `ansible-playbook -i inventories/<env> playbooks/site.yml --limit backup -t baseline,backup_server`
+2. `ansible-playbook -i ../inventories/<env> playbooks/site.yml --limit backup -t baseline,backup_server`
    (or the whole `playbooks/backup.yml` for the `backup` group).
 3. Only if the repositories must come from the S3 copy: with the service stopped
    (`systemctl stop rest-server`), sync the bucket prefix back into `/srv/restic/`

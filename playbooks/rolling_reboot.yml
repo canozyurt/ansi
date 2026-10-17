@@ -3,7 +3,7 @@
 # waits for the services on each host to be healthy before moving on (HRD-04).
 # Schedule it in the maintenance window, e.g. weekly from CI or a cron job:
 #
-#   ansible-playbook -i inventories/<company> playbooks/rolling_reboot.yml
+#   ansible-playbook -i ../inventories/<env> playbooks/rolling_reboot.yml
 #
 # Set reboot_force=true to reboot every host regardless.
 

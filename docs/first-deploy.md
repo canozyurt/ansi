@@ -21,7 +21,7 @@ Leave `ssh_hardening_trusted_user_ca_keys: []`.
 ## Stage 1: bootstrap
 
 ```bash
-ansible-playbook -i inventories/prod/hosts.yml playbooks/bootstrap.yml
+ansible-playbook -i ../inventories/production playbooks/bootstrap.yml
 ```
 
 This runs `rbac.yml`, `baseline.yml`, `container_hosts.yml` and `secrets.yml`. OpenBao is initialised and
@@ -46,7 +46,7 @@ For CI-only deploys (stage 3), also do the OpenBao part of the setup in
 ## Stage 2: full deploy
 
 ```bash
-ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml
+ansible-playbook -i ../inventories/production playbooks/site.yml
 ```
 
 With the CA key set, `baseline.yml` makes every host trust the SSH CA, `access.yml` deploys the bastion,

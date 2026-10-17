@@ -10,7 +10,7 @@ and those are backed up.
 
 ## Rebuild
 
-1. Restore the hosts. Run `ansible-playbook -i inventories/<env> playbooks/monitoring.yml`.
+1. Restore the hosts. Run `ansible-playbook -i ../inventories/<env> playbooks/monitoring.yml`.
 2. Run `playbooks/baseline.yml` on all hosts if node_exporter certificates or scrape credentials
    changed.
 3. Metrics history before the rebuild is gone. Note the gap in the incident record. The audit

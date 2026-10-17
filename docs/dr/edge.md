@@ -10,7 +10,7 @@ inventory.
 
 1. Restore the hosts. If the VIPs are provider floating IPs, re-attach them, or update DNS if the
    addresses changed.
-2. `ansible-playbook -i inventories/<env> playbooks/edge.yml`.
+2. `ansible-playbook -i ../inventories/<env> playbooks/edge.yml`.
 
 ## Verify
 

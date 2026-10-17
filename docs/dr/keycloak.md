@@ -10,7 +10,7 @@ is also in the inventory.
 ## Rebuild
 
 1. Restore the database first ([postgres.md](postgres.md)), or check that it survived.
-2. `ansible-playbook -i inventories/<env> playbooks/identity.yml`. The nodes form a cluster again
+2. `ansible-playbook -i ../inventories/<env> playbooks/identity.yml`. The nodes form a cluster again
    over JDBC_PING. The role reconciles the realm, clients, roles and identity providers from the
    inventory.
 3. If the database was lost and only a pre-upgrade dump is newer than the cluster backup, load the

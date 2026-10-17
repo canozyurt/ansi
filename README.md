@@ -25,22 +25,46 @@ not touch shared logic.
 
 ## Quick start
 
+Your inventories, vault files and pipelines live in **your own private deployment repository**, never
+in this one. That repository pins the release of this project it deploys, and CI checks out that
+release next to your inventories (layout and rules: [docs/inventories.md](docs/inventories.md)):
+
+```
+infra-deploy/                  # your private repository
+  compliant-infra.ref          # commit SHA of the compliant-infra-ansible release to deploy
+  inventories/production/      # one directory per environment, started from inventories/example
+  inventories/staging/
+  .platform/                   # this repository at that commit (git-ignored, not committed)
+```
+
 ```bash
+git init infra-deploy && cd infra-deploy
+echo .platform/ > .gitignore
+git clone https://github.com/canozyurt/ansi.git .platform
+git -C .platform checkout vX.Y.Z && git -C .platform rev-parse HEAD > compliant-infra.ref
+mkdir inventories && cp -r .platform/inventories/example inventories/production
+$EDITOR inventories/production/hosts.yml inventories/production/group_vars/all/main.yml
+
+cd .platform                   # playbooks run from here, so ansible.cfg applies
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 ansible-galaxy collection install -r requirements.yml
-
-cp -r inventories/example inventories/prod     # inventories other than example/ are git-ignored
-$EDITOR inventories/prod/hosts.yml inventories/prod/group_vars/all/main.yml
-
 # New hosts: stage 1, then put the SSH CA key and OpenBao outputs into the inventory (docs/first-deploy.md)
-ansible-playbook -i inventories/prod/hosts.yml playbooks/bootstrap.yml
-ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml --check --diff   # preview
-ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml
+ansible-playbook -i ../inventories/production playbooks/bootstrap.yml
+ansible-playbook -i ../inventories/production playbooks/site.yml --check --diff   # preview
+ansible-playbook -i ../inventories/production playbooks/site.yml
 ```
 
 A first deploy runs in stages because the bastion needs the SSH CA that OpenBao creates; see
 [docs/first-deploy.md](docs/first-deploy.md).
+
+Every command in this repository's docs and playbook headers is written the same way: run from the
+`.platform/` checkout with `-i ../inventories/<env>`.
+
+To try the playbooks on throwaway VMs without a deployment repository, copy the example inside a
+clone of this repository instead (`cp -r inventories/example inventories/lab`, then
+`-i inventories/lab`). `.gitignore` keeps every inventory except `example/` out of git, but this is a
+local try-out only: nothing you configure there is versioned, reviewed or deployable from CI.
 
 Before the first run, set at least:
 
@@ -50,8 +74,10 @@ Before the first run, set at least:
   disabled, and the role refuses to continue if that would lock you out.
 - `rbac_model_group_assignments`: which IdP groups get which default role.
 
-In production, run playbooks only from CI (checklist item CHG-02) and schedule a weekly
-`--check --diff` run to detect drift (CHG-03).
+In production, run playbooks only from CI (checklist item CHG-02) and schedule a daily
+`--check --diff` run to detect drift (CHG-03). [docs/ci.md](docs/ci.md) has deploy, drift and image
+mirror pipelines for GitHub and Forgejo Actions to copy into the private repository that holds your
+inventories.
 
 ## What is in the repo
 

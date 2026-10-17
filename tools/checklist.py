@@ -7,8 +7,9 @@ requirement; whether the requirement is fully met is the status a person sets
 in the checklist. The tags make that status checkable:
 
 * ``implemented`` needs at least one tagged task under ``roles/*/tasks`` or
-  ``playbooks``, or a tagged CI step in ``.github/workflows`` (for controls that live in CI,
-  such as secret scanning);
+  ``playbooks``, or a tagged CI step in ``.github/workflows`` or in the maintained pipeline
+  examples under ``examples/ci`` (for controls that live in CI, such as secret scanning or the
+  drift check);
 * ``verified`` additionally needs a tagged task in a Molecule ``verify*.yml``.
 
 Core items (``core: true``: identity, secrets, logging and monitoring, hardening, network, backup
@@ -84,6 +85,7 @@ def collect_evidence() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
         list((ROOT / "roles").glob("*/tasks/**/*.yml"))
         + list((ROOT / "playbooks").glob("**/*.yml"))
         + list((ROOT / ".github" / "workflows").glob("*.yml"))
+        + list((ROOT / "examples" / "ci").glob("*/*.yml"))
     )
     for path in candidates:
         for match in TAG_RE.finditer(path.read_text()):

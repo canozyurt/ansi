@@ -84,7 +84,8 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
    The command lists every version change since the last tag and which upgrade paths CI tested.
    Complete the "recreate" section: services whose upgrade play stops all nodes (for example a
    Keycloak minor version, or an OpenBao release that changes the storage format). Note any
-   manual step. Manual steps make it a **major** release.
+   manual step. Manual steps make it a **major** release. List changes to the pipeline examples
+   (`git diff <last tag> -- examples/ci`): users keep copies of them ([ci.md](ci.md)).
 3. **Review the documents** that must be current for each release, and run the pre-flight:
 
    ```sh
@@ -109,11 +110,13 @@ The maintainer decides when to tag; the tooling never creates or pushes a tag.
    | Anything an organisation must do by hand, or a data migration with no rolling path back | major |
 
    ```sh
-   git tag -s v1.4.0 -F /tmp/notes-v1.4.0.md
+   git tag -s --cleanup=verbatim v1.4.0 -F /tmp/notes-v1.4.0.md
    git push origin v1.4.0
    ```
 
-   Publish the notes as the Forgejo/GitHub release text.
+   `--cleanup=verbatim` keeps the Markdown headings, which git would otherwise strip as comments.
+   Publish the notes as the Forgejo/GitHub release text. Deployment repositories show the tag's
+   notes on the pull request that bumps their pinned release (`upgrade.yml`, [ci.md](ci.md#upgrades)).
 5. **Move the upgrade baseline** in the next pull request, so the following release is tested
    against this one:
 

@@ -17,11 +17,11 @@
    nodes in place, before deploying:
 
    ```sh
-   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=<siem-1> \
+   ansible-playbook -i ../inventories/<env> playbooks/restore.yml -e restore_host=<siem-1> \
      -e restore_name=wazuh-indexer -e restore_confirm=wazuh-indexer -e restore_target=/ -e restore_in_place_confirm=wazuh-indexer
-   ansible-playbook -i inventories/<env> playbooks/restore.yml -e restore_host=<siem-1> \
+   ansible-playbook -i ../inventories/<env> playbooks/restore.yml -e restore_host=<siem-1> \
      -e restore_name=wazuh-manager -e restore_confirm=wazuh-manager -e restore_target=/ -e restore_in_place_confirm=wazuh-manager
-   ansible-playbook -i inventories/<env> playbooks/siem.yml
+   ansible-playbook -i ../inventories/<env> playbooks/siem.yml
    ```
 
    With the same CA and `client.keys`, agents reconnect without being enrolled again.

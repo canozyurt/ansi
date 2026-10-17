@@ -2,7 +2,7 @@
 # Applies a new release of this repository to running hosts (docs/upgrades.md).
 #
 #   git checkout vX.Y.Z
-#   ansible-playbook -i inventories/<company> playbooks/upgrade.yml
+#   ansible-playbook -i ../inventories/<env> playbooks/upgrade.yml
 #
 # Every service is upgraded one node at a time; the run stops at the first node that
 # does not come back healthy. Services back up their data before a version change.
@@ -116,6 +116,13 @@
         tasks_from: health
       loop: [alertmanager, prometheus, grafana]
       tags: [chk_chg_07]
+
+# keepalived names every peer by its address facts; a serial play only gathers the facts of its batch.
+- name: Gather the facts of every edge node before the rolling upgrade
+  hosts: edge
+  become: true
+  gather_facts: true
+  tasks: []
 
 - name: Upgrade the edge one node at a time (the VIP moves to the other node meanwhile)
   hosts: edge

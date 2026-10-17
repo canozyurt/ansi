@@ -6,7 +6,7 @@
 # on the controller (default: data-exports/ next to playbooks/), the manifest also in
 # /var/lib/compliance-evidence/data-export/ on the host (kept by the backups).
 #
-#   ansible-playbook -i inventories/<env> playbooks/data_export.yml \
+#   ansible-playbook -i ../inventories/<env> playbooks/data_export.yml \
 #     -e data_service=postgres -e data_instance=pg-main -e data_scope=orders \
 #     -e data_export_recipient=/path/to/owner.crt -e data_request_reference=REQ-123 \
 #     -e data_export_confirm=postgres/pg-main:orders

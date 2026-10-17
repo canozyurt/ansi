@@ -73,8 +73,8 @@ passwords, Prometheus/Alertmanager basic-auth machine accounts. They stay in Ans
 ## Rotation
 
 ```bash
-ansible-playbook -i inventories/<env> playbooks/rotate_secrets.yml                     # due keys only
-ansible-playbook -i inventories/<env> playbooks/rotate_secrets.yml \
+ansible-playbook -i ../inventories/<env> playbooks/rotate_secrets.yml                     # due keys only
+ansible-playbook -i ../inventories/<env> playbooks/rotate_secrets.yml \
   -e '{"openbao_secrets_force_rotate": ["grafana/*", "forgejo/internal_token"]}'      # after a leak
 ```
 

@@ -1,4 +1,10 @@
 ---
+# CI-only deploys come in two steps so that no run locks out the machine running it:
+# - staged: the CA trusts the CI principal, the deploy account accepts the CI's certificate and the
+#   break-glass account exists, but static keys and sudo from other sessions still work;
+# - enforced: only a run that itself logged in with the CI's certificate (or a later run on a host
+#   that is already enforced) removes the static keys and restricts sudo. Reaching that step proves
+#   CI can log in and use sudo on the host.
 - name: Map only the CI principal to the deploy account
   ansible.builtin.copy:
     content: |
@@ -11,22 +17,6 @@
   when: admin_login_ci_only_active | bool
   tags: [chk_chg_02]
 
-- name: Look up the deploy account
-  ansible.builtin.getent:
-    database: passwd
-    key: "{{ admin_login_ci_deploy_user }}"
-    fail_key: false
-  when: admin_login_ci_only_active | bool
-
-- name: Remove the deploy account's static SSH keys (certificates only)
-  ansible.builtin.file:
-    path: "{{ ansible_facts.getent_passwd[admin_login_ci_deploy_user][4] }}/.ssh/authorized_keys"
-    state: absent
-  when:
-    - admin_login_ci_only_active | bool
-    - (ansible_facts.getent_passwd | default({}))[admin_login_ci_deploy_user] | default(none) is not none
-  tags: [chk_chg_02]
-
 - name: Install the sudo session check and the break-glass notifier
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -36,6 +26,50 @@
     mode: "0755"
   loop: [ci-deploy-session-check, break-glass-notify]
   when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Check whether CI-only deploys are already enforced
+  ansible.builtin.command: grep -qF ci-deploy-session-check /etc/pam.d/sudo
+  register: admin_login_ci_only_enforced_before
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Check whether this run logged in with the CI's certificate
+  ansible.builtin.command: /usr/local/sbin/ci-deploy-session-check --probe
+  become: false
+  register: admin_login_ci_session_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Decide whether to enforce CI-only deploys
+  ansible.builtin.set_fact:
+    admin_login_ci_only_enforce: >-
+      {{ admin_login_ci_only_active | bool
+         and (admin_login_ci_only_enforced_before.rc | default(1) == 0
+              or admin_login_ci_session_probe.rc | default(1) == 0) }}
+  tags: [chk_chg_02]
+
+- name: Look up the deploy account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ admin_login_ci_deploy_user }}"
+    fail_key: false
+  when: admin_login_ci_only_enforce | bool
+  tags: [chk_chg_02]
+
+- name: Remove the deploy account's static SSH keys (certificates only)
+  ansible.builtin.file:
+    path: "{{ ansible_facts.getent_passwd[admin_login_ci_deploy_user][4] }}/.ssh/authorized_keys"
+    state: absent
+  when:
+    - admin_login_ci_only_enforce | bool
+    - (ansible_facts.getent_passwd | default({}))[admin_login_ci_deploy_user] | default(none) is not none
   tags: [chk_chg_02]
 
 - name: Find the sudo PAM services
@@ -50,7 +84,7 @@
     path: "{{ item.stat.path }}"
     line: "account    requisite  pam_exec.so quiet /usr/local/sbin/ci-deploy-session-check"
     insertbefore: '^@include common-account'
-    state: "{{ 'present' if admin_login_ci_only_active | bool else 'absent' }}"
+    state: "{{ 'present' if admin_login_ci_only_enforce | bool else 'absent' }}"
   loop: "{{ admin_login_sudo_pam.results | selectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.item }}"
@@ -62,4 +96,45 @@
     line: "session    optional   pam_exec.so quiet /usr/local/sbin/break-glass-notify"
     insertafter: EOF
     state: "{{ 'present' if admin_login_ci_only_active | bool else 'absent' }}"
+  tags: [chk_chg_02]
+
+- name: Create the node_exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ admin_login_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: admin_login_ci_only_active | bool
+
+# CIOnlyDeploysNotEnforced fires while a host stays staged.
+- name: Publish whether CI-only deploys are enforced
+  ansible.builtin.copy:
+    content: |
+      # HELP ci_only_deploys_enforced 1 when only the CI's certificate may deploy to this host, 0 while staged.
+      # TYPE ci_only_deploys_enforced gauge
+      ci_only_deploys_enforced {{ 1 if admin_login_ci_only_enforce | bool else 0 }}
+    dest: "{{ admin_login_textfile_dir }}/ci_only_deploys.prom"
+    owner: root
+    group: root
+    mode: "0644"
+  when: admin_login_ci_only_active | bool
+  tags: [chk_chg_02]
+
+- name: Remove the CI-only metric
+  ansible.builtin.file:
+    path: "{{ admin_login_textfile_dir }}/ci_only_deploys.prom"
+    state: absent
+  when: not admin_login_ci_only_active | bool
+
+- name: Explain why CI-only deploys are staged, not enforced
+  ansible.builtin.debug:
+    msg: >-
+      CI-only deploys are staged on {{ inventory_hostname }}: this run did not log in with the CI's
+      certificate (principal {{ admin_login_ci_principal }}), so {{ admin_login_ci_deploy_user }} keeps its
+      static keys and sudo. The first run from CI enforces it; until then CIOnlyDeploysNotEnforced fires.
+      See docs/audits.md.
+  when:
+    - admin_login_ci_only_active | bool
+    - not admin_login_ci_only_enforce | bool
   tags: [chk_chg_02]

@@ -4,7 +4,7 @@
 # sidecar) on the hosts of its own inventory group, with its own RPC secret, admin and metrics tokens,
 # ports, data directories, keys, buckets and metadata snapshots (DAT-01).
 #
-#   ansible-playbook -i inventories/<company> playbooks/garage.yml [-e garage_only=s3-main]
+#   ansible-playbook -i ../inventories/<env> playbooks/garage.yml [-e garage_only=s3-main]
 #
 # The "garage" group must contain every cluster group (see inventories/example/hosts.yml).
 # Version changes are refused here; they go through playbooks/upgrade.yml.
