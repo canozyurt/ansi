@@ -32,6 +32,19 @@ versions_postgres_upgrade_from: {}
 """
 
 
+CHANGELOG = """\
+# Changelog
+
+## [Unreleased]
+
+## [{version}] - 2026-10-01
+
+### Added
+
+- Everything.
+"""
+
+
 class Release(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -120,6 +133,8 @@ class Release(unittest.TestCase):
                    "- import_playbook: ../../playbooks/upgrade.yml\n")
         ci = self.root / ".github/workflows/ci.yml"
         ci.write_text(ci.read_text() + "                      - keycloak-upgrade\n")
+        self.write("inventory-changes.yml", "changes: []\n")
+        self.write("CHANGELOG.md", CHANGELOG.format(version="v0.1.0"))
         self.git("init", "-q")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "init")
@@ -160,8 +175,90 @@ class Release(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "next")
         rc, out = self.run_tool("cut", "v0.2.0", "--notes-out", str(self.root / "n.md"))
+        self.assertEqual(rc, 1)
+        self.assertIn("CHANGELOG.md has no [v0.2.0] section", out)
+        self.write("CHANGELOG.md", CHANGELOG.format(version="v0.1.0").replace(
+            "## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- A fix.\n"))
+        rc, out = self.run_tool("changelog", "v0.2.0", "--date", "2026-10-12")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("## [Unreleased]\n\n## [v0.2.0] - 2026-10-12\n\n### Fixed\n\n- A fix.",
+                      (self.root / "CHANGELOG.md").read_text())
+        self.assertEqual(self.run_tool("changelog", "v0.2.0")[0], 2)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "changelog")
+        rc, out = self.run_tool("cut", "v0.2.0", "--notes-out", str(self.root / "n.md"))
         self.assertEqual(rc, 0, out)
         self.assertIn("after v0.1.0", out)
+        self.assertIn("- A fix.", (self.root / "n.md").read_text())
+
+    # ------------------------------------------------------------------ inventory changes
+    def commit(self, message: str) -> None:
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+
+    def test_removed_role_default_needs_an_entry_and_a_changelog_line(self) -> None:
+        self.make_releasable()
+        self.write("roles/keycloak/defaults/main.yml",
+                   "keycloak_image: \"{{ versions_images.app }}\"\nkeycloak_db_ssl_mode: require\n")
+        self.commit("v0.1.0")
+        self.git("tag", "v0.1.0")
+        self.write("roles/keycloak/defaults/main.yml",
+                   "keycloak_image: \"{{ versions_images.app }}\"\nkeycloak_db_sslmode: require\n")
+        rc, out = self.run_tool("check")
+        self.assertEqual(rc, 1)
+        self.assertIn("keycloak_db_ssl_mode was a role default in v0.1.0 and is gone", out)
+        self.write("inventory-changes.yml", """\
+            changes:
+              - kind: renamed
+                var: keycloak_db_ssl_mode
+                new: keycloak_db_sslmode
+                removal_planned: v1.0.0
+                note: Spelled like the other sslmode variables.
+            """)
+        rc, out = self.run_tool("check")
+        self.assertEqual(rc, 1)
+        self.assertIn("CHANGELOG.md does not name keycloak_db_ssl_mode under '### Inventory changes'", out)
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(changelog.read_text().replace(
+            "## [Unreleased]\n", "## [Unreleased]\n\n### Inventory changes\n\n- keycloak_db_ssl_mode renamed.\n"))
+        rc, out = self.run_tool("check")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_tool("notes", "v0.2.0")
+        self.assertIn("`keycloak_db_ssl_mode` renamed to `keycloak_db_sslmode`; the old name works until v1.0.0", out)
+        self.assertIn("inventory_check.py <inventory> --release v0.2.0", out)
+
+    def test_released_entries_are_append_only(self) -> None:
+        self.make_releasable()
+        self.write("roles/keycloak/defaults/main.yml",
+                   "keycloak_image: \"{{ versions_images.app }}\"\nkeycloak_new: 1\n")
+        self.write("inventory-changes.yml", """\
+            changes:
+              - {kind: renamed, var: keycloak_old, new: keycloak_new, note: Clearer name.}
+            """)
+        self.write("CHANGELOG.md", CHANGELOG.format(version="v0.1.0") + "\n### Inventory changes\n\n- keycloak_old\n")
+        self.commit("v0.1.0")
+        self.git("tag", "v0.1.0")
+        self.assertEqual(self.run_tool("check")[0], 0)
+        self.write("inventory-changes.yml", """\
+            changes:
+              - {kind: renamed, var: keycloak_old, new: keycloak_new, note: Edited later.}
+            """)
+        rc, out = self.run_tool("check")
+        self.assertEqual(rc, 1)
+        self.assertIn("the renamed entry for keycloak_old is part of v0.1.0", out)
+
+    def test_removed_variable_still_read_and_example_inventory(self) -> None:
+        self.make_releasable()
+        self.write("inventory-changes.yml", """\
+            changes:
+              - {kind: removed, var: keycloak_image, note: Gone.}
+              - {kind: required, var: keycloak_realm, groups: [keycloak], note: Name the realm.}
+            """)
+        self.write("inventories/example/hosts.yml", "all:\n  children:\n    keycloak:\n      hosts:\n        kc-1:\n")
+        rc, out = self.run_tool("check")
+        self.assertEqual(rc, 1)
+        self.assertIn("keycloak_image is listed as removed in inventory-changes.yml but roles or playbooks still read it", out)
+        self.assertIn("inventories/example: keycloak_realm: required for keycloak but not set for 1 host(s): kc-1", out)
 
     def test_coverage_flags_a_pinned_role_without_an_upgrade_play(self) -> None:
         self.make_releasable()

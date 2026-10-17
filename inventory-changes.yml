@@ -1,0 +1,28 @@
+---
+# Inventory changes between releases (docs/upgrades.md#inventory-changes-between-releases).
+#
+# Every change that may need an edit to an organisation's inventory is one entry here, added in the
+# pull request that makes the change. The release an entry belongs to is the first tag that contains
+# it, so entries carry no version: append them and never edit or delete an entry a tag already holds
+# (tools/release.py check enforces this).
+#
+#   tools/inventory_check.py <inventory> [--release vX.Y.Z]   checks an inventory against these entries
+#   playbooks/inventory_check.yml                             refuses site.yml and upgrade.yml runs
+#                                                             that would silently ignore a variable
+#
+# Kinds:
+#   renamed   var -> new. The old name keeps working (playbooks/inventory_check.yml copies it to
+#             the new name) until a later `removed` entry for the old name. removal_planned names
+#             the release that will drop it: the next major release at the earliest.
+#   removed   var no longer does anything. Setting it is an error, so a value is never silently lost.
+#   required  var has no default and must be set for every host in `groups` (all hosts when omitted).
+#   default   the default of var changed from `old` to `new`; set var to `old` to keep the old behaviour.
+#
+# Every entry has a `note` that says what to do. Example:
+#
+#   - kind: renamed
+#     var: keycloak_db_ssl_mode
+#     new: keycloak_db_sslmode
+#     removal_planned: v1.0.0
+#     note: Spelled like the other *_sslmode variables.
+changes: []
